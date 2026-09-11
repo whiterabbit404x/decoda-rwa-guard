@@ -33,7 +33,11 @@ from services.api.app import entitlements as ent
 from services.api.app import pilot
 from services.api.app.domains.response_gate import config as rgc
 
-NOW = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+#: The lock reads the REAL clock (it is a live-run capability check, not a
+#: replay), so the fixture below anchors its evaluation window to wall time. A
+#: hard-coded date would quietly age into an EXPIRED evaluation and these tests
+#: would stop testing the case they name.
+NOW = datetime.now(timezone.utc)
 ORG = 'org-pilot-1'
 WS = 'ws-pilot-1'
 
@@ -121,6 +125,22 @@ def test_lock_reports_a_reason_an_operator_can_act_on() -> None:
     )
     label = next(item['label'] for item in gate['reasons'] if item['code'] == rgc.PLAN_EXECUTION_NOT_ENTITLED)
     assert 'recommend-only' in label.lower()
+
+
+def test_an_ended_evaluation_is_named_as_the_reason_rather_than_the_plan_mode() -> None:
+    """An expired evaluator cannot act on the recommendation either, so telling
+    them "your plan is recommend-only" would point at the wrong remedy."""
+    connection = _Conn(_org(
+        evaluation_started_at=NOW - timedelta(days=40), evaluation_expires_at=NOW - timedelta(days=10),
+    ))
+    gate = pilot._apply_plan_execution_lock(
+        connection, _authorized_gate(), action={'id': 'a1', 'mode': 'live'}, workspace_id=WS,
+    )
+    assert gate['plan_execution_locked'] is True
+    assert gate['plan_execution_lock_reason'] == 'evaluation_expired'
+    label = next(item['label'] for item in gate['reasons'] if item['code'] == rgc.PLAN_EXECUTION_NOT_ENTITLED)
+    assert 'evaluation has ended' in label.lower()
+    assert 'upgrade to scale' in label.lower()
 
 
 # ── 2 — the rest of Screen 8 keeps working ────────────────────────────────────

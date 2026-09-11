@@ -19,6 +19,7 @@ import socket
 import uuid
 from typing import Any
 
+from services.api.app import organizations as organization_service
 from services.api.app import pilot
 from services.api.app.domains.asset_risk import config as arc
 from services.api.app.domains.asset_risk import service
@@ -74,8 +75,14 @@ def enqueue_assessment(
 def _enqueue_due_assets(connection: Any, *, config: dict[str, Any]) -> int:
     """Enqueue jobs for assets whose latest assessment is missing or stale.
     Never-assessed assets are prioritized first."""
+    # A suspended organization, or a Pilot past its evaluation deadline, must not
+    # keep generating assessment jobs: the API refuses an on-demand run for them,
+    # and staleness alone is not a reason to spend their budget anyway. Same
+    # clause the monitoring worker uses, so the two cannot disagree about which
+    # tenants are active.
+    tenant_exclusion = organization_service.worker_tenant_exclusion_sql(connection, 'a.workspace_id')
     rows = connection.execute(
-        '''
+        f'''
         SELECT a.id, a.workspace_id
         FROM assets a
         LEFT JOIN LATERAL (
@@ -89,6 +96,7 @@ def _enqueue_due_assets(connection: Any, *, config: dict[str, Any]) -> int:
               SELECT 1 FROM asset_risk_jobs j
               WHERE j.workspace_id = a.workspace_id AND j.asset_id = a.id AND j.status IN ('queued', 'running')
           )
+          {tenant_exclusion}
         ORDER BY last.assessed_at ASC NULLS FIRST
         LIMIT %s
         ''',

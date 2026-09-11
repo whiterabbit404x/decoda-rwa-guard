@@ -135,6 +135,34 @@ FEATURE_KEYS: tuple[str, ...] = (
     FEATURE_PRIORITY_ROUTING,
 )
 
+#: Capabilities an EXPIRED evaluation or a SUSPENDED tenant may no longer
+#: INITIATE. This is the list of things that start new billable or compute work
+#: — a monitoring cycle, an AI investigation, a playbook run, a fresh evidence
+#: package, a production execution. It is deliberately NOT a list of things the
+#: customer can see: every asset, alert, incident, investigation and evidence
+#: package they already produced stays readable, which is what makes "your
+#: evaluation data remains available" a true statement rather than a slogan.
+LIFECYCLE_RESTRICTED_FEATURES: frozenset[str] = frozenset({
+    FEATURE_THREAT_MONITORING,
+    FEATURE_AI_INVESTIGATION,
+    FEATURE_RESPONSE_RECOMMENDATIONS,
+    FEATURE_INCIDENT_PLAYBOOKS,
+    FEATURE_EVIDENCE_EXPORT,
+    FEATURE_AUTOMATIC_EXECUTION,
+})
+
+#: Feature keys the table carries but NO code path currently reads. They are
+#: recorded here rather than quietly advertised: a key in this set describes a
+#: commercial intention, not an enforced control, so nothing may present it to a
+#: customer as a capability their plan withholds or grants. Removing a key from
+#: this set is what "we shipped the gate" looks like.
+UNENFORCED_FEATURES: frozenset[str] = frozenset({
+    FEATURE_CUSTOM_INTEGRATIONS,
+    FEATURE_CUSTOM_EVIDENCE_TEMPLATES,
+    FEATURE_MULTI_NETWORK,
+    FEATURE_PRIORITY_ROUTING,
+})
+
 
 # ── Plan table ───────────────────────────────────────────────────────────────
 # `None` means unlimited. Keep aligned with apps/web/app/pricing-plans.ts.
@@ -155,7 +183,10 @@ _PLAN_TABLE: dict[str, dict[str, Any]] = {
         FEATURE_RESPONSE_RECOMMENDATIONS: True,
         FEATURE_AUTOMATIC_EXECUTION: False,
         FEATURE_EVIDENCE_EXPORT: True,
-        FEATURE_INCIDENT_PLAYBOOKS: False,
+        # An evaluation that cannot open a playbook cannot evaluate incident
+        # response. Playbooks are ON for an ACTIVE Pilot and are withdrawn when
+        # the window closes — see LIFECYCLE_RESTRICTED_FEATURES.
+        FEATURE_INCIDENT_PLAYBOOKS: True,
         FEATURE_CUSTOM_INTEGRATIONS: False,
         FEATURE_CUSTOM_EVIDENCE_TEMPLATES: False,
         FEATURE_MULTI_NETWORK: False,
@@ -430,6 +461,34 @@ def provisioning_allowed(organization: Mapping[str, Any] | None, *, now: datetim
     return monitoring_allowed(organization, now=now)
 
 
+def effective_entitlements(
+    organization: Mapping[str, Any] | None, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Entitlements as they apply RIGHT NOW — plan table plus lifecycle.
+
+    The difference from ``get_entitlements`` is the whole Pilot model:
+
+        ACTIVE Pilot    evaluates the production security workflows — monitoring,
+                        detection, AI investigation, playbooks, recommendations,
+                        evidence — bounded by 30 days, 1 workspace, 5 contracts,
+                        10 evidence packages, and recommend-only execution.
+        EXPIRED Pilot   keeps every record and loses the ability to start new
+                        expensive work, until the organization upgrades.
+
+    Because one function answers both, a screen cannot render "Upgrade required"
+    at a feature an active evaluator is supposed to be testing, and cannot render
+    a feature as available once the window has closed.
+
+    Limits are untouched: an expired evaluation is not re-scoped, it is stopped.
+    """
+    entitlements = get_entitlements(organization)
+    if monitoring_allowed(organization, now=now):
+        return entitlements
+    for feature in LIFECYCLE_RESTRICTED_FEATURES:
+        entitlements[feature] = False
+    return entitlements
+
+
 def lifecycle_blocked_reason(
     organization: Mapping[str, Any] | None, *, now: datetime | None = None
 ) -> tuple[str, str] | None:
@@ -519,11 +578,23 @@ def require_entitlement(
     *,
     entitlements: Mapping[str, Any] | None = None,
     message: str | None = None,
+    now: datetime | None = None,
 ) -> None:
-    """Raise 403 unless this tenant holds ``feature_key``."""
-    effective = entitlements if entitlements is not None else get_entitlements(organization)
+    """Raise 403 unless this tenant holds ``feature_key`` right now.
+
+    Resolves against ``effective_entitlements`` — plan AND lifecycle — so an
+    expired evaluation is refused a capability its plan row still lists. When the
+    lifecycle is what withdrew it, the caller is told THAT, because "your
+    evaluation ended" and "your plan does not include this" have different
+    remedies and only one of them is upgrading.
+    """
+    effective = entitlements if entitlements is not None else effective_entitlements(organization, now=now)
     if has_entitlement(effective, feature_key):
         return
+    if feature_key in LIFECYCLE_RESTRICTED_FEATURES and has_entitlement(
+        get_entitlements(organization), feature_key,
+    ):
+        require_lifecycle_active(organization, now=now)
     raise entitlement_required_error(
         entitlement=feature_key, plan=(organization or {}).get('plan'), message=message,
     )
@@ -598,3 +669,117 @@ def evaluation_payload(
 def usage_entry(current: int, limit: int | None) -> dict[str, Any]:
     """One ``{'current': n, 'limit': n|None}`` usage row."""
     return {'current': int(current), 'limit': limit}
+
+
+# ── The authoritative capability matrix ──────────────────────────────────────
+# ONE table answering "what can each plan do", derived from ``_PLAN_TABLE`` and
+# the lifecycle rules above rather than written out a second time. Docs, tests,
+# and the pricing page all check themselves against this, so a capability cannot
+# be promised in copy while the engine withholds it — or withheld in copy while
+# the engine grants it.
+MATRIX_ACTIVE_PILOT = 'active_pilot'
+MATRIX_EXPIRED_PILOT = 'expired_pilot'
+MATRIX_SCALE = 'scale'
+MATRIX_ENTERPRISE = 'enterprise'
+MATRIX_COLUMNS: tuple[str, ...] = (
+    MATRIX_ACTIVE_PILOT, MATRIX_EXPIRED_PILOT, MATRIX_SCALE, MATRIX_ENTERPRISE,
+)
+
+#: Where a row's answer comes from. A row that no code reads says so.
+SOURCE_FEATURE = 'feature'        # a feature entitlement decides it
+SOURCE_LIMIT = 'limit'            # a numeric plan limit decides it
+SOURCE_LIFECYCLE = 'lifecycle'    # not plan-gated; the evaluation window decides it
+SOURCE_ALWAYS = 'always'          # every tenant has it, expired ones included
+SOURCE_AGREEMENT = 'agreement'    # a commercial term, with no software control
+
+#: Rendered cell values. Plain words so a doc, a test, and a person read the same
+#: thing.
+MATRIX_YES = 'YES'
+MATRIX_NO = 'NO'
+MATRIX_UNLIMITED = 'UNLIMITED'
+MATRIX_CUSTOM = 'CUSTOM'
+
+CAPABILITY_ROWS: tuple[dict[str, Any], ...] = (
+    {'capability': 'Core dashboard', 'source': SOURCE_ALWAYS, 'key': None},
+    {'capability': 'Monitoring', 'source': SOURCE_LIFECYCLE, 'key': None},
+    {'capability': 'Threat detection', 'source': SOURCE_FEATURE, 'key': FEATURE_THREAT_MONITORING},
+    {'capability': 'Alerts', 'source': SOURCE_ALWAYS, 'key': None},
+    {'capability': 'Incidents', 'source': SOURCE_ALWAYS, 'key': None},
+    {'capability': 'AI investigation', 'source': SOURCE_FEATURE, 'key': FEATURE_AI_INVESTIGATION},
+    {'capability': 'Incident playbooks', 'source': SOURCE_FEATURE, 'key': FEATURE_INCIDENT_PLAYBOOKS},
+    {
+        'capability': 'Response recommendations',
+        'source': SOURCE_FEATURE,
+        'key': FEATURE_RESPONSE_RECOMMENDATIONS,
+    },
+    {'capability': 'Evidence workflows', 'source': SOURCE_LIFECYCLE, 'key': None},
+    {'capability': 'Audit-ready exports', 'source': SOURCE_FEATURE, 'key': FEATURE_EVIDENCE_EXPORT},
+    {'capability': 'Workspaces', 'source': SOURCE_LIMIT, 'key': LIMIT_WORKSPACES},
+    {'capability': 'Contracts', 'source': SOURCE_LIMIT, 'key': LIMIT_MONITORED_CONTRACTS},
+    {'capability': 'Evidence packages', 'source': SOURCE_LIMIT, 'key': LIMIT_EVIDENCE_PACKAGES},
+    {
+        'capability': 'Automatic production execution',
+        'source': SOURCE_FEATURE,
+        'key': FEATURE_AUTOMATIC_EXECUTION,
+    },
+    {'capability': 'Multi-network', 'source': SOURCE_FEATURE, 'key': FEATURE_MULTI_NETWORK},
+    {'capability': 'Custom evidence templates', 'source': SOURCE_FEATURE, 'key': FEATURE_CUSTOM_EVIDENCE_TEMPLATES},
+    {'capability': 'Custom integrations', 'source': SOURCE_FEATURE, 'key': FEATURE_CUSTOM_INTEGRATIONS},
+    {'capability': 'Priority alert routing', 'source': SOURCE_FEATURE, 'key': FEATURE_PRIORITY_ROUTING},
+    {'capability': 'Custom SLA', 'source': SOURCE_AGREEMENT, 'key': None},
+)
+
+
+def _matrix_organizations(now: datetime) -> dict[str, dict[str, Any]]:
+    """One synthetic organization per matrix column, so every cell is computed."""
+    return {
+        MATRIX_ACTIVE_PILOT: {
+            'plan': PLAN_PILOT, 'status': STATUS_ACTIVE,
+            'evaluation_expires_at': now + timedelta(days=1),
+        },
+        MATRIX_EXPIRED_PILOT: {
+            'plan': PLAN_PILOT, 'status': STATUS_ACTIVE,
+            'evaluation_expires_at': now - timedelta(days=1),
+        },
+        MATRIX_SCALE: {'plan': PLAN_SCALE, 'status': STATUS_ACTIVE},
+        MATRIX_ENTERPRISE: {'plan': PLAN_ENTERPRISE, 'status': STATUS_ACTIVE},
+    }
+
+
+def _matrix_cell(row: Mapping[str, Any], organization: Mapping[str, Any], now: datetime) -> str:
+    source = row['source']
+    if source == SOURCE_ALWAYS:
+        return MATRIX_YES
+    if source == SOURCE_AGREEMENT:
+        return MATRIX_YES if normalize_plan(organization.get('plan')) == PLAN_ENTERPRISE else MATRIX_NO
+    if source == SOURCE_LIFECYCLE:
+        return MATRIX_YES if monitoring_allowed(organization, now=now) else MATRIX_NO
+    entitlements = effective_entitlements(organization, now=now)
+    if source == SOURCE_FEATURE:
+        return MATRIX_YES if has_entitlement(entitlements, str(row['key'])) else MATRIX_NO
+    limit = limit_for(entitlements, str(row['key']))
+    if limit is None:
+        return MATRIX_CUSTOM if normalize_plan(organization.get('plan')) == PLAN_ENTERPRISE else MATRIX_UNLIMITED
+    return str(limit)
+
+
+def capability_matrix(*, now: datetime | None = None) -> list[dict[str, Any]]:
+    """The capability matrix as rows: capability, source, and one cell per column.
+
+    Computed, never transcribed. ``enforced`` is False for a row whose entitlement
+    key no code path reads — the honest signal that the row states an intention
+    rather than a control.
+    """
+    moment = now or datetime.now(timezone.utc)
+    organizations = _matrix_organizations(moment)
+    rows: list[dict[str, Any]] = []
+    for row in CAPABILITY_ROWS:
+        key = row['key']
+        rows.append({
+            'capability': row['capability'],
+            'source': row['source'],
+            'key': key,
+            'enforced': not (row['source'] == SOURCE_FEATURE and key in UNENFORCED_FEATURES),
+            **{column: _matrix_cell(row, organizations[column], moment) for column in MATRIX_COLUMNS},
+        })
+    return rows

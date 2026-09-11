@@ -159,6 +159,108 @@ export const USAGE_ROWS: ReadonlyArray<{ key: string; label: string }> = [
   { key: 'evidence_packages', label: 'Evidence packages' },
 ];
 
+/**
+ * Feature keys mirrored from services/api/app/entitlements.py FEATURE_KEYS.
+ *
+ * The backend sends EFFECTIVE entitlements on GET /account/plan — the plan table
+ * with the lifecycle already applied — so reading one of these keys answers
+ * "may this tenant use it right now", and no screen needs a `plan === 'pilot'`
+ * branch. That distinction is the whole Pilot model: an ACTIVE evaluation has
+ * incident playbooks, AI investigation and evidence workflows ON, and the same
+ * organization has them OFF once the window closes.
+ */
+export const ENTITLEMENTS = {
+  threatMonitoring: 'threat_monitoring',
+  aiInvestigation: 'ai_investigation',
+  responseRecommendations: 'response_recommendations',
+  automaticExecution: 'automatic_execution',
+  evidenceExport: 'evidence_export',
+  incidentPlaybooks: 'incident_playbooks',
+  customIntegrations: 'custom_integrations',
+  customEvidenceTemplates: 'custom_evidence_templates',
+  multiNetwork: 'multi_network',
+  priorityRouting: 'priority_routing',
+} as const;
+
+export type EntitlementKey = (typeof ENTITLEMENTS)[keyof typeof ENTITLEMENTS];
+
+/**
+ * Whether this tenant holds a capability right now.
+ *
+ * Fails closed: an unread plan, an absent entitlements block, or an unknown key
+ * is NOT permission. The backend is the control either way — this only decides
+ * what the UI is allowed to present as available.
+ */
+export function hasEntitlement(
+  plan: AccountPlanResponse | null | undefined,
+  feature: EntitlementKey,
+): boolean {
+  if (!plan || plan.state !== 'available' || !plan.entitlements) {
+    return false;
+  }
+  return plan.entitlements[feature] === true;
+}
+
+/**
+ * True when a capability is withheld because the EVALUATION ended rather than
+ * because the plan never had it. The two have different remedies, and only this
+ * one is "upgrade to Scale to carry on where you left off".
+ */
+export function lockedByEvaluationEnd(
+  plan: AccountPlanResponse | null | undefined,
+  feature: EntitlementKey,
+): boolean {
+  return plan?.lifecycle_state === 'EXPIRED_PILOT' && !hasEntitlement(plan, feature);
+}
+
+/** Shown in the plan panel during an ACTIVE evaluation. States both halves. */
+export const PILOT_EVALUATION_ACCESS_NOTE =
+  'Evaluation access includes Decoda’s core production security workflows. '
+  + 'Production execution remains unavailable during Pilot.';
+
+export interface RestrictedPlanState {
+  title: string;
+  body: string;
+  ctaLabel: string | null;
+  ctaHref: string | null;
+}
+
+/** The upgrade/contact route already in the product. No new billing surface. */
+export const UPGRADE_HREF = '/pricing';
+
+/**
+ * The evaluation-ended / suspended explainer, or null while the tenant is fine.
+ *
+ * Deliberately leads with what is PRESERVED. An expired evaluation loses the
+ * ability to start new work; it loses no data, and saying so first is the
+ * truthful framing of the state the customer is actually in.
+ */
+export function restrictedPlanState(
+  plan: AccountPlanResponse | null | undefined,
+): RestrictedPlanState | null {
+  if (!isRestrictedLifecycle(plan)) {
+    return null;
+  }
+  if (plan?.lifecycle_state === 'SUSPENDED') {
+    return {
+      title: 'Organization suspended',
+      body:
+        'Existing assets, alerts, incidents, and evidence remain available. '
+        + 'Contact Decoda to reactivate this organization.',
+      ctaLabel: null,
+      ctaHref: null,
+    };
+  }
+  return {
+    title: 'Pilot evaluation ended',
+    body:
+      'Your evaluation data remains available. Upgrade to Scale to continue '
+      + 'monitoring and investigation.',
+    ctaLabel: 'Upgrade to Scale',
+    ctaHref: UPGRADE_HREF,
+  };
+}
+
 /** Whether execution runs in recommend-only mode for this tenant. */
 export function isRecommendOnly(plan: AccountPlanResponse | null | undefined): boolean {
   if (!plan || plan.state !== 'available' || !plan.entitlements) {

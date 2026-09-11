@@ -1,13 +1,19 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  ENTITLEMENTS,
+  PILOT_EVALUATION_ACCESS_NOTE,
   PLAN_LABELS,
+  UPGRADE_HREF,
   evaluationCountdownLabel,
+  hasEntitlement,
   isRecommendOnly,
   isRestrictedLifecycle,
+  lockedByEvaluationEnd,
   planBadgeLabel,
   planBadgeTone,
   recommendOnlyNote,
+  restrictedPlanState,
   usageLabel,
   usageRatio,
   type AccountPlanResponse,
@@ -146,5 +152,127 @@ test.describe('recommend-only mode', () => {
     expect(isRecommendOnly(null)).toBe(true);
     expect(isRecommendOnly({ state: 'unavailable' })).toBe(true);
     expect(isRecommendOnly(pilotPlan({ entitlements: null }))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Pilot as a 30-day EVALUATION, not a stripped-down plan.
+//
+// An active evaluation must be able to reach the workflows it was approved to
+// evaluate; the same organization must lose them once the window closes. Both
+// answers come from the entitlements the backend already computed, so nothing
+// here re-derives a plan rule in the browser.
+// ─────────────────────────────────────────────────────────────
+
+/** The effective entitlements the API sends for an ACTIVE Pilot evaluation. */
+const ACTIVE_PILOT_ENTITLEMENTS: Record<string, number | boolean | null> = {
+  threat_monitoring: true,
+  ai_investigation: true,
+  incident_playbooks: true,
+  response_recommendations: true,
+  evidence_export: true,
+  automatic_execution: false,
+  max_workspaces: 1,
+  max_monitored_contracts: 5,
+  max_evidence_packages: 10,
+};
+
+/** …and for the SAME organization after `evaluation_expires_at`. */
+const EXPIRED_PILOT_ENTITLEMENTS: Record<string, number | boolean | null> = {
+  ...ACTIVE_PILOT_ENTITLEMENTS,
+  threat_monitoring: false,
+  ai_investigation: false,
+  incident_playbooks: false,
+  response_recommendations: false,
+  evidence_export: false,
+};
+
+function expiredPilotPlan(): AccountPlanResponse {
+  return pilotPlan({
+    lifecycle_state: 'EXPIRED_PILOT',
+    evaluation: {
+      started_at: '2026-04-01T00:00:00Z',
+      expires_at: '2026-05-01T00:00:00Z',
+      days_remaining: 0,
+      expired: true,
+    },
+    entitlements: EXPIRED_PILOT_ENTITLEMENTS,
+  });
+}
+
+test.describe('pilot evaluation lifecycle', () => {
+  test('an ACTIVE pilot can reach the evaluation workflows', async () => {
+    const plan = pilotPlan({ entitlements: ACTIVE_PILOT_ENTITLEMENTS });
+    for (const feature of [
+      ENTITLEMENTS.threatMonitoring,
+      ENTITLEMENTS.aiInvestigation,
+      ENTITLEMENTS.incidentPlaybooks,
+      ENTITLEMENTS.responseRecommendations,
+      ENTITLEMENTS.evidenceExport,
+    ]) {
+      expect(hasEntitlement(plan, feature), feature).toBe(true);
+      expect(lockedByEvaluationEnd(plan, feature), feature).toBe(false);
+    }
+    expect(restrictedPlanState(plan)).toBeNull();
+    expect(planBadgeLabel(plan)).toBe('Pilot · 23 days left');
+  });
+
+  test('an EXPIRED pilot loses the same workflows, and the reason is the window', async () => {
+    const plan = expiredPilotPlan();
+    for (const feature of [
+      ENTITLEMENTS.aiInvestigation,
+      ENTITLEMENTS.incidentPlaybooks,
+      ENTITLEMENTS.evidenceExport,
+    ]) {
+      expect(hasEntitlement(plan, feature), feature).toBe(false);
+      // Withheld by the EVALUATION ending, not by a plan that never had it —
+      // the two states have different remedies.
+      expect(lockedByEvaluationEnd(plan, feature), feature).toBe(true);
+    }
+    expect(planBadgeLabel(plan)).toBe('Pilot · Evaluation ended');
+    expect(planBadgeTone(plan)).toBe('danger');
+  });
+
+  test('the evaluation-ended state leads with what is preserved and offers the upgrade', async () => {
+    const state = restrictedPlanState(expiredPilotPlan());
+    expect(state).not.toBeNull();
+    expect(state!.title).toBe('Pilot evaluation ended');
+    expect(state!.body).toContain('Your evaluation data remains available');
+    expect(state!.body).toContain('Upgrade to Scale');
+    expect(state!.ctaLabel).toBe('Upgrade to Scale');
+    expect(state!.ctaHref).toBe(UPGRADE_HREF);
+  });
+
+  test('a suspended organization is its own state, with no upgrade CTA', async () => {
+    const state = restrictedPlanState(pilotPlan({ lifecycle_state: 'SUSPENDED' }));
+    expect(state!.title).toBe('Organization suspended');
+    expect(state!.ctaHref).toBeNull();
+  });
+
+  test('an unread plan grants nothing', async () => {
+    expect(hasEntitlement(null, ENTITLEMENTS.incidentPlaybooks)).toBe(false);
+    expect(hasEntitlement({ state: 'unavailable' }, ENTITLEMENTS.incidentPlaybooks)).toBe(false);
+    expect(hasEntitlement(pilotPlan({ entitlements: null }), ENTITLEMENTS.incidentPlaybooks)).toBe(false);
+    expect(restrictedPlanState(null)).toBeNull();
+  });
+
+  test('Scale holds the evaluation workflows with no countdown and no restriction', async () => {
+    const scale = pilotPlan({
+      plan: 'scale',
+      plan_label: 'Scale',
+      lifecycle_state: 'ACTIVE_SCALE',
+      evaluation: null,
+      entitlements: { ...ACTIVE_PILOT_ENTITLEMENTS, priority_routing: true, max_evidence_packages: null },
+    });
+    expect(hasEntitlement(scale, ENTITLEMENTS.incidentPlaybooks)).toBe(true);
+    expect(hasEntitlement(scale, ENTITLEMENTS.priorityRouting)).toBe(true);
+    expect(hasEntitlement(scale, ENTITLEMENTS.automaticExecution)).toBe(false);
+    expect(restrictedPlanState(scale)).toBeNull();
+    expect(evaluationCountdownLabel(scale)).toBeNull();
+  });
+
+  test('the active-evaluation note states both halves of the Pilot bargain', async () => {
+    expect(PILOT_EVALUATION_ACCESS_NOTE).toContain('core production security workflows');
+    expect(PILOT_EVALUATION_ACCESS_NOTE).toContain('Production execution remains unavailable');
   });
 });

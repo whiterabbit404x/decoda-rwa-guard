@@ -34,6 +34,7 @@ import os
 import uuid
 from typing import Any
 
+from services.api.app import entitlements
 from services.api.app import pilot
 from services.api.app import ai_providers
 from services.api.app.ai_providers import ProviderRawResult, TriageProviderError
@@ -1424,6 +1425,12 @@ def request_triage(incident_id: str, request: Any, *, regenerate: bool = False, 
         ).fetchone()
         if incident is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Incident not found.')
+
+        # Queuing a triage job is what spends AI provider compute. Read paths —
+        # the incident, its prior triage results, its evidence snapshots — are
+        # untouched, so an expired evaluation keeps every investigation it has
+        # and simply cannot start another one.
+        pilot.enforce_plan_operation(connection, workspace_id, entitlements.FEATURE_AI_INVESTIGATION)
 
         if not config['enabled']:
             _audit(connection, request=request, action='incident.ai_triage.disabled', incident_id=incident_id,

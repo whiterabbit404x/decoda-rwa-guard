@@ -33,7 +33,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from services.api.app import ai_triage, pilot
+from services.api.app import ai_triage, entitlements, pilot
 
 logger = logging.getLogger(__name__)
 
@@ -1019,6 +1019,11 @@ def rerun_investigation(incident_id: str, request: Any) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         if not forensic_schema_ready(connection):
             return _unavailable(incident_id)
+        # A re-run builds a FRESH evidence snapshot and hands off to the AI
+        # narrative job: new compute, so an expired evaluation is refused here.
+        # GET /incidents/{id}/investigation is untouched — every investigation
+        # the tenant already produced stays readable.
+        pilot.enforce_plan_operation(connection, workspace_id, entitlements.FEATURE_AI_INVESTIGATION)
 
         header = _incident_header(connection, workspace_id=workspace_id, incident_id=incident_id)
         now = pilot.utc_now()
@@ -1086,6 +1091,9 @@ def generate_report(incident_id: str, request: Any) -> dict[str, Any]:
         workspace_id = workspace_context['workspace_id']
         if not forensic_schema_ready(connection):
             return _unavailable(incident_id)
+        # Generating a report persists a NEW cited artifact. Reading an existing
+        # report is a separate, ungated path.
+        pilot.enforce_plan_operation(connection, workspace_id, entitlements.FEATURE_AI_INVESTIGATION)
 
         header = _incident_header(connection, workspace_id=workspace_id, incident_id=incident_id)
         now = pilot.utc_now()

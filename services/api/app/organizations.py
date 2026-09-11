@@ -345,6 +345,11 @@ def resolve_context(
     'reason'}``. ``available`` is False only when the tenancy schema is not yet
     migrated or the workspace could not be resolved at all — states the caller
     reports truthfully rather than papering over with a default plan.
+
+    ``entitlements`` are EFFECTIVE entitlements: plan table plus lifecycle. An
+    active Pilot therefore reports the evaluation workflows it is meant to be
+    testing, and an expired one reports them withdrawn, from the same field —
+    which is what lets one screen render both states without a plan branch.
     """
     if not workspace_id:
         return _unavailable('workspace_context_missing')
@@ -363,7 +368,7 @@ def resolve_context(
         'available': True,
         'reason': None,
         'organization': organization,
-        'entitlements': ent.get_entitlements(organization),
+        'entitlements': ent.effective_entitlements(organization, now=now),
         'lifecycle_state': ent.lifecycle_state(organization, now=now),
     }
 
@@ -376,6 +381,73 @@ def _unavailable(reason: str) -> dict[str, Any]:
         'entitlements': None,
         'lifecycle_state': None,
     }
+
+
+# ── worker due-selection ─────────────────────────────────────────────────────
+#: The ONE SQL statement of "this tenant may not consume budget right now",
+#: written as a NOT EXISTS so a worker can append it to an existing query without
+#: touching any of its joins. Mirrors ``entitlements.monitoring_allowed``: a
+#: suspended organization, or a Pilot whose recorded evaluation deadline has
+#: passed.
+#:
+#: Two absences are deliberately NOT exclusions. A workspace with no organization
+#: link predates migration 0150, and silently stopping its work would be a far
+#: worse failure than briefly not applying the newer rule to it — the API heals
+#: the link on the tenant's next request. And a Pilot with no recorded deadline is
+#: grandfathered: a missing date is not evidence of expiry.
+_INACTIVE_TENANT_EXCLUSION_TEMPLATE = """
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM workspaces tenant_ws
+                  JOIN organizations tenant_org ON tenant_org.id = tenant_ws.organization_id
+                  WHERE tenant_ws.id = {workspace_column}
+                    AND (
+                        tenant_org.status <> 'active'
+                        OR (
+                            tenant_org.plan = 'pilot'
+                            AND tenant_org.evaluation_expires_at IS NOT NULL
+                            AND tenant_org.evaluation_expires_at <= NOW()
+                        )
+                    )
+              )
+"""
+
+
+def inactive_tenant_exclusion_sql(workspace_column: str) -> str:
+    """The exclusion clause for one query, bound to its workspace-id expression."""
+    return _INACTIVE_TENANT_EXCLUSION_TEMPLATE.format(workspace_column=workspace_column)
+
+
+def tenant_exclusion_schema_ready(connection: Any) -> bool:
+    """Whether ``organizations`` and the workspace link column both exist.
+
+    Fails CLOSED on the clause, not on the work: a probe that errors returns
+    False, so the worker keeps running without the newer filter rather than
+    stopping every tenant's monitoring on an information_schema hiccup.
+    """
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM information_schema.tables
+                  WHERE table_schema = 'public' AND table_name = 'organizations') AS org_table,
+                (SELECT COUNT(*) FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = 'workspaces'
+                    AND column_name = 'organization_id') AS link_column
+            """,
+        ).fetchone()
+    except Exception:
+        logger.warning('organization_monitoring_filter_probe_failed action=filter_not_applied')
+        return False
+    data = dict(row or {})
+    return int(data.get('org_table') or 0) >= 1 and int(data.get('link_column') or 0) >= 1
+
+
+def worker_tenant_exclusion_sql(connection: Any, workspace_column: str) -> str:
+    """The exclusion clause, or '' when the tenancy schema is not migrated."""
+    if not tenant_exclusion_schema_ready(connection):
+        return ''
+    return inactive_tenant_exclusion_sql(workspace_column)
 
 
 # ── usage accounting ─────────────────────────────────────────────────────────

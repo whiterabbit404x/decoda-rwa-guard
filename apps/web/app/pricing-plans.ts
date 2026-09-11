@@ -59,11 +59,11 @@ export const PRICING_PLANS: PricingPlan[] = [
   {
     key: 'pilot',
     tier: 'Pilot',
-    price: 'Free Evaluation',
+    price: '30-Day Free Evaluation',
     priceIsLabel: true,
     priceSub: '',
     description:
-      'Validate Decoda’s monitoring, threat detection, and evidence workflows against your live RWA assets.',
+      'Evaluate Decoda’s production security workflows on a limited set of live RWA assets.',
     featured: false,
     ctaLabel: 'Request Pilot →',
     // Approval-only: this goes to the Pilot APPLICATION, not to sign-up. Sending
@@ -71,26 +71,30 @@ export const PRICING_PLANS: PricingPlan[] = [
     // URL received an active evaluation without Decoda approving them.
     ctaHref: '/request-pilot',
     highlights: [
+      '30-day evaluation',
       '1 workspace',
       '5 monitored contracts',
-      'Base Mainnet telemetry',
       'Threat & compliance detection',
-      'Evidence export — up to 10 packages',
+      'Incident investigation & playbooks',
+      'Response recommendations — Recommend only',
+      'Evidence & audit workflows — up to 10 packages',
       'Standard support',
     ],
     comparison: [
       { label: 'Workspaces', value: '1' },
       { label: 'Monitored contracts', value: '5' },
-      { label: 'Networks', value: 'Base Mainnet' },
+      { label: 'Networks', value: 'Supported EVM networks' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Email' },
+      { label: 'Alert routing', value: 'Severity-based routing & escalation' },
       { label: 'Evidence packages', value: 'Up to 10' },
-      { label: 'Export formats', value: 'Standard evidence package' },
+      { label: 'Export formats', value: 'Audit-ready evidence package' },
       { label: 'Custom evidence templates', value: '—' },
-      { label: 'Incident playbooks', value: '—' },
-      { label: 'Audit log retention', value: '30 days' },
-      { label: 'Integrations', value: '—' },
+      { label: 'Incident playbooks', value: '✓ During evaluation' },
+      { label: 'AI investigation', value: '✓ During evaluation' },
+      { label: 'Response execution', value: 'Recommend only' },
+      { label: 'Audit log retention', value: 'Configurable per workspace' },
+      { label: 'Integrations', value: 'Webhook & Slack' },
       { label: 'Support', value: 'Standard' },
       { label: 'SLA', value: '—' },
     ],
@@ -102,7 +106,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     priceIsLabel: false,
     priceSub: '/ month',
     description:
-      'Production-grade monitoring, incident response, and evidence workflows for RWA operations.',
+      'Production monitoring and incident response for ongoing RWA operations.',
     featured: true,
     badge: 'Production',
     // Route preserved: nothing in the app reads the `plan` query parameter, so
@@ -112,26 +116,35 @@ export const PRICING_PLANS: PricingPlan[] = [
     highlights: [
       '3 workspaces',
       '25 monitored contracts',
-      'Base Mainnet telemetry',
+      'Continuous production monitoring',
       'Threat & compliance detection',
       'Priority alert routing',
-      'Unlimited evidence packages',
       'Incident playbooks',
+      'Unlimited evidence packages',
       'Audit-ready exports',
       'Priority email support',
     ],
     comparison: [
       { label: 'Workspaces', value: '3' },
       { label: 'Monitored contracts', value: '25' },
-      { label: 'Networks', value: 'Base Mainnet' },
+      { label: 'Networks', value: 'Supported EVM networks' },
       { label: 'Live EVM telemetry', value: '✓' },
       { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Priority routing' },
+      // Stated as the mechanism both metered plans actually run today. The
+      // `priority_routing` entitlement exists in the engine but no delivery path
+      // reads it yet (entitlements.UNENFORCED_FEATURES), so this row must not
+      // claim a routing behaviour a Pilot evaluator would not also see.
+      { label: 'Alert routing', value: 'Severity-based routing & escalation' },
       { label: 'Evidence packages', value: 'Unlimited' },
       { label: 'Export formats', value: 'Audit-ready exports' },
       { label: 'Custom evidence templates', value: '—' },
       { label: 'Incident playbooks', value: '✓' },
-      { label: 'Audit log retention', value: '1 year' },
+      { label: 'AI investigation', value: '✓' },
+      { label: 'Response execution', value: 'Policy-gated, human-authorized' },
+      // Retention is a per-workspace policy (1–3650 days), not a plan tier. The
+      // old "30 days" / "1 year" rows described a plan-tiered retention the
+      // product does not implement.
+      { label: 'Audit log retention', value: 'Configurable per workspace' },
       { label: 'Integrations', value: 'Webhook & Slack' },
       { label: 'Support', value: 'Priority email' },
       { label: 'SLA', value: '—' },
@@ -170,6 +183,8 @@ export const PRICING_PLANS: PricingPlan[] = [
       { label: 'Export formats', value: 'Compliance & regulatory exports' },
       { label: 'Custom evidence templates', value: '✓' },
       { label: 'Incident playbooks', value: '✓' },
+      { label: 'AI investigation', value: '✓' },
+      { label: 'Response execution', value: 'Policy-gated, human-authorized' },
       { label: 'Audit log retention', value: 'Configurable' },
       { label: 'Integrations', value: 'Enterprise integrations' },
       { label: 'Support', value: 'Dedicated onboarding & support' },
@@ -178,6 +193,15 @@ export const PRICING_PLANS: PricingPlan[] = [
   },
 ];
 
-/** Footnote rendered under the homepage pricing grid. */
+/**
+ * Footnote rendered under the homepage pricing grid.
+ *
+ * Deliberately says nothing about self-serve billing moving an organization onto
+ * Scale. Checkout exists (Paddle), but the provider webhooks write the legacy
+ * workspace `billing_subscriptions` row — they do NOT change `organizations.plan`,
+ * which is what actually governs limits and entitlements. Claiming otherwise would
+ * describe automatic billing behaviour the application does not implement.
+ */
 export const PRICING_NOTE =
-  'Pilot is a scoped evaluation on your live assets. Scale is billed monthly via Paddle from $999. Enterprise pricing is custom — contact sales@decodasecurity.com.';
+  'Pilot is a 30-day, approval-only evaluation with usage limits. Scale is for ongoing '
+  + 'production monitoring. Enterprise pricing is custom — contact sales@decodasecurity.com.';
