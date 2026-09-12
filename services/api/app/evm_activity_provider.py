@@ -1024,6 +1024,80 @@ def last_rpc_health() -> dict[str, Any] | None:
         return dict(last) if isinstance(last, dict) else None
 
 
+def _rpc_reachability_ttl_seconds() -> float:
+    """How long a recorded probe result stays usable as an out-of-band fact."""
+    try:
+        return max(0.0, float(os.getenv('EVM_RPC_REACHABILITY_TTL_SECONDS', '15')))
+    except (TypeError, ValueError):
+        return 15.0
+
+
+def read_path_rpc_timeout_seconds() -> float:
+    """Hard bound for a reachability probe issued from a customer read path.
+
+    Clamped to 1s at the top so no environment can widen a read path back out to
+    the worker's budget. A read path that cannot get an answer inside this bound
+    reports UNKNOWN; it never waits longer to manufacture one.
+    """
+    try:
+        configured = float(os.getenv('EVM_RPC_READ_PATH_TIMEOUT_SECONDS', '1'))
+    except (TypeError, ValueError):
+        configured = 1.0
+    return max(0.05, min(1.0, configured))
+
+
+def cached_rpc_reachability(*, max_age_seconds: float | None = None) -> bool | None:
+    """Reachability from the most recent recorded probe in this process.
+
+    Returns True/False when a probe result is fresh enough to stand in for a new
+    network call, and ``None`` when there is no usable result — which means
+    UNKNOWN, not "unreachable". Callers must fail closed on ``None``.
+
+    The source is the existing ``probe_rpc_health`` record, which the worker
+    health check, /system-health and prior requests already populate, so a
+    dashboard read normally costs nothing.
+    """
+    ttl = _rpc_reachability_ttl_seconds() if max_age_seconds is None else max(0.0, float(max_age_seconds))
+    with _RPC_PROVIDER_LOCK:
+        last = _RPC_PROVIDER_STATE['last_health']
+        recorded_at = float(_RPC_PROVIDER_STATE['last_health_at_monotonic'] or 0.0)
+    if not isinstance(last, dict) or recorded_at <= 0.0:
+        return None
+    if (time.monotonic() - recorded_at) > ttl:
+        return None
+    return bool(last.get('ok'))
+
+
+def probe_rpc_reachable_bounded(rpc_url: str | None) -> bool | None:
+    """One eth_chainId attempt, bounded to <=1s, for a customer read path.
+
+    Returns True on a definite positive, and ``None`` when no definite answer was
+    produced — a timeout, a transport error, an unconfigured URL, or an active
+    provider backoff. ``None`` is UNKNOWN and must never be rendered as reachable
+    or healthy.
+
+    Deliberately single-attempt: retries with backoff belong to the worker, where
+    something is waiting for the data. On a page request they only add latency to
+    an answer the page has already decided to degrade without.
+    """
+    url = (rpc_url or '').strip()
+    if not url:
+        return None
+    if rpc_provider_backoff_active():
+        # Every configured provider is benched after a 429. Probing again would
+        # compound the rate limit, and there is no fresh evidence, so: unknown.
+        return None
+    try:
+        chain_id_hex = JsonRpcClient(
+            url,
+            timeout_seconds_override=read_path_rpc_timeout_seconds(),
+            max_attempts_override=1,
+        ).call('eth_chainId', [])
+    except Exception:
+        return None
+    return True if chain_id_hex else None
+
+
 def reset_rpc_provider_state() -> None:
     """Reset all process-local provider backoff/health/failover state (tests/ops)."""
     with _RPC_PROVIDER_LOCK:
@@ -1486,12 +1560,26 @@ class MarketTelemetryProvider(Protocol):
 @dataclass
 class JsonRpcClient:
     rpc_url: str
+    # Per-call budget overrides. Default None keeps the worker/poll-path budget
+    # (EVM_RPC_TIMEOUT_SECONDS x EVM_RPC_MAX_RETRIES). A customer READ path passes
+    # its own hard bound so it cannot inherit a multi-attempt, tens-of-seconds
+    # budget that no page can wait for.
+    timeout_seconds_override: float | None = None
+    max_attempts_override: int | None = None
 
     def call(self, method: str, params: list[Any]) -> Any:
         payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode('utf-8')
         req = request.Request(self.rpc_url, data=payload, headers={'Content-Type': 'application/json'})
-        timeout = _rpc_timeout_seconds()
-        max_attempts = _rpc_max_attempts()
+        timeout = (
+            _rpc_timeout_seconds()
+            if self.timeout_seconds_override is None
+            else max(0.05, float(self.timeout_seconds_override))
+        )
+        max_attempts = (
+            _rpc_max_attempts()
+            if self.max_attempts_override is None
+            else max(1, int(self.max_attempts_override))
+        )
         backoff = _rpc_backoff_base_seconds()
         # Count this request for the periodic rpc_request_volume_summary (host/method/
         # caller only). One count per call() — inner retries are counted as retries.

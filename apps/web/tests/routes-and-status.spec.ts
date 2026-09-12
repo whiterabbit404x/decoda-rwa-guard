@@ -23,7 +23,13 @@ test('keeps the route split between marketing / and authenticated /dashboard', a
   const pricingPlans = readFileSync(join(appDir, 'pricing-plans.ts'), 'utf8');
   expect(pricingPlans).toContain('/sign-up');
   expect(dashboardPage).toContain('DashboardLiveHydrator');
-  expect(dashboardPage).toContain('fetchDashboardPageData');
+  // The dashboard route must NOT pre-fetch the aggregate payload server-side.
+  // It carried no auth headers so it could never return usable data, and the
+  // result was discarded by DashboardExecutiveSummary — it only delayed the
+  // loading skeleton. The route renders the hydrator and the client loads its
+  // own workspace-scoped payload.
+  expect(dashboardPage).not.toContain('fetchDashboardPageData');
+  expect(dashboardPage).not.toContain('initialData');
 });
 
 test('defines authenticated navigation for dashboard, feature routes, history, and settings', async () => {

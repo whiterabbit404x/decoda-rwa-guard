@@ -50,6 +50,7 @@ from services.api.app.evidence_signing import signing_key_status
 from services.api.app.production_readiness import build_production_readiness
 from services.api.app.paid_launch_readiness import check_billing_readiness
 from services.api.app.observability import current_trace_id, increment, gauge, observe, report_error, span, send_external_oncall_alert
+from services.api.app import dashboard_timing
 from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
 from services.api.app import entitlements as plan_entitlement_engine
 from services.api.app import organizations as organization_service
@@ -673,7 +674,11 @@ def pg_connection() -> Iterable[Any]:
         except Exception as exc:
             increment('decoda_database_failures_total', error_type=type(exc).__name__)
             raise
-        observe('decoda_database_connection_wait_seconds', monotonic() - started)
+        connect_elapsed = monotonic() - started
+        observe('decoda_database_connection_wait_seconds', connect_elapsed)
+        # There is no pool: every call here is a fresh TCP+TLS+auth handshake, so the
+        # per-request connection count and cost are part of the dashboard critical path.
+        dashboard_timing.record_db_connect(connect_elapsed * 1000.0)
         with span('database.connection', backend='postgres'):
             with connection:
                 yield connection

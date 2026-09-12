@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
+import { markDashboardPerf } from 'app/dashboard-perf';
 import { PilotAccessRequired, usePilotAccessState } from 'app/pilot-access-gate';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
@@ -21,6 +22,16 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   const { state: pilotAccessState } = usePilotAccessState();
 
   const currentPath = `${pathname || '/dashboard'}${searchParams?.toString() ? `?${searchParams.toString()}` : ''}`;
+
+  // Marks the moment this gate stops replacing children with the "Loading
+  // workspace…" panel — i.e. when the page's own data fetching can begin.
+  const workspaceReadyMarked = useRef(false);
+  const workspaceGateOpen = !loading && isAuthenticated && Boolean(user?.current_workspace);
+  useEffect(() => {
+    if (!workspaceGateOpen || workspaceReadyMarked.current) return;
+    workspaceReadyMarked.current = true;
+    markDashboardPerf('workspace.ready');
+  }, [workspaceGateOpen]);
 
   useEffect(() => {
     if (!loading && liveModeConfigured && !isAuthenticated) {

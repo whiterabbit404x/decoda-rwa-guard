@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { classifyAuthResponseError, classifyAuthTransportError } from './auth-diagnostics';
+import { markDashboardPerf } from './dashboard-perf';
 import { AuthStateError, EMAIL_NOT_VERIFIED_CODE, isEmailNotVerifiedResponse } from './sign-in/email-verification-state';
 import { normalizeWorkspaceHeaderValue } from './workspace-header';
 import type { RuntimeConfig } from './runtime-config-schema';
@@ -240,22 +241,29 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return headers;
   }, [accessToken, csrfToken, user?.current_workspace?.id, user?.current_workspace_id]);
 
-  // Fetches a fresh HMAC-signed CSRF token from the backend (via proxy) and stores
-  // it in both React state and the decoda_csrf cookie so all mutation paths are valid.
-  const fetchAndStoreCsrfToken = useCallback(async (): Promise<string | null> => {
+  // Network only — no state write, so a caller can start this in parallel with
+  // another request and decide afterwards whether the token should be applied.
+  // Returns null on any failure; a null must never be stored as a ready token.
+  const fetchCsrfToken = useCallback(async (): Promise<string | null> => {
     try {
       const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
       if (!csrfResponse.ok) {
         return null;
       }
       const csrfPayload = await csrfResponse.json().catch(() => ({}));
-      const token = typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null;
-      setCsrfToken(token);
-      return token;
+      return typeof csrfPayload.csrfToken === 'string' ? csrfPayload.csrfToken : null;
     } catch {
       return null;
     }
   }, []);
+
+  // Fetches a fresh HMAC-signed CSRF token from the backend (via proxy) and stores
+  // it in both React state and the decoda_csrf cookie so all mutation paths are valid.
+  const fetchAndStoreCsrfToken = useCallback(async (): Promise<string | null> => {
+    const token = await fetchCsrfToken();
+    setCsrfToken(token);
+    return token;
+  }, [fetchCsrfToken]);
 
   const refreshUser = useCallback(async () => {
     if (typeof window === 'undefined') {
@@ -270,9 +278,17 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       phase: 'request',
       path: '/api/auth/me',
     });
+    // /api/auth/csrf is an unauthenticated bootstrap endpoint, so it does not
+    // depend on the /auth/me result and can be in flight at the same time
+    // instead of adding a second serial round trip to the auth leg. The token
+    // is only APPLIED on the success path below, so a signed-out session still
+    // ends with csrfToken null and csrfReady false, exactly as before.
+    const csrfTokenPromise = fetchCsrfToken();
+    const swallowUnusedCsrf = () => { void csrfTokenPromise.catch(() => null); };
     const response = await fetch('/api/auth/me', { cache: 'no-store' });
 
     if (!response.ok) {
+      swallowUnusedCsrf();
       const data = await readApiResponse<{ detail?: string }>(response).catch((): ApiResponsePayload<{ detail?: string }> => ({
         detail: 'Your session expired. Please sign in again.',
       }));
@@ -291,6 +307,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
 
     const payload = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
     if (!payload.user) {
+      swallowUnusedCsrf();
       setUser(null);
       setMfaChallengeToken(null);
       setAccessToken(null);
@@ -307,7 +324,9 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (restoredToken) {
       setAccessToken(restoredToken);
     }
-    await fetchAndStoreCsrfToken();
+    // Already in flight since before /auth/me was awaited. csrfReady stays false
+    // until this resolves to a real token — a null is stored as null, never as ready.
+    setCsrfToken(await csrfTokenPromise);
     setSessionLoading(false);
     console.debug('[dashboard-page-data trace] source=auth-session-restore', {
       phase: 'response-success',
@@ -315,7 +334,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       userId: payload.user.id,
     });
     return payload.user;
-  }, [configLoading, fetchAndStoreCsrfToken]);
+  }, [configLoading, fetchCsrfToken]);
 
   useEffect(() => {
     let active = true;
@@ -748,6 +767,15 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [authHeaders, signOut]);
 
   const loading = configLoading || sessionLoading;
+
+  // Marks the end of the auth bootstrap leg (runtime-config -> /auth/me -> CSRF).
+  // Everything gated behind AuthenticatedRoute is blocked until this flips.
+  const sessionReadyMarked = useRef(false);
+  useEffect(() => {
+    if (loading || sessionReadyMarked.current) return;
+    sessionReadyMarked.current = true;
+    markDashboardPerf('session.ready', { authenticated: Boolean(user) });
+  }, [loading, user]);
 
   const value = useMemo<PilotAuthContextValue>(() => ({
     apiUrl: runtimeConfig.apiUrl ?? '',

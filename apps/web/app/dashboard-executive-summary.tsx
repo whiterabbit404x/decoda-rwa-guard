@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
-import type { DashboardPageData } from './dashboard-data';
+import { markDashboardPerf } from './dashboard-perf';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
   StatusPill,
@@ -63,7 +63,6 @@ function activeAlertsMeta(data: ExecutiveSummary): string {
 }
 
 type Props = {
-  data?: DashboardPageData;
   liveFeed?: ReturnType<typeof useLiveWorkspaceFeed>;
 };
 
@@ -89,12 +88,18 @@ function useExecutiveSummary(refreshSignal: string | null | undefined) {
       if (inFlight.current) return;
       inFlight.current = true;
       setState((prev) => ({ ...prev, refreshing: isRefresh, status: prev.data ? prev.status : 'loading' }));
+      if (!isRefresh) {
+        markDashboardPerf('summary.request.start');
+      }
       try {
         const response = await fetch(EXECUTIVE_SUMMARY_ENDPOINT, {
           method: 'GET',
           headers: { Accept: 'application/json', ...authHeaders(workspaceId) },
           cache: 'no-store',
         });
+        if (!isRefresh) {
+          markDashboardPerf('summary.response', { ok: response.ok, status: response.status });
+        }
         if (!response.ok) {
           throw new Error(`Dashboard request failed (${response.status})`);
         }
@@ -137,6 +142,17 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
   const { status, data, error, refreshing, reload } = useExecutiveSummary(refreshSignal);
   const [briefOpen, setBriefOpen] = useState(false);
   const streamStatus = liveFeed?.streamStatus ?? 'disconnected';
+
+  // Closes the critical-path timeline: the skeleton below clears when the load
+  // resolves either way, so an error state is recorded as an end too rather
+  // than leaving the measurement open.
+  const skeletonVisible = status === 'loading' && !data;
+  const skeletonDismissed = useRef(false);
+  useEffect(() => {
+    if (skeletonVisible || skeletonDismissed.current) return;
+    skeletonDismissed.current = true;
+    markDashboardPerf('dashboard.skeleton.dismissed', { outcome: data ? 'ready' : status });
+  }, [skeletonVisible, status, data]);
 
   return (
     <main className="container productPage dashboardExecPage">
