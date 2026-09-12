@@ -8307,13 +8307,22 @@ def monitoring_runtime_status(
                 cached_at, cached_payload = cached
                 if (perf_counter() - cached_at) <= RUNTIME_STATUS_CACHE_TTL_SECONDS:
                     cache_key = candidate_key
+                    # Without this flag a small `runtime_status_ms` is ambiguous
+                    # between "served from this 15s cache" and "genuinely fast",
+                    # which is the difference between a real improvement and a
+                    # warm cache hiding the cost.
+                    dashboard_timing.record_flag('runtime_status_cache', 'hit')
                     return dict(cached_payload)
             if header_workspace_id:
                 cache_key = f'workspace:{header_workspace_id}'
             elif header_workspace_slug:
                 cache_key = f'workspace_slug:{header_workspace_slug}'
+            dashboard_timing.record_flag('runtime_status_cache', 'miss')
         except Exception:
             cache_key = None
+    else:
+        # No request means no workspace headers and so no cache key to look up.
+        dashboard_timing.record_flag('runtime_status_cache', 'unkeyed')
 
     def _persist_workspace_context(
         req: Request | None,
@@ -8595,6 +8604,11 @@ def monitoring_runtime_status(
                 checkpoint_durations_ms[previous_checkpoint] = checkpoint_durations_ms.get(previous_checkpoint, 0.0) + elapsed_ms
                 completed_checkpoints.append(previous_checkpoint)
                 RUNTIME_STATUS_QUERY_PROFILE_HISTORY[previous_checkpoint].append(elapsed_ms)
+                # Mirror the checkpoint into the per-request collector so the
+                # slowest individual steps land on the same log line as the
+                # connection and query totals. The duration is already computed
+                # here; this adds no measurement, only attribution.
+                dashboard_timing.record_phase(f'ckpt.{previous_checkpoint}', elapsed_ms)
             last_query_checkpoint = label
             checkpoint_started_at = now_counter
 

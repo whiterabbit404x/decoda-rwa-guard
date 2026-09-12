@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Iterator
 
-from services.api.app.observability import observe
+from services.api.app.observability import increment, observe
 
 logger = logging.getLogger('decoda.dashboard.timing')
 
@@ -184,4 +184,27 @@ def _emit(collector: DashboardTiming) -> None:
             value / 1000.0,
             route=collector.route,
             phase=name,
+        )
+
+    # Counters and flags go to /metrics as well as the log line. Durations alone
+    # do not answer the questions that matter here -- how many connections a
+    # request opened, whether a fast phase was a cache hit, whether a caller led
+    # or joined the single-flight -- and /metrics is reachable from a capture
+    # harness that has no access to the API's stdout. Every label below is
+    # low-cardinality (a phase name, a role, a boolean), so this does not grow
+    # the series count with traffic.
+    for name, count in collector.counters.items():
+        increment(
+            'decoda_dashboard_counter_total',
+            count,
+            route=collector.route,
+            counter=name,
+        )
+    for name, value in collector.flags.items():
+        increment(
+            'decoda_dashboard_flag_total',
+            1,
+            route=collector.route,
+            flag=name,
+            state=str(value),
         )

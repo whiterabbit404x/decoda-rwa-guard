@@ -2298,7 +2298,11 @@ async def body_size_limit_middleware(request: Request, call_next):
 
 @app.get('/auth/csrf-token', summary='Issue a CSRF token for state-changing requests')
 def auth_csrf_token_endpoint() -> dict[str, Any]:
-    return {'csrf_token': issue_csrf_token()}
+    # Touches no database. Timed anyway because it runs on the dashboard's
+    # critical path: measuring ~0 here is what proves any latency the browser
+    # sees on /api/auth/csrf belongs to the proxy hop, not to this handler.
+    with dashboard_timing.dashboard_timing('auth_csrf_token'):
+        return {'csrf_token': issue_csrf_token()}
 
 
 @app.get('/health', summary='API health check', description='Returns the API runtime mode and local persistence configuration.')
@@ -2902,7 +2906,12 @@ def auth_sessions_revoke(payload: dict[str, Any], request: Request) -> dict[str,
 
 @app.get('/auth/me', summary='Current authenticated live-mode user')
 def auth_me(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: {'mode': pilot_mode(), 'user': authenticate_request(request)})
+    # On the dashboard's critical path: the page cannot start fetching its own
+    # data until this resolves, and `authenticate_request` opens a fresh
+    # connection of its own. Timed so that leg is attributable rather than
+    # inferred from the browser's network panel.
+    with dashboard_timing.dashboard_timing('auth_me'):
+        return with_auth_schema_json(lambda: {'mode': pilot_mode(), 'user': authenticate_request(request)})
 
 
 @app.post('/auth/resend-verification', summary='Resend email verification link')
