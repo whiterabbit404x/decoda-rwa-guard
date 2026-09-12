@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof validate-niw-positioning
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof validate-niw-positioning capture-dashboard-timings test-dashboard-timing
 
 up:
 	docker compose up -d
@@ -165,6 +165,26 @@ verify-session4: test-session4-backend test-session4-web
 
 test-release-proof-artifacts:
 	python -m pytest services/api/tests/test_release_proof_artifacts.py -q
+
+# Drive N consecutive /dashboard loads and write one timing artifact under
+# artifacts/dashboard-timing/. Measurement only -- it changes no application
+# behaviour and writes nothing to the product database.
+#
+# Credentials come from the environment, never the command line:
+#   DECODA_CAPTURE_EMAIL, DECODA_CAPTURE_PASSWORD (or answer the prompt),
+#   or CAPTURE_ARGS="--storage-state auth.json" from a previous sign-in.
+# Point it at a deployment with DECODA_CAPTURE_BASE_URL / DECODA_CAPTURE_API_URL,
+# and pass anything else through CAPTURE_ARGS, e.g.
+#   make capture-dashboard-timings CAPTURE_ARGS="--loads 5 --settle 20"
+capture-dashboard-timings:
+	node scripts/capture-dashboard-timings.mjs $(CAPTURE_ARGS)
+
+# The instrumentation's own tests. Neither module had coverage before, and a
+# collector that silently drops a phase yields a timing table that looks
+# complete and is wrong.
+test-dashboard-timing:
+	python -m pytest services/api/tests/test_dashboard_timing.py -q
+	cd apps/web && npx playwright test tests/dashboard-perf.spec.ts
 
 generate-release-proof:
 	python scripts/generate_release_proof.py --mode local

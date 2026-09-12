@@ -187,6 +187,7 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   const response = await fetch('/api/runtime-config', {
     cache: 'no-store',
   });
+  markDashboardPerf('runtime-config.response', { ok: response.ok, status: response.status });
 
   if (!response.ok) {
     throw new Error(`Runtime config request failed with HTTP ${response.status}.`);
@@ -247,6 +248,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const fetchCsrfToken = useCallback(async (): Promise<string | null> => {
     try {
       const csrfResponse = await fetch('/api/auth/csrf', { cache: 'no-store' });
+      markDashboardPerf('auth.csrf.response', { ok: csrfResponse.ok, status: csrfResponse.status });
       if (!csrfResponse.ok) {
         return null;
       }
@@ -286,6 +288,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     const csrfTokenPromise = fetchCsrfToken();
     const swallowUnusedCsrf = () => { void csrfTokenPromise.catch(() => null); };
     const response = await fetch('/api/auth/me', { cache: 'no-store' });
+    markDashboardPerf('auth.me.response', { ok: response.ok, status: response.status });
 
     if (!response.ok) {
       swallowUnusedCsrf();

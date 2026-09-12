@@ -9,12 +9,16 @@ export default function AppNavigation({ currentPath, onNavAttempt }: { currentPa
   const isDev = process.env.NODE_ENV !== 'production';
 
   function logNavClick(targetHref: string) {
-    if (!isDev) {
-      return;
-    }
-
+    // Recorded in every environment, not just development: it is the epoch a
+    // client-side navigation back to /dashboard is measured from, so gating it
+    // on dev left production SPA navigations timed against the original
+    // document navigation. One `performance.now()` read on a click.
     if (targetHref === '/dashboard' && typeof window !== 'undefined') {
       (window as Window & { __dashboardNavClickAtMs?: number }).__dashboardNavClickAtMs = performance.now();
+    }
+
+    if (!isDev) {
+      return;
     }
 
     console.info('[nav-debug] sidebar click', {
