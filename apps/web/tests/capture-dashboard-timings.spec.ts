@@ -20,6 +20,14 @@ type Harness = {
   redact: (text: string) => string;
   sumCounter: (counters: Record<string, number>, name: string) => number | null;
   sumPhase: (phases: Record<string, number>, name: string) => number | null;
+  flagRoutes: (flags: Record<string, number>) => string[];
+  flagState: (flags: Record<string, number>, route: string, flagName: string) => string | null;
+  otherFlags: (flags: Record<string, number>, route: string) => string | null;
+  topCheckpoints: (
+    phases: Record<string, number>,
+    limit?: number,
+  ) => { route: string; phase: string; ms: number }[];
+  renderMarkdown: (rows: unknown[], args: { baseUrl: string; apiUrl: string; settleMs: number }) => string;
 };
 
 let backendDeltas: Harness['backendDeltas'];
@@ -27,10 +35,17 @@ let parseMetrics: Harness['parseMetrics'];
 let redact: Harness['redact'];
 let sumCounter: Harness['sumCounter'];
 let sumPhase: Harness['sumPhase'];
+let flagRoutes: Harness['flagRoutes'];
+let flagState: Harness['flagState'];
+let otherFlags: Harness['otherFlags'];
+let topCheckpoints: Harness['topCheckpoints'];
+let renderMarkdown: Harness['renderMarkdown'];
 
 test.beforeAll(async () => {
   const harness: Harness = await import(pathToFileURL(HARNESS_PATH).href);
   ({ backendDeltas, parseMetrics, redact, sumCounter, sumPhase } = harness);
+  ({ flagRoutes, flagState, otherFlags, topCheckpoints } = harness);
+  ({ renderMarkdown } = harness);
 });
 
 /**
@@ -152,5 +167,207 @@ test.describe('redaction keeps secrets out of the artifact', () => {
     const output = redact('Failed to load resource: the server responded with a status of 504');
     expect(output).toContain('Failed to load resource');
     expect(output).toContain('504');
+  });
+});
+
+/**
+ * The per-load reporting. The capture is read one load at a time -- "was THIS
+ * load a cache hit, and what was slow on it" -- and a view that only sums across
+ * loads cannot answer that, because the cold load and the cached load are
+ * exactly the two cases being compared.
+ */
+test.describe('per-load flag and checkpoint reporting', () => {
+  test('a flag is reported per route, not collapsed across routes', () => {
+    // Both the executive summary and the standalone runtime-status endpoint
+    // report runtime_status_cache, and within one load they legitimately
+    // disagree: one computes and the other reads the cache it just wrote.
+    // Collapsing them would invent one answer where the measurement has two.
+    const flags = {
+      'ops_dashboard_executive_summary:runtime_status_cache=miss': 1,
+      'ops_monitoring_runtime_status:runtime_status_cache=hit': 1,
+    };
+
+    expect(flagState(flags, 'ops_dashboard_executive_summary', 'runtime_status_cache')).toBe('miss');
+    expect(flagState(flags, 'ops_monitoring_runtime_status', 'runtime_status_cache')).toBe('hit');
+  });
+
+  test('a route that never reported the flag is null, not a guess', () => {
+    const flags = { 'ops_dashboard_executive_summary:runtime_status_cache=hit': 1 };
+
+    // "This route did not report" must not read as "this route reported a miss".
+    expect(flagState(flags, 'auth_me', 'runtime_status_cache')).toBeNull();
+    expect(flagState({}, 'ops_dashboard_executive_summary', 'response_cache_hit')).toBeNull();
+  });
+
+  test('a flag seen more than once in a load keeps its count', () => {
+    const flags = { 'ops_monitoring_runtime_status:runtime_status_single_flight=joined': 3 };
+
+    expect(flagState(flags, 'ops_monitoring_runtime_status', 'runtime_status_single_flight')).toBe('joined x3');
+  });
+
+  test('two states for one route in one load are both shown', () => {
+    const flags = {
+      'ops_monitoring_runtime_status:runtime_status_cache=hit': 1,
+      'ops_monitoring_runtime_status:runtime_status_cache=miss': 1,
+    };
+
+    expect(flagState(flags, 'ops_monitoring_runtime_status', 'runtime_status_cache')).toBe('hit, miss');
+  });
+
+  test('routes reporting flags are listed once, sorted', () => {
+    const flags = {
+      'ops_monitoring_runtime_status:runtime_status_cache=hit': 1,
+      'ops_monitoring_runtime_status:rpc_reachable=True': 1,
+      'ops_dashboard_executive_summary:response_cache_hit=False': 1,
+    };
+
+    expect(flagRoutes(flags)).toEqual([
+      'ops_dashboard_executive_summary',
+      'ops_monitoring_runtime_status',
+    ]);
+  });
+
+  test('flags without a column of their own are still reported', () => {
+    // rpc_reachable is how a fast rpc_probe_ms is told apart from a skipped one.
+    const flags = {
+      'ops_monitoring_runtime_status:runtime_status_cache=hit': 1,
+      'ops_monitoring_runtime_status:rpc_reachable=True': 1,
+      'ops_monitoring_runtime_status:rpc_reachability_source=cached_probe': 1,
+    };
+
+    const rest = otherFlags(flags, 'ops_monitoring_runtime_status');
+    expect(rest).toContain('rpc_reachable=True');
+    expect(rest).toContain('rpc_reachability_source=cached_probe');
+    // The headline flag has its own column and must not be duplicated here.
+    expect(rest).not.toContain('runtime_status_cache');
+  });
+
+  test('checkpoints are ranked slowest first within one load', () => {
+    const phases = {
+      'ops_monitoring_runtime_status:ckpt.count_open_alerts': 40,
+      'ops_monitoring_runtime_status:ckpt.load_targets': 120,
+      'ops_monitoring_runtime_status:ckpt.count_assets': 80,
+    };
+
+    expect(topCheckpoints(phases).map((entry) => entry.phase)).toEqual([
+      'ckpt.load_targets',
+      'ckpt.count_assets',
+      'ckpt.count_open_alerts',
+    ]);
+  });
+
+  test('only checkpoints are ranked, and the route is kept', () => {
+    const phases = {
+      'ops_dashboard_executive_summary:build_summary_ms': 900,
+      'ops_dashboard_executive_summary:ckpt.load_targets': 120,
+      'ops_monitoring_runtime_status:ckpt.load_targets': 60,
+    };
+
+    const ranked = topCheckpoints(phases);
+    // build_summary_ms is a phase, not a checkpoint, and has its own column.
+    expect(ranked).toHaveLength(2);
+    // The same checkpoint under two routes stays two rows: they are two
+    // separate computations within the load, not one to be merged.
+    expect(ranked[0]).toEqual({
+      route: 'ops_dashboard_executive_summary',
+      phase: 'ckpt.load_targets',
+      ms: 120,
+    });
+    expect(ranked[1].route).toBe('ops_monitoring_runtime_status');
+  });
+
+  test('the ranking is capped at the requested limit', () => {
+    const phases: Record<string, number> = {};
+    for (let index = 0; index < 25; index += 1) {
+      phases[`ops_monitoring_runtime_status:ckpt.query_${index}`] = index;
+    }
+
+    expect(topCheckpoints(phases, 10)).toHaveLength(10);
+    expect(topCheckpoints(phases, 10)[0].ms).toBe(24);
+  });
+
+  test('a load with no checkpoints ranks nothing rather than throwing', () => {
+    expect(topCheckpoints({})).toEqual([]);
+  });
+});
+
+/**
+ * The report itself. Correct helpers wired in wrongly still produce a table that
+ * looks complete and is wrong, which is the failure mode this whole artifact
+ * exists to avoid -- so assert on the rendered document, not only its parts.
+ */
+test.describe('rendered report', () => {
+  const ARGS = { baseUrl: 'https://app.example.com', apiUrl: 'https://api.example.com', settleMs: 0 };
+
+  const ROW = {
+    load: 1,
+    skeletonDismissed: true,
+    wallClockMs: 5120,
+    marks: { 'auth.me.response': 800, 'dashboard.skeleton.dismissed': 4950 },
+    criticalPath: null,
+    network: { '/api/auth/me': 420, '/api/dashboard/executive-summary': 3100 },
+    backend: {
+      phases: {
+        'ops_dashboard_executive_summary:runtime_status_ms': 2600,
+        'ops_dashboard_executive_summary:build_summary_ms': 900,
+        'ops_monitoring_runtime_status:ckpt.load_targets': 310,
+        'ops_dashboard_executive_summary:ckpt.count_assets': 120,
+      },
+      counters: {
+        'ops_dashboard_executive_summary:db_connect_count': 4,
+        'ops_dashboard_executive_summary:db_query_count': 44,
+      },
+      flags: {
+        'ops_dashboard_executive_summary:runtime_status_cache=miss': 1,
+        'ops_dashboard_executive_summary:response_cache_hit=False': 1,
+        'ops_monitoring_runtime_status:runtime_status_cache=hit': 1,
+        'ops_monitoring_runtime_status:rpc_reachable=True': 1,
+      },
+      requests: { ops_dashboard_executive_summary: 3600 },
+    },
+    consoleErrors: [],
+  };
+
+  test('network legs are rendered per load', () => {
+    const markdown = renderMarkdown([ROW], ARGS);
+
+    expect(markdown).toContain('## Network legs');
+    expect(markdown).toContain('/api/dashboard/executive-summary');
+    expect(markdown).toContain('3100');
+  });
+
+  test('both routes appear with their own cache state', () => {
+    const markdown = renderMarkdown([ROW], ARGS);
+
+    // The two routes disagreed within this load; the report must show both,
+    // on their own rows, rather than collapsing to a single verdict.
+    const rows = markdown.split('\n');
+    expect(rows.some((line) => line.includes('| ops_dashboard_executive_summary |') && line.includes('miss'))).toBe(true);
+    expect(rows.some((line) => line.includes('| ops_monitoring_runtime_status |') && line.includes('hit'))).toBe(true);
+    // A flag with no column of its own is still reported.
+    expect(markdown).toContain('rpc_reachable=True');
+  });
+
+  test('checkpoints are rendered per load as well as summed', () => {
+    const markdown = renderMarkdown([ROW], ARGS);
+
+    expect(markdown).toContain('top 10 per load');
+    expect(markdown).toContain('summed across loads');
+    expect(markdown).toContain('ckpt.load_targets');
+  });
+
+  test('an unmeasured value renders as a dash, never as zero', () => {
+    const empty = {
+      ...ROW,
+      load: 2,
+      marks: {},
+      network: {},
+      backend: { phases: {}, counters: {}, flags: {}, requests: {} },
+    };
+
+    const markdown = renderMarkdown([empty], ARGS);
+    // "Not measured" must stay visibly distinct from "measured as zero".
+    expect(markdown).toContain('—');
+    expect(markdown).toContain('is a fact about');
   });
 });

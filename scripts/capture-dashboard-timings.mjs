@@ -29,6 +29,22 @@
  *     --api-url  https://api.example.com \
  *     --loads 5
  *
+ * Capturing the cached path and the cold path:
+ *
+ *   # cold -- gap exceeds RUNTIME_STATUS_CACHE_TTL_SECONDS (default 15), so each
+ *   # load recomputes. Idle ~20s first: --settle only sleeps BETWEEN loads, so
+ *   # load 1 has no lead-in. Run this one first, so it does not inherit a cache.
+ *   ... --loads 5 --settle 20 --out artifacts/dashboard-timing/out-of-ttl
+ *
+ *   # cached -- over-sample and keep the loads whose measured
+ *   # `runtime_status_cache` reads `hit`. A load that itself takes ~5s walks the
+ *   # gap forward, so --settle 0 alone does not keep 5 loads inside a 15s TTL.
+ *   ... --loads 10 --settle 0 --out artifacts/dashboard-timing/in-ttl
+ *
+ * A load is inside the TTL because the flag says `hit`, never because of the gap
+ * we asked for. The report prints that flag per load and per route for exactly
+ * this reason: an assumed cache state is not a measured one.
+ *
  * There is deliberately no --password flag: a password on the command line
  * lands in shell history and in the process table, where any other user on the
  * box can read it. The password comes from DECODA_CAPTURE_PASSWORD or, when that
@@ -75,6 +91,32 @@ const HEADLINE_MARKS = [
   'dashboard.skeleton.dismissed',
 ];
 
+/**
+ * Flags that get a column of their own rather than being folded into the
+ * catch-all list. These are the three that change how a duration should be
+ * read: a small `runtime_status_ms` means nothing until you know whether it was
+ * a cache hit, whether this caller led or joined the single-flight, and whether
+ * the response cache answered.
+ */
+const HEADLINE_FLAGS = [
+  'runtime_status_cache',
+  'runtime_status_single_flight',
+  'response_cache_hit',
+];
+
+/**
+ * Network legs worth a column, in the order the browser issues them.
+ * `/api/runtime-config` blocks the auth pair, which in turn blocks the summary,
+ * so a slow leg early here explains far more than its own duration.
+ */
+const HEADLINE_NETWORK = [
+  '/api/runtime-config',
+  '/api/auth/csrf',
+  '/api/auth/me',
+  '/api/dashboard/executive-summary',
+  '/api/ops/monitoring/runtime-status',
+];
+
 function parseArgs(argv) {
   const args = {
     loads: 5,
@@ -105,8 +147,12 @@ function parseArgs(argv) {
         );
       case '--storage-state': args.storageState = value; i += 1; break;
       case '--out': args.out = value; i += 1; break;
-      // Seconds between loads. 0 keeps loads inside the 15s runtime-status TTL
-      // (measuring the cached path); >15 forces a cold computation each time.
+      // Seconds between loads. >15 (the RUNTIME_STATUS_CACHE_TTL_SECONDS default)
+      // forces a cold computation each time. 0 measures the cached path, but does
+      // NOT guarantee every load lands inside the TTL: a load that itself takes
+      // ~5s walks the gap forward, so load 4 or 5 can expire it. Over-sample with
+      // a larger --loads and select the loads whose measured `runtime_status_cache`
+      // reads `hit` -- the flag is the fact, the gap is only an intention.
       case '--settle': args.settleMs = Number(value) * 1000; i += 1; break;
       case '--timeout': args.timeoutMs = Number(value) * 1000; i += 1; break;
       case '--headed': args.headed = true; break;
@@ -307,6 +353,74 @@ export function sumCounter(counters, counterName) {
   return seen ? total : null;
 }
 
+/** Every route that reported at least one flag in this load. */
+export function flagRoutes(flags) {
+  const routes = new Set();
+  for (const key of Object.keys(flags)) {
+    routes.add(key.split(':')[0]);
+  }
+  return [...routes].sort();
+}
+
+/**
+ * The state of one flag for ONE route, e.g. runtime_status_cache on
+ * ops_dashboard_executive_summary.
+ *
+ * Deliberately not summed across routes. Both the executive summary and the
+ * standalone runtime-status endpoint report `runtime_status_cache`, and they can
+ * legitimately disagree within a single load -- one computes and the other joins
+ * or reads the cache it just wrote. Collapsing them would invent a single answer
+ * where the measurement has two.
+ */
+export function flagState(flags, route, flagName) {
+  const prefix = `${route}:${flagName}=`;
+  const states = [];
+  for (const [key, count] of Object.entries(flags)) {
+    if (!key.startsWith(prefix)) {
+      continue;
+    }
+    const state = key.slice(prefix.length);
+    states.push(count > 1 ? `${state} x${count}` : state);
+  }
+  return states.length > 0 ? states.sort().join(', ') : null;
+}
+
+/** Flags for one route that have no column of their own. */
+export function otherFlags(flags, route) {
+  const rest = [];
+  for (const [key, count] of Object.entries(flags)) {
+    if (!key.startsWith(`${route}:`)) {
+      continue;
+    }
+    const name = key.slice(route.length + 1).split('=')[0];
+    if (HEADLINE_FLAGS.includes(name)) {
+      continue;
+    }
+    const shown = key.slice(route.length + 1);
+    rest.push(count > 1 ? `${shown} x${count}` : shown);
+  }
+  return rest.length > 0 ? rest.sort().join(', ') : null;
+}
+
+/**
+ * The slowest `ckpt.*` phases within ONE load, slowest first.
+ *
+ * The summed-across-loads view answers "what is generally slow"; this answers
+ * "what was slow on the cold load specifically", which is the one that differs
+ * between a cache hit and a miss.
+ */
+export function topCheckpoints(phases, limit = 10) {
+  const checkpoints = [];
+  for (const [key, ms] of Object.entries(phases)) {
+    const route = key.split(':')[0];
+    const phase = key.slice(route.length + 1);
+    if (phase.startsWith('ckpt.')) {
+      checkpoints.push({ route, phase, ms });
+    }
+  }
+  return checkpoints.sort((a, b) => b.ms - a.ms).slice(0, limit);
+}
+
 async function signIn(context, args) {
   const page = await context.newPage();
   await page.goto(`${args.baseUrl.replace(/\/$/, '')}/sign-in`, { waitUntil: 'domcontentloaded' });
@@ -418,7 +532,7 @@ function cell(value) {
   return typeof value === 'number' ? String(value) : String(value);
 }
 
-function renderMarkdown(rows, args) {
+export function renderMarkdown(rows, args) {
   const lines = [];
   lines.push('# Dashboard load timings');
   lines.push('');
@@ -443,6 +557,19 @@ function renderMarkdown(rows, args) {
   }
   lines.push('');
 
+  lines.push('## Network legs (request duration, browser-side)');
+  lines.push('');
+  lines.push('Duration of the request itself, unlike the offsets above. The gap');
+  lines.push('between a leg here and its backend route total is the proxy + network cost.');
+  lines.push('');
+  lines.push(`| Load | ${HEADLINE_NETWORK.join(' | ')} |`);
+  lines.push(`|---|${HEADLINE_NETWORK.map(() => '---:').join('|')}|`);
+  for (const row of rows) {
+    const cells = HEADLINE_NETWORK.map((leg) => cell(row.network[leg] ?? null));
+    lines.push(`| ${row.load} | ${cells.join(' | ')} |`);
+  }
+  lines.push('');
+
   lines.push('## Backend phases (from /metrics deltas)');
   lines.push('');
   lines.push(`| Load | ${HEADLINE_PHASES.join(' | ')} | db_connect_count | db_query_count |`);
@@ -455,16 +582,23 @@ function renderMarkdown(rows, args) {
   }
   lines.push('');
 
-  lines.push('## Cache and single-flight state');
+  lines.push('## Cache and single-flight state (per load, per route)');
   lines.push('');
-  lines.push('| Load | flags observed |');
-  lines.push('|---|---|');
+  lines.push('A load is inside the runtime-status TTL because `runtime_status_cache`');
+  lines.push('says `hit`, never because of the gap we asked for.');
+  lines.push('');
+  lines.push(`| Load | route | ${HEADLINE_FLAGS.join(' | ')} | other flags |`);
+  lines.push(`|---|---|${HEADLINE_FLAGS.map(() => '---').join('|')}|---|`);
   for (const row of rows) {
-    const flags = Object.entries(row.backend.flags)
-      .map(([key, count]) => `${key}${count > 1 ? ` x${count}` : ''}`)
-      .sort()
-      .join(', ');
-    lines.push(`| ${row.load} | ${flags || '—'} |`);
+    const routes = flagRoutes(row.backend.flags);
+    if (routes.length === 0) {
+      lines.push(`| ${row.load} | — | ${HEADLINE_FLAGS.map(() => '—').join(' | ')} | — |`);
+      continue;
+    }
+    for (const route of routes) {
+      const cells = HEADLINE_FLAGS.map((flagName) => cell(flagState(row.backend.flags, route, flagName)));
+      lines.push(`| ${row.load} | ${route} | ${cells.join(' | ')} | ${cell(otherFlags(row.backend.flags, route))} |`);
+    }
   }
   lines.push('');
 
@@ -487,6 +621,22 @@ function renderMarkdown(rows, args) {
     for (const [phase, total] of [...checkpointTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
       lines.push(`| ${phase} | ${total.toFixed(2)} | ${(total / rows.length).toFixed(2)} |`);
     }
+  }
+  lines.push('');
+
+  lines.push('## Slowest runtime-status checkpoints (top 10 per load)');
+  lines.push('');
+  lines.push('| Load | # | route | checkpoint | ms |');
+  lines.push('|---|---:|---|---|---:|');
+  for (const row of rows) {
+    const checkpoints = topCheckpoints(row.backend.phases, 10);
+    if (checkpoints.length === 0) {
+      lines.push(`| ${row.load} | — | — | — | — |`);
+      continue;
+    }
+    checkpoints.forEach((entry, index) => {
+      lines.push(`| ${row.load} | ${index + 1} | ${entry.route} | ${entry.phase} | ${entry.ms.toFixed(2)} |`);
+    });
   }
   lines.push('');
 
