@@ -61,18 +61,29 @@ test.describe('backend payload and feedback vocabulary are preserved', () => {
   });
 
   test('every backend-accepted feedback type is still offered', () => {
+    // The discovery vocabulary. Each of the six values the original form posted
+    // is still here — widening the list must not drop a value already stored on
+    // rows in the database.
     for (const value of [
       'security',
       'detection_accuracy',
+      'false_positive',
+      'missed_detection',
+      'investigation',
+      'incident_response',
+      'evidence_audit',
+      'integration',
+      'policy_controls',
       'usability',
       'missing_feature',
-      'integration',
       'other',
     ]) {
       expect(feedbackSrc).toContain(`value: '${value}'`);
     }
-    // Labels named in the bug report must remain selectable.
-    for (const label of ['Detection accuracy', 'Usability', 'Missing feature', 'Integration', 'Other']) {
+    // Labels named in the bug report must remain selectable. 'missing_feature'
+    // is relabelled "Missing capability" rather than duplicated into a second
+    // enum value, so the roadmap counter stays one number.
+    for (const label of ['Detection accuracy', 'Usability', 'Missing capability', 'Monitoring / Integration', 'Other']) {
       expect(feedbackSrc).toContain(`label: '${label}'`);
     }
   });

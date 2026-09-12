@@ -8,7 +8,8 @@ Public (no session at all):
 
 Customer-facing (organization derived from the authenticated session only):
   * ``GET  /account/plan``               plan, lifecycle, usage, entitlements
-  * ``POST /account/feedback``           one pilot feedback row
+  * ``POST /account/feedback``           one pilot feedback row — quick, detailed,
+                                        or the end-of-Pilot review (one table)
   * ``GET  /account/pilot-access``       does THIS account have Pilot access
   * ``POST /pilot-invitations/accept``   activate the approved organization
 
@@ -19,7 +20,7 @@ deployment allowlist — never a workspace role, never a request parameter):
   * ``POST  /admin/customers/{id}/extend-evaluation`` push the deadline out
   * ``POST  /admin/customers/{id}/status``            suspend / reactivate / expire
   * ``POST  /admin/customers/{id}/plan``              change plan in place
-  * ``GET   /admin/feedback``                         evaluator feedback
+  * ``GET   /admin/feedback``                         evaluator feedback + roadmap counters
   * ``GET   /admin/pilot-requests``                   the review queue
   * ``POST  /admin/pilot-requests/{id}/approve``      approve + invite
   * ``POST  /admin/pilot-requests/{id}/reject``       decline
@@ -126,8 +127,12 @@ def get_account_plan(request: Any) -> dict[str, Any]:
 def submit_account_feedback(payload: dict[str, Any], request: Any) -> dict[str, Any]:
     """Record one evaluator feedback item against the caller's organization.
 
-    The organization, workspace, and user stamped on the row all come from the
-    authenticated session. A body that names a different tenant changes nothing.
+    Serves all three depths — quick, detailed, and the end-of-Pilot review — from
+    one endpoint, because they write one row to one table. The organization,
+    workspace, user, and pilot day stamped on that row all come from the
+    authenticated session and the tenant's own evaluation window. A body that
+    names a different tenant changes nothing; a contextual incident/alert/asset
+    id that belongs to a different tenant is dropped rather than stored.
     """
     pilot.require_live_mode()
     body = payload if isinstance(payload, dict) else {}
@@ -148,19 +153,34 @@ def submit_account_feedback(payload: dict[str, Any], request: Any) -> dict[str, 
                 },
             )
         organization = context['organization']
+        organization_id = str(organization['id'])
         recorded = org_service.record_feedback(
             connection,
-            organization_id=str(organization['id']),
+            organization_id=organization_id,
             workspace_id=workspace_id,
             user_id=str(user['id']),
             feedback_type=body.get('feedback_type'),
             message=body.get('message'),
-            context=body.get('context'),
+            context=org_service.resolve_feedback_context(
+                connection, body.get('context'), organization_id=organization_id,
+            ),
+            feedback_mode=body.get('feedback_mode') or org_service.FEEDBACK_MODE_QUICK,
+            severity=body.get('severity'),
+            production_blocker=body.get('production_blocker'),
+            continue_intent=body.get('continue_intent'),
+            contact_permission=body.get('contact_permission'),
+            # Derived from the tenant's own evaluation window, never read from the
+            # body: "they said this on day 3" is a fact about the organization,
+            # and a client-supplied day would be a number the customer could set.
+            pilot_day=org_service.pilot_day_for(organization),
+            narratives={
+                field: body.get(field) for field in org_service.FEEDBACK_NARRATIVE_FIELDS
+            },
         )
-        # The audit row records THAT feedback was submitted and of what kind. The
-        # message body is deliberately not copied into it: security feedback stays
-        # in one internal-only table rather than being duplicated into a log that
-        # more surfaces read.
+        # The audit row records THAT feedback was submitted, of what kind and at
+        # what depth. No narrative answer is copied into it: security feedback
+        # stays in one internal-only table rather than being duplicated into a log
+        # that more surfaces read.
         pilot.log_audit(
             connection,
             action='organization.feedback_submitted',
@@ -170,12 +190,18 @@ def submit_account_feedback(payload: dict[str, Any], request: Any) -> dict[str, 
             user_id=str(user['id']),
             workspace_id=workspace_id,
             metadata={
-                'organization_id': str(organization['id']),
+                'organization_id': organization_id,
                 'feedback_type': recorded['feedback_type'],
+                'feedback_mode': recorded['feedback_mode'],
             },
         )
         connection.commit()
-        return {'submitted': True, 'id': recorded['id'], 'feedback_type': recorded['feedback_type']}
+        return {
+            'submitted': True,
+            'id': recorded['id'],
+            'feedback_type': recorded['feedback_type'],
+            'feedback_mode': recorded['feedback_mode'],
+        }
 
 
 # ── founder / internal admin ─────────────────────────────────────────────────
@@ -375,14 +401,48 @@ def set_admin_customer_plan(
         return _organization_detail(connection, organization_id)
 
 
-def list_admin_feedback(request: Any, organization_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+def list_admin_feedback(
+    request: Any,
+    organization_id: str | None = None,
+    limit: int = 100,
+    feedback_type: str | None = None,
+    severity: str | None = None,
+    production_blocker: str | None = None,
+    feedback_mode: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Evaluator feedback for the internal console, with roadmap counters.
+
+    ``summary`` counts the SAME rows this call returns, so a counter can never
+    claim a pattern the visible list does not contain. It is reported alongside
+    ``detail_available`` — before migration 0153 the severity and
+    production-blocker counters would be structurally zero, and a bare "0
+    production blockers" would read as "nobody is blocked" rather than "this
+    deployment cannot record that yet".
+    """
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         org_service.require_internal_admin(connection, request)
         _require_tenancy_schema(connection)
-        items = org_service.list_feedback(connection, organization_id=organization_id, limit=limit)
-        return {'feedback': items, 'count': len(items)}
+        items = org_service.list_feedback(
+            connection,
+            organization_id=organization_id,
+            limit=limit,
+            feedback_type=feedback_type,
+            severity=severity,
+            production_blocker=production_blocker,
+            feedback_mode=feedback_mode,
+            since=since,
+            until=until,
+        )
+        return {
+            'feedback': items,
+            'count': len(items),
+            'summary': org_service.feedback_summary(items),
+            'detail_available': org_service.feedback_detail_schema_ready(connection),
+        }
 
 
 # ── approval-only Pilot access ───────────────────────────────────────────────

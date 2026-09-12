@@ -160,10 +160,24 @@ test.describe('the Feedback type dropdown is readable in dark mode', () => {
     const menuBg = parseRgb(await menu.evaluate((el) => getComputedStyle(el).backgroundColor));
 
     const options = page.getByRole('option');
-    // The five labels named in the bug report plus Security.
-    await expect(options).toHaveCount(6);
+    // The full discovery vocabulary — twelve rows, every one of which has to stay
+    // readable, not just the six the original form offered.
+    await expect(options).toHaveCount(12);
 
-    for (const label of ['Security', 'Detection accuracy', 'Usability', 'Missing feature', 'Integration', 'Other']) {
+    for (const label of [
+      'Security',
+      'Detection accuracy',
+      'False positive',
+      'Missed detection',
+      'Investigation',
+      'Incident response',
+      'Evidence / Audit',
+      'Monitoring / Integration',
+      'Policy / Controls',
+      'Usability',
+      'Missing capability',
+      'Other',
+    ]) {
       const option = page.getByRole('option', { name: new RegExp(`^${label}`) });
       const { colour, rowBg } = await option.evaluate((el) => {
         const style = getComputedStyle(el);
@@ -181,9 +195,12 @@ test.describe('the Feedback type dropdown is readable in dark mode', () => {
     const trigger = page.getByTestId('plan-feedback-type');
 
     // Focus ring on the trigger is visible (keyboard users can see where they
-    // are). Reached by keyboard — Shift+Tab back from the message field — so
+    // are). Reached by keyboard — Shift+Tab back from the message field, past
+    // the optional Severity control that now sits between them — so
     // :focus-visible genuinely matches, as it would not on a scripted focus().
     await page.locator('#plan-feedback-message').focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.getByTestId('plan-feedback-severity')).toBeFocused();
     await page.keyboard.press('Shift+Tab');
     await expect(trigger).toBeFocused();
     const outline = await trigger.evaluate((el) => {
@@ -220,14 +237,15 @@ test.describe('the Feedback type dropdown is readable in dark mode', () => {
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
     await expect(page.getByRole('listbox')).toHaveCount(0);
-    await expect(trigger).toContainText('Missing feature');
+    // One step past the committed 'Usability' in the widened list.
+    await expect(trigger).toContainText('Missing capability');
 
     // Escape closes without changing the committed value, focus returns.
     await page.keyboard.press('ArrowDown');
     await expect(page.getByRole('listbox')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('listbox')).toHaveCount(0);
-    await expect(trigger).toContainText('Missing feature');
+    await expect(trigger).toContainText('Missing capability');
     await expect(trigger).toBeFocused();
 
     // Home jumps to the first option; the value posted stays a backend enum.

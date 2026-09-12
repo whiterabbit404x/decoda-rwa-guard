@@ -278,6 +278,16 @@ export async function startRenderHarness(options: { bootstrap: string; css?: boo
   const page = `<!doctype html>
 <html><head><meta charset="utf-8"><title>render harness</title><style>${appCss}</style></head>
 <body><div id="root"></div>
+<script>
+// The real Next.js build INLINES process.env.NODE_ENV and every NEXT_PUBLIC_*
+// reference at compile time, so app modules may read \`process.env\` freely. This
+// harness serves the TypeScript sources untransformed, where \`process\` does not
+// exist — and a module that touches it (dashboard-perf.ts does, from an effect
+// in PilotAuthProvider) throws during render and blanks the page. Standing in
+// the one global the bundler would have substituted keeps these specs mounting
+// the real components rather than re-declaring what the build does.
+window.process = window.process || { env: { NODE_ENV: 'production' } };
+</script>
 <script>${reactUmd}</script>
 <script>${reactDomUmd}</script>
 <script>

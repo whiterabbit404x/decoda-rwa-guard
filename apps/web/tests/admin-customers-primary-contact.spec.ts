@@ -117,15 +117,32 @@ test.describe('a long address does not break the row', () => {
   });
 });
 
+/**
+ * The console renders three tables — Pilot requests, Customer organizations, and
+ * Evaluator feedback — so header assertions must name the one they mean. A bare
+ * scan of every <th> in the file reads the FIRST table it finds, which is how
+ * this describe block came to assert the customers columns against the Pilot
+ * requests header row.
+ */
+function headersOfTableAfter(heading: string): string[] {
+  const start = client.indexOf(heading);
+  expect(start, `heading not found: ${heading}`).toBeGreaterThan(-1);
+  const headStart = client.indexOf('<thead>', start);
+  const headEnd = client.indexOf('</thead>', headStart);
+  expect(headEnd).toBeGreaterThan(headStart);
+  return [...client.slice(headStart, headEnd).matchAll(/<th[^>]*>([^<]+)<\/th>/g)]
+    .map((match) => match[1].trim());
+}
+
 test.describe('the column in the table', () => {
   test('Primary contact sits immediately after Organization', () => {
-    const headers = [...client.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((match) => match[1].trim());
+    const headers = headersOfTableAfter('Customer organizations');
     expect(headers.slice(0, 3)).toEqual(['Organization', 'Primary contact', 'Plan']);
   });
 
   test('the header order is unchanged apart from the insertion', () => {
-    const headers = [...client.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((match) => match[1].trim());
-    expect(headers.slice(0, 11)).toEqual([
+    const headers = headersOfTableAfter('Customer organizations');
+    expect(headers).toEqual([
       'Organization',
       'Primary contact',
       'Plan',

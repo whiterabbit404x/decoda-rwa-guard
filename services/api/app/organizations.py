@@ -59,16 +59,71 @@ WORKSPACE_ROLE_TO_ORG_ROLE: dict[str, str] = {
     'viewer': 'viewer',
 }
 
+#: The discovery vocabulary, shared with apps/web/app/plan-feedback.ts. Widened
+#: by migration 0153; every value migration 0150 allowed is still here, so no
+#: stored row was invalidated. 'missing_feature' carries the "Missing capability"
+#: label rather than gaining a near-duplicate sibling — two values meaning one
+#: thing would split the roadmap signal the founder console counts.
 FEEDBACK_TYPES: tuple[str, ...] = (
     'security',
     'detection_accuracy',
+    'false_positive',
+    'missed_detection',
+    'investigation',
+    'incident_response',
+    'evidence_audit',
+    'integration',
+    'policy_controls',
     'usability',
     'missing_feature',
-    'integration',
     'other',
 )
 
+#: How deep the submission was. One table, three depths — see migration 0153.
+FEEDBACK_MODE_QUICK = 'quick'
+FEEDBACK_MODE_DETAILED = 'detailed'
+FEEDBACK_MODE_END_OF_PILOT = 'end_of_pilot'
+FEEDBACK_MODES: tuple[str, ...] = (
+    FEEDBACK_MODE_QUICK,
+    FEEDBACK_MODE_DETAILED,
+    FEEDBACK_MODE_END_OF_PILOT,
+)
+
+FEEDBACK_SEVERITIES: tuple[str, ...] = ('critical', 'high', 'medium', 'low')
+FEEDBACK_PRODUCTION_BLOCKERS: tuple[str, ...] = ('yes', 'no', 'not_sure')
+FEEDBACK_CONTINUE_INTENTS: tuple[str, ...] = ('yes', 'maybe', 'no')
+
 FEEDBACK_MAX_MESSAGE_CHARS = 4000
+
+#: The free-text discovery answers, in the order the form asks them. Every one is
+#: OPTIONAL at this layer: the form decides what it insists on, and a half-filled
+#: submission is worth more than a refused one. Each is length-capped and
+#: secret-scanned exactly like ``message`` — a credential pasted into "how do you
+#: handle this today?" is no less a credential than one pasted into "what
+#: happened?".
+FEEDBACK_NARRATIVE_FIELDS: tuple[str, ...] = (
+    'goal_or_task',
+    'security_problem',
+    'current_workaround',
+    'where_decoda_helped',
+    'missing_or_difficult',
+    'deployment_requirement',
+    'paid_capability',
+)
+
+#: Columns added by migration 0153. Probed before a detailed submission is
+#: accepted so an API that rolled out ahead of its migration REFUSES the deeper
+#: form with a truthful reason, rather than accepting the customer's answers and
+#: discarding the half the database cannot store.
+FEEDBACK_DETAIL_COLUMNS: tuple[str, ...] = (
+    'feedback_mode',
+    'severity',
+    *FEEDBACK_NARRATIVE_FIELDS,
+    'production_blocker',
+    'contact_permission',
+    'continue_intent',
+    'pilot_day',
+)
 
 #: Exact email addresses that may reach the founder/internal admin surface even
 #: without the database flag, so a fresh deployment can be bootstrapped. Wildcard
@@ -801,6 +856,119 @@ def looks_like_secret(message: str) -> bool:
     )
 
 
+def feedback_detail_schema_state(connection: Any) -> str:
+    """Whether migration 0153's discovery columns exist. READY / ABSENT / UNKNOWN.
+
+    Kept separate from ``tenancy_schema_state`` because the two migrations roll
+    out independently: a deployment can have tenancy but not yet the discovery
+    columns, and the quick form must keep working throughout.
+    """
+    try:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS column_count FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'organization_feedback'
+               AND column_name = ANY(%s)
+            """,
+            (list(FEEDBACK_DETAIL_COLUMNS),),
+        ).fetchone()
+    except Exception:
+        logger.warning('feedback_detail_schema_probe_failed result=unknown', exc_info=True)
+        return SCHEMA_UNKNOWN
+    data = _row_dict(row) or {}
+    ready = int(data.get('column_count') or 0) >= len(FEEDBACK_DETAIL_COLUMNS)
+    return SCHEMA_READY if ready else SCHEMA_ABSENT
+
+
+def feedback_detail_schema_ready(connection: Any) -> bool:
+    """True only when the discovery columns are definitively present."""
+    return feedback_detail_schema_state(connection) == SCHEMA_READY
+
+
+def _choice(value: Any, allowed: tuple[str, ...], *, field: str, code: str) -> str | None:
+    """One value from a closed vocabulary, or None when not supplied.
+
+    An unrecognised value is REFUSED rather than coerced to a default. Silently
+    storing 'medium' for a severity the customer never chose would put a number
+    in the founder's priority list that no one said.
+    """
+    text = str(value or '').strip().lower()
+    if not text:
+        return None
+    if text not in allowed:
+        raise _http_error(
+            400,
+            {'code': code, 'message': f'{field} must be one of {", ".join(allowed)}.'},
+        )
+    return text
+
+
+#: Affirmative spellings accepted for the contact-permission checkbox. Anything
+#: else — including the STRING 'false', which is truthy in Python — is read as
+#: "no". Permission to contact a customer about their security feedback is
+#: granted explicitly or not at all; bool('false') granting it would put a "Yes"
+#: in the founder console that the customer never gave.
+_AFFIRMATIVE = frozenset({'true', '1', 'yes', 'y', 'on'})
+
+
+def _permission(value: Any) -> bool:
+    """Whether the customer explicitly granted contact permission."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _AFFIRMATIVE
+    return False
+
+
+#: A date or timestamp the founder console may filter on. Bounded here so a
+#: malformed value is refused as a 400 naming the field, rather than reaching
+#: PostgreSQL and surfacing as a 500 the founder cannot act on.
+_FILTER_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$')
+
+
+def _date_filter(value: Any, *, field: str) -> str | None:
+    """One ISO-8601 date/timestamp filter value, or None when not supplied."""
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if not _FILTER_DATE_RE.match(text):
+        raise _http_error(
+            400,
+            {
+                'code': 'INVALID_FEEDBACK_DATE_FILTER',
+                'message': f'{field} must be an ISO-8601 date such as 2026-06-01.',
+            },
+        )
+    return text
+
+
+def _narrative(value: Any, *, field: str) -> str | None:
+    """One bounded, secret-scanned free-text answer, or None when left blank."""
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if len(text) > FEEDBACK_MAX_MESSAGE_CHARS:
+        raise _http_error(
+            400,
+            {
+                'code': 'FEEDBACK_MESSAGE_TOO_LONG',
+                'message': f'{field} must be {FEEDBACK_MAX_MESSAGE_CHARS} characters or fewer.',
+            },
+        )
+    if looks_like_secret(text):
+        raise _http_error(400, _FEEDBACK_SECRET_DETAIL)
+    return text
+
+
+_FEEDBACK_SECRET_DETAIL = {
+    'code': 'FEEDBACK_CONTAINS_SECRET',
+    'message': (
+        'This message looks like it contains a private key, seed phrase, or other '
+        'credential, so it was not submitted. Remove the secret and try again.'
+    ),
+}
+
+
 def record_feedback(
     connection: Any,
     *,
@@ -810,13 +978,33 @@ def record_feedback(
     feedback_type: str,
     message: str,
     context: Mapping[str, Any] | None = None,
+    feedback_mode: str = FEEDBACK_MODE_QUICK,
+    severity: Any = None,
+    production_blocker: Any = None,
+    continue_intent: Any = None,
+    contact_permission: Any = False,
+    pilot_day: int | None = None,
+    narratives: Mapping[str, Any] | None = None,
+    detail_schema_ready: bool | None = None,
 ) -> dict[str, Any]:
-    """Store one pilot feedback row. Internal-visibility only."""
+    """Store one pilot feedback row. Internal-visibility only.
+
+    ``feedback_mode`` selects the depth; everything past it is optional and is
+    written only when migration 0153's columns are present. A deployment without
+    them still accepts quick feedback unchanged, and refuses the deeper forms
+    outright rather than accepting answers it would drop on the floor.
+    """
     kind = str(feedback_type or '').strip().lower()
     if kind not in FEEDBACK_TYPES:
         raise _http_error(
             400,
             {'code': 'INVALID_FEEDBACK_TYPE', 'message': f'feedback_type must be one of {", ".join(FEEDBACK_TYPES)}.'},
+        )
+    mode = str(feedback_mode or FEEDBACK_MODE_QUICK).strip().lower()
+    if mode not in FEEDBACK_MODES:
+        raise _http_error(
+            400,
+            {'code': 'INVALID_FEEDBACK_MODE', 'message': f'feedback_mode must be one of {", ".join(FEEDBACK_MODES)}.'},
         )
     body = str(message or '').strip()
     if not body:
@@ -830,38 +1018,118 @@ def record_feedback(
             },
         )
     if looks_like_secret(body):
-        raise _http_error(
-            400,
-            {
-                'code': 'FEEDBACK_CONTAINS_SECRET',
-                'message': (
-                    'This message looks like it contains a private key, seed phrase, or other '
-                    'credential, so it was not submitted. Remove the secret and try again.'
-                ),
-            },
-        )
-    feedback_id = str(uuid.uuid4())
-    connection.execute(
-        '''
-        INSERT INTO organization_feedback (
-            id, organization_id, workspace_id, user_id, feedback_type, message, context, created_at
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
-        ''',
-        (
-            feedback_id,
-            str(organization_id),
-            str(workspace_id) if workspace_id else None,
-            str(user_id) if user_id else None,
-            kind,
-            body,
-            _json_dumps(sanitize_feedback_context(context)),
-        ),
+        raise _http_error(400, _FEEDBACK_SECRET_DETAIL)
+
+    severity_value = _choice(
+        severity, FEEDBACK_SEVERITIES, field='severity', code='INVALID_FEEDBACK_SEVERITY',
     )
-    return {'id': feedback_id, 'feedback_type': kind}
+    blocker_value = _choice(
+        production_blocker, FEEDBACK_PRODUCTION_BLOCKERS,
+        field='production_blocker', code='INVALID_PRODUCTION_BLOCKER',
+    )
+    continue_value = _choice(
+        continue_intent, FEEDBACK_CONTINUE_INTENTS,
+        field='continue_intent', code='INVALID_CONTINUE_INTENT',
+    )
+    supplied = narratives if isinstance(narratives, Mapping) else {}
+    answers = {
+        field: _narrative(supplied.get(field), field=field) for field in FEEDBACK_NARRATIVE_FIELDS
+    }
+    contact_ok = _permission(contact_permission)
+
+    detail_ready = (
+        feedback_detail_schema_ready(connection) if detail_schema_ready is None else bool(detail_schema_ready)
+    )
+    if not detail_ready:
+        # Fail closed, and say why. The alternative — accepting the submission and
+        # writing only the columns that exist — would tell the customer their
+        # answers were recorded while silently discarding most of them.
+        if (
+            mode != FEEDBACK_MODE_QUICK
+            or severity_value
+            or blocker_value
+            or continue_value
+            or contact_ok
+            or any(answers.values())
+        ):
+            raise _http_error(
+                503,
+                {
+                    'code': 'FEEDBACK_DETAIL_UNAVAILABLE',
+                    'message': (
+                        'Detailed Pilot feedback is unavailable until this deployment finishes '
+                        'migrating. Quick feedback still works.'
+                    ),
+                },
+            )
+
+    feedback_id = str(uuid.uuid4())
+    stored_context = sanitize_feedback_context(context)
+    if detail_ready:
+        connection.execute(
+            '''
+            INSERT INTO organization_feedback (
+                id, organization_id, workspace_id, user_id, feedback_type, message, context, created_at,
+                feedback_mode, severity, goal_or_task, security_problem, current_workaround,
+                where_decoda_helped, missing_or_difficult, production_blocker, deployment_requirement,
+                contact_permission, continue_intent, paid_capability, pilot_day
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW(),
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''',
+            (
+                feedback_id,
+                str(organization_id),
+                str(workspace_id) if workspace_id else None,
+                str(user_id) if user_id else None,
+                kind,
+                body,
+                _json_dumps(stored_context),
+                mode,
+                severity_value,
+                answers['goal_or_task'],
+                answers['security_problem'],
+                answers['current_workaround'],
+                answers['where_decoda_helped'],
+                answers['missing_or_difficult'],
+                blocker_value,
+                answers['deployment_requirement'],
+                contact_ok,
+                continue_value,
+                answers['paid_capability'],
+                int(pilot_day) if pilot_day is not None else None,
+            ),
+        )
+    else:
+        connection.execute(
+            '''
+            INSERT INTO organization_feedback (
+                id, organization_id, workspace_id, user_id, feedback_type, message, context, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+            ''',
+            (
+                feedback_id,
+                str(organization_id),
+                str(workspace_id) if workspace_id else None,
+                str(user_id) if user_id else None,
+                kind,
+                body,
+                _json_dumps(stored_context),
+            ),
+        )
+    return {'id': feedback_id, 'feedback_type': kind, 'feedback_mode': mode}
 
 
-_FEEDBACK_CONTEXT_KEYS = ('page', 'incident_id', 'alert_id')
+_FEEDBACK_CONTEXT_KEYS = ('page', 'incident_id', 'alert_id', 'asset_id')
+
+#: The contextual ids the form may carry, and the workspace-scoped table each one
+#: must be found in before it is stored.
+_FEEDBACK_CONTEXT_ENTITIES: tuple[tuple[str, str], ...] = (
+    ('incident_id', 'incidents'),
+    ('alert_id', 'alerts'),
+    ('asset_id', 'assets'),
+)
 
 
 def sanitize_feedback_context(context: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -875,6 +1143,79 @@ def sanitize_feedback_context(context: Mapping[str, Any] | None) -> dict[str, An
             continue
         cleaned[key] = str(value)[:200]
     return cleaned
+
+
+def resolve_feedback_context(
+    connection: Any, context: Mapping[str, Any] | None, *, organization_id: str,
+) -> dict[str, Any]:
+    """The allowlisted context, with every entity id VERIFIED against this tenant.
+
+    An incident/alert/asset id is stored only when it is found in a workspace
+    this organization owns. Anything else — another tenant's id, a stale id, a
+    malformed one — is DROPPED rather than recorded: an unverifiable id rendered
+    next to a customer's words in the founder console would read as evidence that
+    this feedback is about that incident, which nothing established.
+
+    ``page`` is not an entity reference and is kept as the bounded string it is.
+    """
+    cleaned = sanitize_feedback_context(context)
+    for key, table in _FEEDBACK_CONTEXT_ENTITIES:
+        candidate = cleaned.get(key)
+        if not candidate:
+            continue
+        if not _belongs_to_organization(connection, table, candidate, organization_id):
+            logger.info(
+                'feedback_context_id_dropped field=%s organization_id=%s reason=not_in_tenant',
+                key, organization_id,
+            )
+            cleaned.pop(key, None)
+    return cleaned
+
+
+def _belongs_to_organization(connection: Any, table: str, entity_id: str, organization_id: str) -> bool:
+    """Whether one workspace-scoped row is owned by this organization.
+
+    ``table`` is never caller-supplied — it comes from the module-level
+    ``_FEEDBACK_CONTEXT_ENTITIES`` tuple — and the ids are bound as parameters.
+    A probe that raises (bad uuid text, a table this deployment has not migrated)
+    answers False, so the id is dropped: fail closed.
+    """
+    try:
+        row = connection.execute(
+            f'''
+            SELECT 1 AS found
+              FROM {table} e
+              JOIN workspaces w ON w.id = e.workspace_id
+             WHERE e.id = %s AND w.organization_id = %s
+             LIMIT 1
+            ''',
+            (str(entity_id), str(organization_id)),
+        ).fetchone()
+    except Exception:
+        logger.warning('feedback_context_probe_failed table=%s result=dropped', table, exc_info=True)
+        return False
+    return bool(_row_dict(row))
+
+
+def pilot_day_for(organization: Mapping[str, Any] | None, *, now: datetime | None = None) -> int | None:
+    """Which day of the evaluation this is, 1-based. ``None`` when there is none.
+
+    Stored ON the row rather than computed at read time: "they said this on day
+    3" is a fact about when it was said, and re-deriving it later from a window
+    that may since have been extended would quietly restate it.
+    """
+    org = organization or {}
+    started_at = org.get('evaluation_started_at')
+    if started_at is None:
+        return None
+    if not hasattr(started_at, 'tzinfo'):
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    delta = (now or _utc_now()) - started_at
+    if delta.total_seconds() < 0:
+        return None
+    return int(delta.total_seconds() // 86400) + 1
 
 
 # ── founder admin reads ──────────────────────────────────────────────────────
@@ -984,52 +1325,149 @@ def _customer_row(row: dict[str, Any], *, now: datetime | None = None) -> dict[s
     }
 
 
+#: Columns the founder console reads for every row. Selected explicitly (never
+#: ``SELECT *``) so a column added later cannot reach the internal API by
+#: accident — the same reason the customer-facing reads name their columns.
+_FEEDBACK_BASE_COLUMNS = (
+    'f.id, f.organization_id, f.workspace_id, f.user_id, f.feedback_type, '
+    'f.message, f.context, f.created_at'
+)
+
+_FEEDBACK_DETAIL_COLUMNS_SQL = (
+    'f.feedback_mode, f.severity, f.goal_or_task, f.security_problem, f.current_workaround, '
+    'f.where_decoda_helped, f.missing_or_difficult, f.production_blocker, '
+    'f.deployment_requirement, f.contact_permission, f.continue_intent, '
+    'f.paid_capability, f.pilot_day'
+)
+
+
 def list_feedback(
-    connection: Any, *, organization_id: str | None = None, limit: int = 100,
+    connection: Any,
+    *,
+    organization_id: str | None = None,
+    limit: int = 100,
+    feedback_type: str | None = None,
+    severity: str | None = None,
+    production_blocker: str | None = None,
+    feedback_mode: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Feedback rows for the internal console, newest first."""
+    """Feedback rows for the internal console, newest first.
+
+    Every filter is OPTIONAL and applied in SQL against a bound parameter. An
+    unrecognised filter value is refused by ``_choice`` rather than ignored: a
+    console that silently drops a filter shows the founder a list they believe is
+    narrowed and is not.
+
+    Cross-organization when ``organization_id`` is None — this is the internal
+    founder read, and every caller authorizes internal staff before reaching it.
+    """
     bounded = max(1, min(int(limit or 100), 500))
+    detail_ready = feedback_detail_schema_ready(connection)
+    columns = _FEEDBACK_BASE_COLUMNS + (f', {_FEEDBACK_DETAIL_COLUMNS_SQL}' if detail_ready else '')
+
+    clauses: list[str] = []
+    params: list[Any] = []
     if organization_id:
-        rows = connection.execute(
-            '''
-            SELECT f.id, f.organization_id, f.workspace_id, f.user_id, f.feedback_type,
-                   f.message, f.context, f.created_at, o.name AS organization_name, u.email AS user_email
-            FROM organization_feedback f
-            JOIN organizations o ON o.id = f.organization_id
-            LEFT JOIN users u ON u.id = f.user_id
-            WHERE f.organization_id = %s
-            ORDER BY f.created_at DESC
-            LIMIT %s
-            ''',
-            (str(organization_id), bounded),
-        ).fetchall()
-    else:
-        rows = connection.execute(
-            '''
-            SELECT f.id, f.organization_id, f.workspace_id, f.user_id, f.feedback_type,
-                   f.message, f.context, f.created_at, o.name AS organization_name, u.email AS user_email
-            FROM organization_feedback f
-            JOIN organizations o ON o.id = f.organization_id
-            LEFT JOIN users u ON u.id = f.user_id
-            ORDER BY f.created_at DESC
-            LIMIT %s
-            ''',
-            (bounded,),
-        ).fetchall()
-    return [
-        {
-            'id': str(item['id']),
-            'organization_id': str(item['organization_id']),
-            'organization_name': item.get('organization_name'),
-            'workspace_id': str(item['workspace_id']) if item.get('workspace_id') else None,
-            'user_email': item.get('user_email'),
-            'feedback_type': item.get('feedback_type'),
-            'message': item.get('message'),
-            'context': item.get('context') or {},
-            'created_at': _iso(item.get('created_at')),
-        }
-        for item in (dict(row) for row in (rows or []))
-    ]
+        clauses.append('f.organization_id = %s')
+        params.append(str(organization_id))
+    kind = _choice(feedback_type, FEEDBACK_TYPES, field='feedback_type', code='INVALID_FEEDBACK_TYPE')
+    if kind:
+        clauses.append('f.feedback_type = %s')
+        params.append(kind)
+    if detail_ready:
+        level = _choice(severity, FEEDBACK_SEVERITIES, field='severity', code='INVALID_FEEDBACK_SEVERITY')
+        if level:
+            clauses.append('f.severity = %s')
+            params.append(level)
+        blocker = _choice(
+            production_blocker, FEEDBACK_PRODUCTION_BLOCKERS,
+            field='production_blocker', code='INVALID_PRODUCTION_BLOCKER',
+        )
+        if blocker:
+            clauses.append('f.production_blocker = %s')
+            params.append(blocker)
+        mode = _choice(feedback_mode, FEEDBACK_MODES, field='feedback_mode', code='INVALID_FEEDBACK_MODE')
+        if mode:
+            clauses.append('f.feedback_mode = %s')
+            params.append(mode)
+    since_value = _date_filter(since, field='since')
+    if since_value:
+        clauses.append('f.created_at >= %s')
+        params.append(since_value)
+    until_value = _date_filter(until, field='until')
+    if until_value:
+        clauses.append('f.created_at <= %s')
+        params.append(until_value)
+
+    where = f' WHERE {" AND ".join(clauses)}' if clauses else ''
+    params.append(bounded)
+    rows = connection.execute(
+        f'''
+        SELECT {columns}, o.name AS organization_name, o.plan AS organization_plan,
+               u.email AS user_email
+        FROM organization_feedback f
+        JOIN organizations o ON o.id = f.organization_id
+        LEFT JOIN users u ON u.id = f.user_id{where}
+        ORDER BY f.created_at DESC
+        LIMIT %s
+        ''',
+        tuple(params),
+    ).fetchall()
+    return [_feedback_row(dict(row), detail_ready=detail_ready) for row in (rows or [])]
+
+
+def _feedback_row(item: dict[str, Any], *, detail_ready: bool) -> dict[str, Any]:
+    """One wire row.
+
+    Before migration 0153 the discovery fields are reported as None rather than
+    as an empty answer: "this deployment cannot store that yet" is not "the
+    customer left it blank", and the console renders the two differently.
+    """
+    row: dict[str, Any] = {
+        'id': str(item['id']),
+        'organization_id': str(item['organization_id']),
+        'organization_name': item.get('organization_name'),
+        'organization_plan': item.get('organization_plan'),
+        'workspace_id': str(item['workspace_id']) if item.get('workspace_id') else None,
+        'user_email': item.get('user_email'),
+        'feedback_type': item.get('feedback_type'),
+        'message': item.get('message'),
+        'context': item.get('context') or {},
+        'created_at': _iso(item.get('created_at')),
+        'detail_available': detail_ready,
+    }
+    row['feedback_mode'] = item.get('feedback_mode') if detail_ready else None
+    row['severity'] = item.get('severity') if detail_ready else None
+    row['production_blocker'] = item.get('production_blocker') if detail_ready else None
+    row['continue_intent'] = item.get('continue_intent') if detail_ready else None
+    row['contact_permission'] = bool(item.get('contact_permission')) if detail_ready else None
+    row['pilot_day'] = (
+        int(item['pilot_day']) if detail_ready and item.get('pilot_day') is not None else None
+    )
+    for field in FEEDBACK_NARRATIVE_FIELDS:
+        row[field] = item.get(field) if detail_ready else None
+    return row
+
+
+#: The founder's four standing roadmap questions, each a labelled predicate over
+#: the same rows the listing returns. Counted in ONE pass over the filtered list
+#: rather than by four more queries — the console has the rows in hand, and a
+#: separate query could report a total the visible list does not support.
+def feedback_summary(items: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """Repeated-pain-point counters over the rows the console is showing."""
+    rows = list(items)
+    return {
+        'total': len(rows),
+        'production_blockers': sum(1 for row in rows if row.get('production_blocker') == 'yes'),
+        'high_or_critical': sum(1 for row in rows if row.get('severity') in ('critical', 'high')),
+        'missing_capability': sum(1 for row in rows if row.get('feedback_type') == 'missing_feature'),
+        'detection_issues': sum(
+            1 for row in rows
+            if row.get('feedback_type') in ('detection_accuracy', 'false_positive', 'missed_detection')
+        ),
+    }
 
 
 def organization_members(connection: Any, organization_id: str) -> list[dict[str, Any]]:

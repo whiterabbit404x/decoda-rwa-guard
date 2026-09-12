@@ -6,6 +6,7 @@ import { usePilotAuth } from './pilot-auth-context';
 import { usePlanStatus } from './plan-status-context';
 import {
   PILOT_EVALUATION_ACCESS_NOTE,
+  type PlanEvaluation,
   USAGE_ROWS,
   planBadgeLabel,
   planBadgeTone,
@@ -15,7 +16,16 @@ import {
   usageRatio,
 } from './plan-status';
 import { Select } from './components/ui-primitives';
-import { FEEDBACK_TYPE_OPTIONS, FEEDBACK_SECRET_WARNING } from './plan-feedback';
+import PilotFeedbackDialog, { type FeedbackMode } from './pilot-feedback-dialog';
+import {
+  DETAILED_FEEDBACK_CTA,
+  END_OF_PILOT_CTA,
+  FEEDBACK_SECRET_WARNING,
+  FEEDBACK_SEVERITY_OPTIONS,
+  FEEDBACK_TYPE_OPTIONS,
+  currentFeedbackContext,
+  shouldShowEndOfPilotCta,
+} from './plan-feedback';
 
 /**
  * The plan chip in the existing app shell header.
@@ -113,18 +123,29 @@ function PlanPanel({ onClose }: { onClose: () => void }) {
       {evaluationAccess ? <p className="planPanelNote">{evaluationAccess}</p> : null}
       {recommendOnly ? <p className="planPanelNote">{recommendOnly}</p> : null}
 
-      <FeedbackForm onSubmitted={() => void refresh()} />
+      <FeedbackForm onSubmitted={() => void refresh()} evaluation={plan?.evaluation ?? null} />
     </div>
   );
 }
 
-function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
+function FeedbackForm({
+  onSubmitted,
+  evaluation,
+}: {
+  onSubmitted: () => void;
+  evaluation: PlanEvaluation | null;
+}) {
   const { authHeaders, csrfReady } = usePilotAuth();
   const [open, setOpen] = useState(false);
   const [feedbackType, setFeedbackType] = useState<string>('usability');
+  const [severity, setSeverity] = useState<string>('');
   const [message, setMessage] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Which structured form is open, if any. The dropdown itself stays compact:
+  // the deeper forms are a modal over the page, not more rows in this panel.
+  const [dialogMode, setDialogMode] = useState<FeedbackMode | null>(null);
+  const endOfPilot = shouldShowEndOfPilotCta(evaluation);
 
   async function submit() {
     setStatus('sending');
@@ -134,9 +155,16 @@ function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          feedback_mode: 'quick',
           feedback_type: feedbackType,
+          // '' means "not stated". The backend stores NULL for it rather than a
+          // default, so the founder console never shows a priority nobody chose.
+          severity,
           message,
-          context: { page: typeof window === 'undefined' ? null : window.location.pathname },
+          // Page, plus the incident id when the customer is on an incident —
+          // never typed by hand, and re-verified against their own tenant
+          // server-side before it is stored.
+          context: currentFeedbackContext(),
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -161,11 +189,49 @@ function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
     }
   }
 
+  // The two structured forms are reachable whether or not the quick form is
+  // expanded, and they render the SAME modal — so the dropdown never grows a
+  // second copy of a long form.
+  const secondaryActions = (
+    <div className="planFeedbackSecondary">
+      <button
+        type="button"
+        className="planFeedbackTrigger"
+        data-testid="plan-feedback-detailed-cta"
+        onClick={() => setDialogMode('detailed')}
+      >
+        {DETAILED_FEEDBACK_CTA}
+      </button>
+      {endOfPilot ? (
+        <button
+          type="button"
+          className="planFeedbackTrigger"
+          data-testid="plan-feedback-review-cta"
+          onClick={() => setDialogMode('end_of_pilot')}
+        >
+          {END_OF_PILOT_CTA}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const dialog = dialogMode ? (
+    <PilotFeedbackDialog
+      mode={dialogMode}
+      onClose={() => setDialogMode(null)}
+      onSubmitted={onSubmitted}
+    />
+  ) : null;
+
   if (!open) {
     return (
-      <button type="button" className="planFeedbackTrigger" onClick={() => setOpen(true)}>
-        Give feedback
-      </button>
+      <>
+        <button type="button" className="planFeedbackTrigger" onClick={() => setOpen(true)}>
+          Give feedback
+        </button>
+        {secondaryActions}
+        {dialog}
+      </>
     );
   }
 
@@ -187,6 +253,21 @@ function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
         value={feedbackType}
         onValueChange={(value) => setFeedbackType(value)}
         options={FEEDBACK_TYPE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+      />
+
+      {/* Optional by design: '' posts as "not stated" so the quick form stays a
+          two-field form for anyone who just wants to report something. */}
+      <label className="planFeedbackLabel" id="plan-feedback-severity-label" htmlFor="plan-feedback-severity">
+        Severity (optional)
+      </label>
+      <Select
+        id="plan-feedback-severity"
+        testId="plan-feedback-severity"
+        className="planFeedbackSelect"
+        ariaLabelledBy="plan-feedback-severity-label"
+        value={severity}
+        onValueChange={(value) => setSeverity(value)}
+        options={FEEDBACK_SEVERITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
       />
 
       <label className="planFeedbackLabel" htmlFor="plan-feedback-message">
@@ -217,6 +298,9 @@ function FeedbackForm({ onSubmitted }: { onSubmitted: () => void }) {
           Cancel
         </button>
       </div>
+
+      {secondaryActions}
+      {dialog}
     </div>
   );
 }

@@ -312,3 +312,139 @@ def test_tenant_indexes_exist_for_the_scoped_queries(migrated) -> None:
         'idx_organization_feedback_org_created',
     ):
         assert expected in names, expected
+
+
+# ── 0153 — the discovery columns, on top of the same real database ───────────
+# The fixture above applies every migration EXCEPT 0150 and then 0150 last, so
+# 0153 has already run against a schema with no organization_feedback table in
+# it. These apply it in the real order and pin what it leaves behind.
+
+@pytest.fixture(scope='module')
+def feedback_schema():
+    """Every migration, in order, against a real database."""
+    from psycopg.rows import dict_row
+
+    _reset_schema()
+    _apply(_migrations(include_tenancy=True))
+    with psycopg.connect(_DSN, autocommit=True, row_factory=dict_row) as connection:
+        yield connection
+
+
+def test_0153_is_skipped_rather_than_failing_without_its_table(migrated) -> None:
+    """An out-of-order apply must not abort the whole migration run.
+
+    The `migrated` fixture proves this by construction: it ran 0153 BEFORE 0150
+    existed, and every assertion in this module depends on that run having
+    succeeded. What it must not have done is invent its own organization_feedback
+    table — that is 0150's definition, and a second one here is how two schemas
+    diverge.
+    """
+    columns = {
+        row['column_name']
+        for row in migrated['connection'].execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'organization_feedback'",
+        ).fetchall()
+    }
+    assert 'message' in columns, '0150 created the table'
+    assert 'feedback_mode' not in columns, '0153 must not have run against a table it did not find'
+
+
+def test_0153_adds_every_discovery_column_as_optional(feedback_schema) -> None:
+    """Every added column is NULLABLE or defaulted, so existing rows stay valid."""
+    rows = {
+        row['column_name']: row
+        for row in feedback_schema.execute(
+            "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_name = 'organization_feedback'",
+        ).fetchall()
+    }
+    for column in (
+        'goal_or_task', 'security_problem', 'current_workaround', 'where_decoda_helped',
+        'missing_or_difficult', 'deployment_requirement', 'paid_capability',
+        'severity', 'production_blocker', 'continue_intent', 'pilot_day',
+    ):
+        assert rows[column]['is_nullable'] == 'YES', column
+    # The two non-null additions carry defaults, so no backfill is needed.
+    assert rows['feedback_mode']['is_nullable'] == 'NO'
+    assert "'quick'" in rows['feedback_mode']['column_default']
+    assert rows['contact_permission']['is_nullable'] == 'NO'
+    assert rows['contact_permission']['column_default'] == 'false'
+
+
+def test_0153_enforces_every_vocabulary_in_the_database(feedback_schema) -> None:
+    """The CHECK constraints are the last line: not just application validation."""
+    import psycopg as _psycopg
+
+    org_id = str(uuid.uuid4())
+    feedback_schema.execute(
+        'INSERT INTO organizations (id, name, slug) VALUES (%s, %s, %s)',
+        (org_id, 'Vocabulary Test', f'vocab-{org_id[:8]}'),
+    )
+
+    def _insert(**columns: object) -> None:
+        base = {'id': str(uuid.uuid4()), 'organization_id': org_id,
+                'feedback_type': 'other', 'message': 'x'}
+        base.update(columns)
+        names = ', '.join(base)
+        placeholders = ', '.join(['%s'] * len(base))
+        feedback_schema.execute(
+            f'INSERT INTO organization_feedback ({names}) VALUES ({placeholders})',
+            tuple(base.values()),
+        )
+
+    # Every value the application offers is storable …
+    for kind in (
+        'security', 'detection_accuracy', 'false_positive', 'missed_detection', 'investigation',
+        'incident_response', 'evidence_audit', 'integration', 'policy_controls', 'usability',
+        'missing_feature', 'other',
+    ):
+        _insert(feedback_type=kind)
+    for mode in ('quick', 'detailed', 'end_of_pilot'):
+        _insert(feedback_mode=mode)
+    for level in ('critical', 'high', 'medium', 'low'):
+        _insert(severity=level)
+
+    # … and nothing else is.
+    for bad in (
+        {'feedback_type': 'exfiltrate'},
+        {'feedback_mode': 'interview'},
+        {'severity': 'catastrophic'},
+        {'production_blocker': 'perhaps'},
+        {'continue_intent': 'sometimes'},
+    ):
+        with pytest.raises(_psycopg.errors.CheckViolation):
+            _insert(**bad)
+        feedback_schema.execute('ROLLBACK')
+
+
+def test_0153_indexes_the_founder_roadmap_queries(feedback_schema) -> None:
+    names = {
+        row['indexname']
+        for row in feedback_schema.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename = 'organization_feedback'",
+        ).fetchall()
+    }
+    for expected in (
+        'idx_organization_feedback_blocker_created',
+        'idx_organization_feedback_severity_created',
+        'idx_organization_feedback_mode_created',
+        # 0150's own indexes must survive.
+        'idx_organization_feedback_org_created',
+        'idx_organization_feedback_type_created',
+    ):
+        assert expected in names, expected
+
+
+def test_0153_is_re_runnable(feedback_schema) -> None:
+    """A retry after a partial run converges rather than stacking constraints."""
+    before = feedback_schema.execute(
+        "SELECT COUNT(*) AS c FROM pg_constraint "
+        "WHERE conrelid = 'organization_feedback'::regclass AND contype = 'c'",
+    ).fetchone()['c']
+    _apply([_MIGRATIONS / '0153_pilot_feedback_discovery.sql'])
+    after = feedback_schema.execute(
+        "SELECT COUNT(*) AS c FROM pg_constraint "
+        "WHERE conrelid = 'organization_feedback'::regclass AND contype = 'c'",
+    ).fetchone()['c']
+    assert int(after) == int(before)
