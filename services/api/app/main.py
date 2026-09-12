@@ -4401,9 +4401,29 @@ def admin_customer_plan(organization_id: str, payload: dict[str, Any], request: 
 
 
 @app.get('/admin/feedback', summary='Internal: pilot evaluation feedback')
-def admin_feedback(request: Request, organization_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+def admin_feedback(
+    request: Request,
+    organization_id: str | None = None,
+    limit: int = 100,
+    feedback_type: str | None = None,
+    severity: str | None = None,
+    production_blocker: str | None = None,
+    feedback_mode: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
     return with_auth_schema_json(
-        lambda: tenancy_endpoints.list_admin_feedback(request, organization_id=organization_id, limit=limit)
+        lambda: tenancy_endpoints.list_admin_feedback(
+            request,
+            organization_id=organization_id,
+            limit=limit,
+            feedback_type=feedback_type,
+            severity=severity,
+            production_blocker=production_blocker,
+            feedback_mode=feedback_mode,
+            since=since,
+            until=until,
+        )
     )
 
 

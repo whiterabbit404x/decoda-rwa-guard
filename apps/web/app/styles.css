@@ -9571,10 +9571,174 @@ a.mktTrustBadge:hover {
   margin-top: 0.35rem;
 }
 
+/* The two secondary entry points under the quick form. Stacked links, not
+   buttons competing with "Send feedback": the dropdown must stay compact, so the
+   structured forms open as a modal over the page instead of growing this panel. */
+.planFeedbackSecondary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+
+.planFeedbackSecondary .planFeedbackTrigger {
+  margin-top: 0;
+}
+
+/* ── Structured Pilot feedback (modal over the existing .modalCard) ──── */
+.pilotFeedbackOverlay {
+  /* Above the plan panel that launched it. */
+  z-index: 80;
+}
+
+.pilotFeedbackCard {
+  max-width: 40rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.pilotFeedbackHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.pilotFeedbackTitle {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.pilotFeedbackTitle:focus-visible {
+  outline: 2px solid var(--focus-ring, #58a6ff);
+  outline-offset: 3px;
+}
+
+.pilotFeedbackIntro {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.pilotFeedbackField {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.pilotFeedbackHint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.pilotFeedbackRequired {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.pilotFeedbackCheckbox {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.pilotFeedbackDone {
+  display: grid;
+  gap: 0.8rem;
+  justify-items: start;
+}
+
 /* ── Internal customers console (/admin/customers) ─────────────────
    Not part of the customer product shell and not linked from product
    navigation. Authorization is enforced by the backend on every request; this
    page simply reports what it is told. */
+/* Feedback review: counters, filters, and the single-row detail panel. Kept to
+   a table plus one expandable panel — this is a founder's reading surface, not a
+   CRM. */
+.adminFeedbackSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  margin: 0 0 0.7rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.adminFeedbackFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem 0.9rem;
+  margin: 0 0 0.8rem;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.adminFeedbackFilters label {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.adminFeedbackFilters select,
+.adminFeedbackFilters input {
+  padding: 0.3rem 0.4rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-family: inherit;
+}
+
+.adminFeedbackDetail {
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+
+.adminFeedbackDetailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.7rem;
+}
+
+.adminFeedbackDetailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.adminFeedbackDetailBody {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+/* A long answer wraps and stays inside the panel: one 4000-character reply must
+   not push the console's layout sideways. */
+.adminFeedbackAnswer {
+  margin: 0.15rem 0 0;
+  font-size: 0.84rem;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 62rem;
+}
+
 .adminConsole {
   padding: 2rem clamp(1rem, 4vw, 3rem);
   max-width: 88rem;
