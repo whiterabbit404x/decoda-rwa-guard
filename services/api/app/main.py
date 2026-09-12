@@ -3054,6 +3054,21 @@ def ops_production_claim_validator() -> dict[str, Any]:
 
 @app.get('/ops/monitoring/runtime-status', summary='Monitoring runtime status for admin/settings surfaces')
 def ops_monitoring_runtime_status(request: Request) -> dict[str, Any]:
+    # The dashboard fetches this in parallel with the executive summary on every
+    # load. Without a collector opened here, every phase and flag recorded inside
+    # `monitoring_runtime_status` -- the RPC probe, the DB checkpoints, the cache
+    # hit/miss, the single-flight role -- is silently dropped when this endpoint is
+    # reached directly, because `phase()` and `record_flag()` are no-ops outside a
+    # request that opened one. That left this whole leg unattributable.
+    #
+    # The body lives in an impl function so opening the collector does not
+    # re-indent ~590 lines, matching `ops_dashboard_executive_summary` above. The
+    # public name stays on the wrapper: callers import it directly.
+    with dashboard_timing.dashboard_timing('ops_monitoring_runtime_status'):
+        return _ops_monitoring_runtime_status_impl(request)
+
+
+def _ops_monitoring_runtime_status_impl(request: Request) -> dict[str, Any]:
     try:
         payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
         emit_legacy_fields = str(os.getenv('MONITORING_RUNTIME_LEGACY_FIELDS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}

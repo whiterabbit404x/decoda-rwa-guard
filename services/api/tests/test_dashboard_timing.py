@@ -17,11 +17,19 @@ phase produces a timing table that looks complete and is wrong.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import sys
+from pathlib import Path
 
 import pytest
 
 from services.api.app import dashboard_timing
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+API_MAIN_PATH = Path(__file__).resolve().parents[1] / 'app' / 'main.py'
+
+sys.path.insert(0, str(REPO_ROOT))
 
 
 @pytest.fixture(autouse=True)
@@ -189,3 +197,63 @@ def test_emit_failure_never_breaks_the_request(timing_enabled, monkeypatch):
 
     with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
         dashboard_timing.record_phase('runtime_status_ms', 1.0)
+
+
+@pytest.fixture()
+def api_main():
+    """A freshly loaded API module, matching the pattern the route tests use.
+
+    Loaded under its own module name so this test never depends on import order
+    with the rest of the suite. Its `import` statements still resolve through
+    ``sys.modules``, so it shares this module's ``dashboard_timing`` -- and
+    therefore the same contextvar the collector lives in.
+    """
+    spec = importlib.util.spec_from_file_location('phase1_api_dashboard_timing_main', API_MAIN_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError('Unable to load API module for dashboard timing route tests.')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_runtime_status_route_opens_a_collector(api_main, monkeypatch, timing_enabled, caplog):
+    """The parallel runtime-status leg must be attributable, not silently dropped.
+
+    ``phase()`` and ``record_flag()`` are no-ops outside a request that opened a
+    collector. This endpoint opened none, so everything ``monitoring_runtime_status``
+    records -- the RPC probe, the DB checkpoints, the cache hit/miss, the
+    single-flight role -- vanished whenever it was reached directly. The dashboard
+    fetches it on every load, so that was a whole leg of the load path measuring as
+    nothing at all, which reads identically to a leg that cost nothing.
+    """
+    from starlette.requests import Request
+
+    def _fake_runtime_status(_request):
+        # Stands in for the real computation, which records exactly this way.
+        dashboard_timing.record_flag('runtime_status_cache', 'miss')
+        dashboard_timing.record_phase('rpc_probe_ms', 12.5)
+        return {'workspace_monitoring_summary': {}, 'monitoring_status': 'offline'}
+
+    monkeypatch.setattr(api_main, 'with_auth_schema_json', lambda fn: fn())
+    monkeypatch.setattr(api_main, 'monitoring_runtime_status', _fake_runtime_status)
+    monkeypatch.setattr(
+        api_main,
+        'get_background_loop_health',
+        lambda: {
+            'loop_running': True,
+            'last_successful_cycle': '2026-04-28T09:00:00Z',
+            'consecutive_failures': 0,
+            'next_retry_at': None,
+            'backoff_seconds': 0,
+        },
+    )
+
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/ops/monitoring/runtime-status', 'headers': []})
+
+    with caplog.at_level(logging.INFO, logger='decoda.dashboard.timing'):
+        api_main.ops_monitoring_runtime_status(request)
+
+    message = _emitted_summary(caplog)
+    assert 'route=ops_monitoring_runtime_status' in message
+    assert "'runtime_status_cache': 'miss'" in message
+    assert 'rpc_probe_ms' in message
