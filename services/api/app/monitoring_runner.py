@@ -5,11 +5,12 @@ import json
 import logging
 import math
 import os
+import threading
 import uuid
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from time import perf_counter, sleep
-from typing import Any
+from typing import Any, Callable
 from fastapi import HTTPException, Request, status
 import psycopg
 from psycopg import errors as psycopg_errors
@@ -22,8 +23,10 @@ from services.api.app.activity_providers import (
 )
 from services.api.app.evm_activity_provider import (
     JsonRpcClient,
+    cached_rpc_reachability,
     emit_poll_safety_summary,
     evaluate_chain_mismatch,
+    probe_rpc_reachable_bounded,
     resolve_monitored_wallet,
     rpc_metrics_capture,
     rpc_provider_backoff_active,
@@ -90,6 +93,7 @@ from services.api.app.workspace_monitoring_summary import (
     build_workspace_monitoring_summary_fallback,
 )
 from services.api.app import telemetry_realtime
+from services.api.app import dashboard_timing
 from services.api.app.pilot import (
     _json_dumps,
     _json_safe_value,
@@ -302,6 +306,113 @@ RUNTIME_STATUS_QUERY_PROFILE_HISTORY: dict[str, deque[float]] = defaultdict(
 )
 RUNTIME_STATUS_WORKSPACE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 RUNTIME_STATUS_SUMMARY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+# Single-flight for the runtime-status computation.
+#
+# One dashboard load fans out to several callers of this function
+# (/ops/dashboard/executive-summary and /ops/monitoring/runtime-status fire
+# together from the same page). Each miss used to run the full computation
+# concurrently -- ~44 sequential queries over several fresh Postgres
+# connections, multiplied by the number of callers. Worse, the result is cached
+# only on completion, so while a slow computation is in flight every arriving
+# request starts another one.
+#
+# Keyed by the SAME key as RUNTIME_STATUS_WORKSPACE_CACHE, and only ever used
+# when that key exists. A caller therefore joins an in-flight computation only
+# where it would already have been served that workspace's cached payload, so
+# this shares no result across a boundary the cache does not already share:
+# there is no new cross-workspace or cross-tenant exposure.
+RUNTIME_STATUS_INFLIGHT_LOCK = threading.Lock()
+RUNTIME_STATUS_INFLIGHT: dict[str, '_RuntimeStatusComputation'] = {}
+# Never let a joiner outlive a wedged leader; past this it computes for itself.
+RUNTIME_STATUS_INFLIGHT_WAIT_SECONDS = max(
+    1.0, float(os.getenv('RUNTIME_STATUS_INFLIGHT_WAIT_SECONDS', '30'))
+)
+
+
+class _RuntimeStatusComputation:
+    """One in-flight computation that later arrivals for the same key can join."""
+
+    __slots__ = ('done', 'payload', 'error')
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.payload: dict[str, Any] | None = None
+        self.error: BaseException | None = None
+
+    def publish(self, payload: dict[str, Any] | None, error: BaseException | None) -> None:
+        self.payload = payload
+        self.error = error
+        self.done.set()
+
+
+def run_runtime_status_single_flight(
+    key: str | None,
+    compute: 'Callable[[], dict[str, Any]]',
+    *,
+    wait_seconds: float | None = None,
+    on_role: 'Callable[[str], None] | None' = None,
+) -> dict[str, Any]:
+    """Run ``compute`` once per ``key`` while a computation is in flight.
+
+    ``key`` is the workspace cache key. When it is ``None`` there is no key that
+    is safe to share on, so ``compute`` runs in isolation — a request that names
+    no workspace never joins, and never receives, another workspace's result.
+
+    A joiner that the leader has not answered within ``wait_seconds`` stops
+    waiting and computes for itself, so a wedged leader delays a request but
+    cannot pin it forever. A leader's exception is republished to its joiners so
+    each one runs the same failure handling it would have reached alone.
+    """
+    if not key:
+        if on_role is not None:
+            on_role('unkeyed')
+        return compute()
+
+    timeout = RUNTIME_STATUS_INFLIGHT_WAIT_SECONDS if wait_seconds is None else wait_seconds
+
+    with RUNTIME_STATUS_INFLIGHT_LOCK:
+        inflight = RUNTIME_STATUS_INFLIGHT.get(key)
+        is_leader = inflight is None
+        if is_leader:
+            inflight = _RuntimeStatusComputation()
+            RUNTIME_STATUS_INFLIGHT[key] = inflight
+
+    assert inflight is not None
+
+    if not is_leader:
+        if inflight.done.wait(timeout=timeout):
+            if inflight.error is not None:
+                raise inflight.error
+            if inflight.payload is not None:
+                if on_role is not None:
+                    on_role('joined')
+                return dict(inflight.payload)
+        logger.warning(
+            'monitoring_runtime_status_single_flight_wait_expired cache_key=%s waited_seconds=%s',
+            key,
+            timeout,
+        )
+        if on_role is not None:
+            on_role('wait_expired')
+        return compute()
+
+    if on_role is not None:
+        on_role('leader')
+    try:
+        payload = compute()
+    except BaseException as exc:
+        inflight.publish(None, exc)
+        raise
+    else:
+        inflight.publish(payload, None)
+        return payload
+    finally:
+        # Release the slot only if it is still ours, so a computation that has
+        # already replaced it is not dropped.
+        with RUNTIME_STATUS_INFLIGHT_LOCK:
+            if RUNTIME_STATUS_INFLIGHT.get(key) is inflight:
+                del RUNTIME_STATUS_INFLIGHT[key]
 RUNTIME_STATUS_ALERT_BREACH_HISTORY: dict[str, dict[str, deque[bool]]] = defaultdict(
     lambda: {
         'p95': deque(maxlen=max(RUNTIME_STATUS_ALERT_WINDOW_SAMPLES, 1)),
@@ -7958,11 +8069,34 @@ def production_claim_validator() -> dict[str, Any]:
     }
     reason = None
     if checks['live_or_hybrid_mode'] and checks['live_monitoring_enabled'] and (os.getenv('EVM_RPC_URL') or '').strip():
-        try:
-            chain_id_hex = JsonRpcClient((os.getenv('EVM_RPC_URL') or '').strip()).call('eth_chainId', [])
-            checks['evm_rpc_reachable'] = bool(chain_id_hex)
-        except Exception as exc:
-            reason = f'evm_rpc_unreachable:{exc.__class__.__name__}'
+        # Provider reachability on a READ path.
+        #
+        # This runs inside monitoring_runtime_status, which every dashboard
+        # request goes through, so it must not carry the worker's RPC budget
+        # (EVM_RPC_TIMEOUT_SECONDS=10 x 4 attempts + 1/2/4s backoff). Prefer the
+        # out-of-band fact recorded by whoever probed last -- the worker health
+        # check, /system-health, or an earlier request -- and only touch the
+        # network when there is no fresh answer, with a single attempt bounded
+        # to <=1s.
+        #
+        # Fail closed: `reachable is True` is the ONLY way this reads as
+        # reachable. Unknown (no cached fact and no definite probe answer) and a
+        # definite negative both leave the check False, so a provider is never
+        # presented as connected on the strength of a missing measurement.
+        with dashboard_timing.phase('rpc_probe_ms'):
+            rpc_url = (os.getenv('EVM_RPC_URL') or '').strip()
+            reachable = cached_rpc_reachability()
+            reachability_source = 'cached_probe'
+            if reachable is None:
+                reachable = probe_rpc_reachable_bounded(rpc_url)
+                reachability_source = 'bounded_read_path_probe'
+        checks['evm_rpc_reachable'] = reachable is True
+        if reachable is None:
+            reason = 'evm_rpc_reachability_unknown'
+        elif reachable is False:
+            reason = 'evm_rpc_unreachable'
+        dashboard_timing.record_flag('rpc_reachability_source', reachability_source)
+        dashboard_timing.record_flag('rpc_reachable', checks['evm_rpc_reachable'])
     checks['oracle_sources_configured'] = bool((os.getenv('ORACLE_SOURCE_URLS') or '').strip() or (os.getenv('ORACLE_API_URL') or '').strip())
     if live_mode_enabled():
         health = get_monitoring_health()
@@ -12255,10 +12389,21 @@ def monitoring_runtime_status(
         for _ck in _cache_keys:
             RUNTIME_STATUS_WORKSPACE_CACHE[_ck] = (_cache_ts, dict(result))
 
-    try:
+    def _compute_and_cache() -> dict[str, Any]:
         payload = _monitoring_runtime_status_impl()
         _write_runtime_cache(payload)
         return payload
+
+    try:
+        # Single-flight on the SAME key the workspace cache uses: concurrent
+        # callers for one workspace (the dashboard fires several at once) share
+        # one computation instead of each running ~44 queries over its own fresh
+        # connections. With no key, nothing is shared.
+        return run_runtime_status_single_flight(
+            cache_key,
+            _compute_and_cache,
+            on_role=lambda role: dashboard_timing.record_flag('runtime_status_single_flight', role),
+        )
     except HTTPException as exc:
         detail_payload = exc.detail if isinstance(exc.detail, dict) else {}
         if (

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from services.api.app import dashboard_timing
 from services.api.app.dashboard_scoring import (
     AlertCluster,
     HealthInputs,
@@ -91,19 +92,21 @@ def _int(value: Any, default: int = 0) -> int:
 
 def _safe_fetchone(connection: Any, sql: str, params: tuple) -> dict[str, Any]:
     """Run a scoped read, returning {} on any failure (optional-table tolerant)."""
-    try:
-        row = connection.execute(sql, params).fetchone()
-        return dict(row) if row else {}
-    except Exception:
-        return {}
+    with dashboard_timing.timed_db_query():
+        try:
+            row = connection.execute(sql, params).fetchone()
+            return dict(row) if row else {}
+        except Exception:
+            return {}
 
 
 def _safe_fetchall(connection: Any, sql: str, params: tuple) -> list[dict[str, Any]]:
-    try:
-        rows = connection.execute(sql, params).fetchall()
-        return [dict(r) for r in rows] if rows else []
-    except Exception:
-        return []
+    with dashboard_timing.timed_db_query():
+        try:
+            rows = connection.execute(sql, params).fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            return []
 
 
 # --------------------------------------------------------------------------

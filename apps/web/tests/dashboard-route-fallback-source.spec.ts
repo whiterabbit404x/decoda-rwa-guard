@@ -19,5 +19,8 @@ test('dashboard navigation target is explicit so route transitions resolve to da
   const dashboardPage = readFileSync(path.join(appDir, '(product)', 'dashboard', 'page.tsx'), 'utf8');
 
   expect(productNav).toContain("{ href: '/dashboard', label: 'Dashboard' }");
-  expect(dashboardPage).toContain('fetchDashboardPageData');
+  // The route must resolve to the real dashboard page (not a placeholder), which
+  // is what makes the scoped error boundary above reachable. It renders the
+  // hydrator; the payload is fetched client-side, not pre-fetched on the server.
+  expect(dashboardPage).toContain('DashboardLiveHydrator');
 });

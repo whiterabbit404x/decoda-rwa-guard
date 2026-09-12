@@ -1,5 +1,4 @@
 import DashboardLiveHydrator from '../../dashboard-live-hydrator';
-import { fetchDashboardPageData } from '../../dashboard-data';
 import { headers } from 'next/headers';
 
 export const dynamic = 'force-dynamic';
@@ -36,7 +35,12 @@ export default async function DashboardPage() {
       },
     });
   }
-  const initialData = await fetchDashboardPageData(undefined, { requestSource: 'ssr-dashboard-render' });
-
-  return <DashboardLiveHydrator initialData={initialData} />;
+  // No server-side dashboard fetch: DashboardExecutiveSummary loads its own
+  // workspace-scoped payload from /api/dashboard/executive-summary once the
+  // session and workspace are resolved client-side. Pre-fetching here used to
+  // block this server component behind /ops/dashboard-page-data — a request
+  // that carries no auth headers, so it could never return usable data — and
+  // the result was then discarded by the component. That await was pure
+  // latency in front of the loading skeleton, so it is gone.
+  return <DashboardLiveHydrator />;
 }

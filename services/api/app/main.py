@@ -313,6 +313,7 @@ from services.api.app import incident_forensics
 from services.api.app import incident_queue_summary
 from services.api.app import onboarding_agent
 from services.api.app import dashboard_summary
+from services.api.app import dashboard_timing
 from services.api.app.workspace_monitoring_summary import build_workspace_monitoring_summary_fallback
 from services.api.app.threat_payloads import normalize_threat_payload
 from services.api.app.db_failure import (
@@ -2684,16 +2685,22 @@ def resilience_dashboard(request: Request) -> dict[str, Any]:
     description='Returns dashboard + risk + threat + compliance + resilience payloads in a single backend response for initial authenticated dashboard render.',
 )
 def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
-    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
-    return {
-        'dashboard': dashboard(),
-        'risk_dashboard': risk_dashboard(request),
-        'threat_dashboard': threat_dashboard(request),
-        'compliance_dashboard': compliance_dashboard(request),
-        'resilience_dashboard': resilience_dashboard(request),
-        'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
-        'background_loop_health': runtime_payload.get('background_loop_health'),
-    }
+    # Timed at the endpoint level only: the response contract here is asserted
+    # literally by test_architecture_sections_conformance, and this endpoint is
+    # no longer on the dashboard critical path, so a total (plus whether it is
+    # called at all) is the useful signal.
+    with dashboard_timing.dashboard_timing('ops_dashboard_page_data'):
+        with dashboard_timing.phase('runtime_status_ms'):
+            runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+        return {
+            'dashboard': dashboard(),
+            'risk_dashboard': risk_dashboard(request),
+            'threat_dashboard': threat_dashboard(request),
+            'compliance_dashboard': compliance_dashboard(request),
+            'resilience_dashboard': resilience_dashboard(request),
+            'workspace_monitoring_summary': runtime_payload.get('workspace_monitoring_summary'),
+            'background_loop_health': runtime_payload.get('background_loop_health'),
+        }
 
 
 @app.get(
@@ -2708,9 +2715,17 @@ def ops_dashboard_page_data(request: Request) -> dict[str, Any]:
     ),
 )
 def ops_dashboard_executive_summary(request: Request, background_tasks: BackgroundTasks = None) -> dict[str, Any]:
+    with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
+        return _ops_dashboard_executive_summary_impl(request, background_tasks)
+
+
+def _ops_dashboard_executive_summary_impl(
+    request: Request, background_tasks: BackgroundTasks = None
+) -> dict[str, Any]:
     # Canonical runtime facts (this call authenticates + scopes internally and
     # is the shared source of truth for counts, freshness and evidence).
-    runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
+    with dashboard_timing.phase('runtime_status_ms'):
+        runtime_payload = with_auth_schema_json(lambda: monitoring_runtime_status(request))
     canonical_summary = (
         runtime_payload.get('workspace_monitoring_summary') if isinstance(runtime_payload, dict) else None
     )
@@ -2743,27 +2758,31 @@ def ops_dashboard_executive_summary(request: Request, background_tasks: Backgrou
             background_tasks.add_task(_run_dashboard_brief_refresh, job, provider)
 
     with pg_connection() as connection:
-        ensure_pilot_schema(connection)
-        user = authenticate_with_connection(connection, request)
-        workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-        workspace_id = str(workspace_context['workspace_id'])
+        with dashboard_timing.phase('auth_scope_ms'):
+            ensure_pilot_schema(connection)
+            user = authenticate_with_connection(connection, request)
+            workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+            workspace_id = str(workspace_context['workspace_id'])
 
-        cached = dashboard_summary.dashboard_cache_get(workspace_id)
+        with dashboard_timing.phase('response_cache_lookup_ms'):
+            cached = dashboard_summary.dashboard_cache_get(workspace_id)
+        dashboard_timing.record_flag('response_cache_hit', cached is not None)
         if cached is not None:
             return cached
 
-        response = dashboard_summary.build_dashboard_summary(
-            connection,
-            workspace_id=workspace_id,
-            canonical_summary=canonical_summary,
-            background_loop_health=background_loop_health,
-            provider=provider,
-            now=now,
-            model=model,
-            logger=logger,
-            schedule_refresh=schedule_refresh,
-        )
-        connection.commit()
+        with dashboard_timing.phase('build_summary_ms'):
+            response = dashboard_summary.build_dashboard_summary(
+                connection,
+                workspace_id=workspace_id,
+                canonical_summary=canonical_summary,
+                background_loop_health=background_loop_health,
+                provider=provider,
+                now=now,
+                model=model,
+                logger=logger,
+                schedule_refresh=schedule_refresh,
+            )
+            connection.commit()
         dashboard_summary.dashboard_cache_set(workspace_id, response)
         return response
 

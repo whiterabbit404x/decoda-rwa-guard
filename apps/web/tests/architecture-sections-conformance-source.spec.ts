@@ -26,5 +26,9 @@ test('architecture sections conformance maps 8 sections to routes and components
     expect(navSource, `missing label for ${section.key}`).toContain(section.componentNeedle);
   });
 
-  expect(dashboardPageSource).toContain('fetchDashboardPageData');
+  // The dashboard route renders the live hydrator; its payload is fetched
+  // client-side from /api/dashboard/executive-summary rather than pre-fetched
+  // on the server, so the route must not reintroduce a blocking SSR fetch.
+  expect(dashboardPageSource).toContain('DashboardLiveHydrator');
+  expect(dashboardPageSource).not.toContain('fetchDashboardPageData');
 });

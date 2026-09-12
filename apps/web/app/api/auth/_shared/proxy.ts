@@ -2,8 +2,19 @@ import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 
 import { normalizeApiBaseUrl } from '../../../api-config';
+import { FetchTimeoutError, fetchWithTimeout } from '../../../fetch-with-timeout';
 import { getRuntimeConfig } from '../../../runtime-config';
 import { normalizeWorkspaceHeaderValue } from '../../../workspace-header';
+
+// Every auth call previously used a bare fetch with no timeout, so a backend
+// that accepted the connection and then stalled held the request open
+// indefinitely. /api/auth/me gates the whole authenticated shell, so an
+// unbounded hang there is an unbounded hang on the dashboard. Matches the
+// bound the mutation proxies already use.
+const AUTH_PROXY_TIMEOUT_MS = (() => {
+  const configured = Number(process.env.AUTH_PROXY_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 15000;
+})();
 
 const SESSION_COOKIE_NAME = 'decoda_session';
 const CSRF_COOKIE_NAME = 'decoda_csrf';
@@ -244,7 +255,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
   const requestId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 
   try {
-    const response = await fetch(authRequestUrl, init);
+    const response = await fetchWithTimeout(authRequestUrl, init, AUTH_PROXY_TIMEOUT_MS);
     if (!response.ok) {
       console.error(JSON.stringify({
         event: 'auth_proxy_backend_error',
@@ -256,14 +267,25 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
     }
     return await buildBackendResponse(response, options?.cookieAction ?? 'none');
   } catch (networkError) {
+    const timedOut = networkError instanceof FetchTimeoutError;
     console.error(JSON.stringify({
-      event: 'auth_proxy_network_error',
+      event: timedOut ? 'auth_proxy_timeout' : 'auth_proxy_network_error',
       path: backendPath,
       error: networkError instanceof Error ? networkError.message : String(networkError),
       error_type: networkError instanceof Error ? networkError.name : 'UnknownError',
+      timeout_ms: timedOut ? AUTH_PROXY_TIMEOUT_MS : undefined,
       request_id: requestId,
       auth_request_url: maskAuthRequestUrl(authRequestUrl),
     }));
+    if (timedOut) {
+      return errorResponse(504, {
+        detail: 'The authentication service did not respond in time. Please try again shortly.',
+        code: 'backend_timeout',
+        authTransport: 'same-origin proxy',
+        backendApiUrl,
+        configured: true,
+      });
+    }
     return errorResponse(502, {
       detail: 'We could not reach the authentication service. Please try again shortly.',
       code: 'backend_unreachable',
