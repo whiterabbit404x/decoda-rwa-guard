@@ -11,7 +11,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
 _trace_id: contextvars.ContextVar[str] = contextvars.ContextVar('trace_id', default='')
@@ -105,12 +105,29 @@ def report_error(exc: BaseException, *, operation: str, severity: str = 'error',
     }, exc_info=exc)
 
 
-def prometheus_metrics() -> str:
+#: Series emitted by :mod:`services.api.app.dashboard_timing`. Kept here because
+#: the filter below and the collector that produces them have to agree.
+DASHBOARD_TIMING_METRIC_PREFIX = 'decoda_dashboard_'
+
+
+def _render_metrics(name_filter: Callable[[str], bool] | None = None) -> str:
+    """Render the registry, optionally narrowed to series whose NAME matches.
+
+    ``name_filter`` selects while the snapshot is taken, not after, so a narrowed
+    render copies fewer histogram lists under ``_lock`` than a full one. With no
+    filter the output is byte-identical to what ``prometheus_metrics`` has always
+    produced.
+    """
+    def _keep(key: tuple[str, tuple[tuple[str, str], ...]]) -> bool:
+        return name_filter is None or name_filter(key[0])
+
     lines: list[str] = []
     with _lock:
-        counters = dict(_counters)
-        gauges = dict(_gauges)
-        histograms = {key: list(values) for key, values in _histograms.items()}
+        counters = {key: value for key, value in _counters.items() if _keep(key)}
+        gauges = {key: value for key, value in _gauges.items() if _keep(key)}
+        histograms = {
+            key: list(values) for key, values in _histograms.items() if _keep(key)
+        }
     def suffix(label_set: tuple[tuple[str, str], ...]) -> str:
         if not label_set:
             return ''
@@ -126,6 +143,27 @@ def prometheus_metrics() -> str:
             lines.append(f'{name}_sum{suffix(label_set)} {sum(values)}')
             lines.append(f'{name}_max{suffix(label_set)} {max(values)}')
     return '\n'.join(lines) + '\n'
+
+
+def prometheus_metrics() -> str:
+    """The whole registry. Unchanged: this is what ``/metrics`` still serves."""
+    return _render_metrics()
+
+
+def dashboard_timing_metrics() -> str:
+    """Only the ``decoda_dashboard_*`` series, read from memory and nothing else.
+
+    The dashboard capture harness scrapes a metrics endpoint before and after
+    EVERY load. ``/metrics`` reaches ``alert_delivery_health()``, which opens a
+    Postgres connection -- so scraping it twice per load added two fresh
+    connections to every measurement, on a capture whose entire purpose is to
+    measure per-request connection cost. This renders the timing subset with no
+    database, Redis or RPC access on the path.
+
+    Same exposition format as ``prometheus_metrics``, so a scraper parses both
+    with one parser.
+    """
+    return _render_metrics(lambda name: name.startswith(DASHBOARD_TIMING_METRIC_PREFIX))
 
 
 def trace_headers() -> dict[str, str]:

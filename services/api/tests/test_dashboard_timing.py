@@ -257,3 +257,144 @@ def test_runtime_status_route_opens_a_collector(api_main, monkeypatch, timing_en
     assert 'route=ops_monitoring_runtime_status' in message
     assert "'runtime_status_cache': 'miss'" in message
     assert 'rpc_probe_ms' in message
+
+
+# ── the lightweight timing snapshot the capture harness scrapes ──────────────
+#
+# The harness scrapes a metrics endpoint before AND after every load. `/metrics`
+# calls `alert_delivery_health()`, which opens a `pg_connection()`, so scraping it
+# put two fresh Postgres connections into every measured load -- on a capture whose
+# entire purpose is to measure per-request connection cost. These pin the property
+# that makes the snapshot usable as a measurement instrument: it opens none.
+
+
+def _count_connection_attempts(api_main, monkeypatch):
+    """Install a `pg_connection` probe that COUNTS rather than raises.
+
+    It has to count. `alert_delivery_health` (`main.py`) wraps its connection in
+    `except Exception`, so a probe that raised would be swallowed by the very
+    function this endpoint exists to avoid -- the assertion would pass whether or
+    not the database was touched. The counter cannot be absorbed;
+    ``test_the_no_database_guard_is_not_vacuous`` proves it still fires.
+    """
+    attempts: list[str] = []
+
+    def _probe(*_args, **_kwargs):
+        attempts.append('pg_connection')
+        raise RuntimeError('no database is available in this test')
+
+    from services.api.app import pilot
+
+    # Both namespaces: `main` calls its own imported name, and anything it
+    # delegates to would reach `pilot`'s.
+    monkeypatch.setattr(api_main, 'pg_connection', _probe)
+    monkeypatch.setattr(pilot, 'pg_connection', _probe)
+    return attempts
+
+
+def test_timing_metrics_endpoint_opens_no_database_connection(api_main, monkeypatch, timing_enabled):
+    """Zero `pg_connection()` calls. This is the whole point of the endpoint."""
+    attempts = _count_connection_attempts(api_main, monkeypatch)
+
+    with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
+        dashboard_timing.record_db_connect(120.0)
+        dashboard_timing.record_flag('runtime_status_cache', 'miss')
+
+    response = api_main.ops_dashboard_timing_metrics()
+
+    assert attempts == [], f'timing snapshot opened {len(attempts)} database connection(s)'
+    assert response.status_code == 200
+    assert response.media_type == 'text/plain; version=0.0.4'
+    assert b'decoda_dashboard_counter_total' in response.body
+
+
+def test_the_no_database_guard_is_not_vacuous(api_main, monkeypatch, timing_enabled):
+    """The probe above must be able to fail, or it proves nothing.
+
+    `/metrics` is the endpoint the harness used to scrape, and the reason it was
+    unusable as a measurement instrument. Running it through the SAME probe shows
+    the counter fires on a path that does open a connection.
+    """
+    attempts = _count_connection_attempts(api_main, monkeypatch)
+
+    api_main.metrics()
+
+    assert attempts, '/metrics should have attempted a database connection'
+
+
+def test_timing_metrics_endpoint_touches_no_redis_or_health_snapshot(api_main, monkeypatch, timing_enabled):
+    """No Redis, no RPC, and none of the health helpers that reach either.
+
+    These probes also count rather than raise: `metrics()` catches broadly around
+    the delivery snapshot, so a raising probe could be absorbed there too.
+    """
+    called: list[str] = []
+
+    def _probe(name):
+        def _record(*_args, **_kwargs):
+            called.append(name)
+            return {}
+        return _record
+
+    monkeypatch.setattr(api_main, 'alert_delivery_health', _probe('alert_delivery_health'))
+    monkeypatch.setattr(api_main.alert_stream, 'subscriber_health', _probe('subscriber_health'))
+
+    with dashboard_timing.dashboard_timing('ops_monitoring_runtime_status'):
+        dashboard_timing.record_phase('rpc_probe_ms', 3.0)
+
+    response = api_main.ops_dashboard_timing_metrics()
+
+    assert called == [], f'timing snapshot reached health/Redis paths: {called}'
+    assert response.status_code == 200
+
+
+def test_timing_snapshot_contains_only_dashboard_series(timing_enabled):
+    """A subset, not a rename: every line is a `decoda_dashboard_*` series."""
+    from services.api.app import observability
+
+    observability.increment('decoda_unrelated_probe_total', 1, source='timing-snapshot-test')
+    with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
+        dashboard_timing.record_db_connect(42.0)
+
+    subset = observability.dashboard_timing_metrics()
+
+    assert subset.strip(), 'the snapshot should not be empty once a request has been recorded'
+    for line in subset.strip().split('\n'):
+        assert line.startswith(observability.DASHBOARD_TIMING_METRIC_PREFIX), line
+
+
+def test_full_metrics_still_carries_everything(timing_enabled):
+    """`/metrics` behaviour is preserved: the subset is additive, not a swap."""
+    from services.api.app import observability
+
+    observability.increment('decoda_unrelated_probe_total', 1, source='timing-snapshot-test')
+    with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
+        dashboard_timing.record_db_connect(42.0)
+
+    full = observability.prometheus_metrics()
+    subset = observability.dashboard_timing_metrics()
+
+    assert 'decoda_unrelated_probe_total' in full
+    assert 'decoda_unrelated_probe_total' not in subset
+    # The series the harness actually reads are in both.
+    for series in (
+        'decoda_dashboard_counter_total',
+        'decoda_dashboard_phase_seconds_sum',
+        'decoda_dashboard_request_seconds_sum',
+    ):
+        assert series in full
+        assert series in subset
+
+
+def test_snapshot_is_parseable_as_the_same_exposition_format(timing_enabled):
+    """One parser reads both endpoints, so the harness needed no parser change."""
+    from services.api.app import observability
+
+    with dashboard_timing.dashboard_timing('ops_dashboard_executive_summary'):
+        dashboard_timing.record_db_connect(10.0)
+        dashboard_timing.record_flag('response_cache_hit', False)
+
+    for line in observability.dashboard_timing_metrics().strip().split('\n'):
+        name, _, value = line.rpartition(' ')
+        assert name, f'no metric name in {line!r}'
+        float(value)  # raises if the value column is not a number
