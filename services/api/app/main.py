@@ -413,6 +413,7 @@ STARTUP_BOOTSTRAP_STATUS: dict[str, Any] = {'enabled': False, 'ran': False, 'app
 MONITORING_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 ALERT_EVENT_BACKGROUND_TASK: asyncio.Task[Any] | None = None
 DEFERRED_STARTUP_RECONCILE_TASK: asyncio.Task[Any] | None = None
+EVENT_LOOP_LAG_PROBE_TASK: asyncio.Task[Any] | None = None
 HAS_EMITTED_INITIAL_MONITORING_DB_DEGRADED_EVENT = False
 HAS_EMITTED_INITIAL_STARTUP_RECONCILE_DB_DEGRADED_EVENT = False
 MONITORING_LOOP_RUNTIME_STATE: dict[str, Any] = {
@@ -1739,7 +1740,7 @@ def bootstrap_live_pilot() -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK, DEFERRED_STARTUP_RECONCILE_TASK
+    global MONITORING_BACKGROUND_TASK, MONITORING_LOOP_RUNTIME_STATE, ALERT_EVENT_BACKGROUND_TASK, DEFERRED_STARTUP_RECONCILE_TASK, EVENT_LOOP_LAG_PROBE_TASK
     validate_secret_encryption_key_at_startup()
     validate_signing_secret_at_startup()
     for _warning in ai_triage.configuration_warnings():
@@ -1974,7 +1975,19 @@ async def lifespan(_: FastAPI):
                 logger.warning('startup_reconcile_deferred_failed auth_available=True monitoring_reconcile=failed', exc_info=True)
 
         DEFERRED_STARTUP_RECONCILE_TASK = asyncio.create_task(_deferred_startup_reconcile())
+    # Measurement only, and the last task started so it is never itself the
+    # reason startup is slow. Samples how late this event loop is running --
+    # the one signal that separates "the loop was blocked" from "the proxy was
+    # slow", which the request-scoped phases above cannot distinguish because
+    # both land in the same gap outside the handler. Touches no database, Redis,
+    # network or disk; see dashboard_timing.run_event_loop_lag_probe.
+    if dashboard_timing.timing_enabled():
+        EVENT_LOOP_LAG_PROBE_TASK = asyncio.create_task(dashboard_timing.run_event_loop_lag_probe())
     yield
+    if EVENT_LOOP_LAG_PROBE_TASK is not None:
+        EVENT_LOOP_LAG_PROBE_TASK.cancel()
+        with suppress(asyncio.CancelledError):
+            await EVENT_LOOP_LAG_PROBE_TASK
     if DEFERRED_STARTUP_RECONCILE_TASK is not None:
         DEFERRED_STARTUP_RECONCILE_TASK.cancel()
         with suppress(asyncio.CancelledError):

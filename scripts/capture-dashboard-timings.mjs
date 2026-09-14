@@ -128,6 +128,15 @@ const HEADLINE_NETWORK = [
   '/api/ops/monitoring/runtime-status',
 ];
 
+/**
+ * The event-loop lag series, and the browser/backend pairs the derived table
+ * subtracts. `outside_handler_ms` is browser leg minus backend handler total:
+ * the Next BFF hops, TLS, JSON re-serialisation, AND any time the single uvicorn
+ * event loop was blocked when the request needed accepting or answering. The lag
+ * series is what tells those apart -- without it they are one number.
+ */
+const EVENT_LOOP_LAG_METRIC = 'decoda_dashboard_event_loop_lag_seconds';
+
 function parseArgs(argv) {
   const args = {
     loads: 5,
@@ -382,7 +391,61 @@ export function backendDeltas(before, after) {
     }
   }
 
-  return { phases, counters, flags, requests };
+  return { phases, counters, flags, requests, loopLag: loopLagDelta(before, after) };
+}
+
+/**
+ * Event-loop lag attributable to one load.
+ *
+ * Read by EXACT series name rather than by prefix: `_sum`, `_count` and `_max`
+ * all begin with the metric name, so a `startsWith` match would fold the three
+ * into each other and report a confident wrong number.
+ *
+ * `_sum` and `_count` are cumulative, so their deltas are this load's. `_max` is
+ * NOT: `observe()` keeps the last 2048 samples and drops the older half when it
+ * overflows, so the max can go DOWN and differencing it is meaningless. It is
+ * read absolutely, from the "after" scrape, and reported as the worst sample in
+ * the retained window rather than as this load's worst -- which is a weaker
+ * claim, and the true one.
+ *
+ * `null` means the API exposed no lag series at all: an older deployment, or
+ * DASHBOARD_TIMING_ENABLED turned off. That is a fact about the measurement, so
+ * it is not reported as zero lag.
+ */
+export function loopLagDelta(before, after) {
+  const sumKey = `${EVENT_LOOP_LAG_METRIC}_sum`;
+  const countKey = `${EVENT_LOOP_LAG_METRIC}_count`;
+  const maxKey = `${EVENT_LOOP_LAG_METRIC}_max`;
+  if (!after.has(sumKey) && !after.has(countKey) && !after.has(maxKey)) {
+    return null;
+  }
+  const totalMs = Number((delta(before, after, sumKey) * 1000).toFixed(2));
+  const samples = delta(before, after, countKey);
+  return {
+    totalMs,
+    samples,
+    meanMs: samples > 0 ? Number((totalMs / samples).toFixed(2)) : null,
+    windowMaxMs: after.has(maxKey) ? Number((after.get(maxKey) * 1000).toFixed(2)) : null,
+  };
+}
+
+/**
+ * Browser-observed duration of one leg minus the backend handler's own total.
+ *
+ * Everything the request spent outside the handler: both Next BFF hops, TLS,
+ * the JSON parse-and-re-serialise in the route handler, and event-loop wait.
+ *
+ * `null` when either side is missing, never 0 -- an absent measurement and a
+ * measured zero are different facts, and the tables render the first as an em
+ * dash for exactly that reason.
+ */
+export function outsideHandlerMs(row, browserPath, backendRoute) {
+  const browserMs = row?.network?.[browserPath];
+  const backendMs = row?.backend?.requests?.[backendRoute];
+  if (typeof browserMs !== 'number' || typeof backendMs !== 'number') {
+    return null;
+  }
+  return Number((browserMs - backendMs).toFixed(1));
 }
 
 /** Sum a phase across routes, e.g. db_connect_ms wherever it was recorded. */
@@ -636,6 +699,71 @@ export function renderMarkdown(rows, args) {
     lines.push(`| ${row.load} | ${cells.join(' | ')} |`);
   }
   lines.push('');
+
+  lines.push('## Derived: outside-handler time, event-loop lag, and the zero-I/O control');
+  lines.push('');
+  lines.push('`outside_handler_ms` = browser leg − backend handler total. It is the two');
+  lines.push('Next BFF hops, TLS, the JSON re-serialisation, **and** any time the single');
+  lines.push('uvicorn event loop was blocked when the request needed accepting or answering.');
+  lines.push('');
+  lines.push('`lag total` is the seconds this event loop ran late during the load window');
+  lines.push('(delta of the lag sum), which is the direct evidence of blocking. `lag max` is');
+  lines.push('the worst single sample still in the probe\'s retained window — NOT this load\'s');
+  lines.push('worst, because that series is not cumulative and cannot be differenced.');
+  lines.push('');
+  lines.push('`auth.csrf` is the control: its backend handler touches no database, Redis or');
+  lines.push('RPC, so its backend total is ~0 by construction. Browser-side csrf time that');
+  lines.push('moves load to load therefore belongs to the hop or to loop availability, and to');
+  lines.push('nothing else — which is what makes it a second, independent discriminator.');
+  lines.push('');
+  const derivedHeader = [
+    'skeleton', 'exec browser', 'exec backend', 'outside_handler_ms',
+    'lag total', 'lag max', 'lag samples',
+    'auth.me br', 'auth.me be', 'auth.csrf br', 'auth.csrf be',
+    'runtime_status_ms', 'cache', 'single-flight',
+    'db_connect_ms', 'db_connect_n', 'db_query_ms', 'db_query_n',
+    'build_summary_ms', 'rpc_probe_ms',
+  ];
+  lines.push(`| Load | ${derivedHeader.join(' | ')} |`);
+  lines.push(`|---|${derivedHeader.map(() => '---:').join('|')}|`);
+  for (const row of rows) {
+    const lag = row.backend.loopLag;
+    const summaryRoute = 'ops_dashboard_executive_summary';
+    const derivedCells = [
+      cell(row.marks['dashboard.skeleton.dismissed'] ?? null),
+      cell(row.network['/api/dashboard/executive-summary'] ?? null),
+      cell(row.backend.requests[summaryRoute] ?? null),
+      cell(outsideHandlerMs(row, '/api/dashboard/executive-summary', summaryRoute)),
+      cell(lag ? lag.totalMs : null),
+      cell(lag ? lag.windowMaxMs : null),
+      cell(lag ? lag.samples : null),
+      cell(row.network['/api/auth/me'] ?? null),
+      cell(row.backend.requests.auth_me ?? null),
+      cell(row.network['/api/auth/csrf'] ?? null),
+      cell(row.backend.requests.auth_csrf_token ?? null),
+      cell(sumPhase(row.backend.phases, 'runtime_status_ms')),
+      cell(flagState(row.backend.flags, summaryRoute, 'runtime_status_cache')),
+      cell(flagState(row.backend.flags, summaryRoute, 'runtime_status_single_flight')),
+      cell(sumPhase(row.backend.phases, 'db_connect_ms')),
+      cell(sumCounter(row.backend.counters, 'db_connect_count')),
+      cell(sumPhase(row.backend.phases, 'db_query_ms')),
+      cell(sumCounter(row.backend.counters, 'db_query_count')),
+      cell(sumPhase(row.backend.phases, 'build_summary_ms')),
+      cell(sumPhase(row.backend.phases, 'rpc_probe_ms')),
+    ];
+    lines.push(`| ${row.load} | ${derivedCells.join(' | ')} |`);
+  }
+  lines.push('');
+  lines.push('`cache` and `single-flight` above are the executive-summary route\'s only; the');
+  lines.push('standalone runtime-status route can legitimately differ on the same load (one');
+  lines.push('computes, the other joins) and is broken out per route further down.');
+  lines.push('');
+  if (rows.every((row) => !row.backend.loopLag)) {
+    lines.push('> **No event-loop lag series was exposed by this API.** Either it predates the');
+    lines.push('> probe or `DASHBOARD_TIMING_ENABLED` is off. The lag columns are blank because');
+    lines.push('> nothing was measured — not because the loop was never blocked.');
+    lines.push('');
+  }
 
   lines.push('## Backend phases (from /metrics deltas)');
   lines.push('');
