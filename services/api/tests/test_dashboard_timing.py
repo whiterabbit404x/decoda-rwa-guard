@@ -398,3 +398,231 @@ def test_snapshot_is_parseable_as_the_same_exposition_format(timing_enabled):
         name, _, value = line.rpartition(' ')
         assert name, f'no metric name in {line!r}'
         float(value)  # raises if the value column is not a number
+
+
+# ── the event-loop lag probe ─────────────────────────────────────────────────
+#
+# The phases above measure work inside a handler. They cannot see time a request
+# lost because the single uvicorn event loop was busy running synchronous work
+# and could not accept the socket or write the response. That time lands in the
+# same gap as proxy latency, so "the backend was fast but the browser waited"
+# had two explanations and no way to choose between them. These pin the probe
+# that separates them -- and, just as importantly, pin that adding it did not
+# cost the timing endpoint its no-I/O guarantee.
+
+
+def _lag_samples() -> list[float]:
+    from services.api.app import observability
+
+    with observability._lock:
+        return list(observability._histograms.get((dashboard_timing.EVENT_LOOP_LAG_METRIC, ()), []))
+
+
+@pytest.fixture
+def no_lag_samples():
+    """Drop any samples a previous test left, so counts here are this test's."""
+    from services.api.app import observability
+
+    with observability._lock:
+        observability._histograms.pop((dashboard_timing.EVENT_LOOP_LAG_METRIC, ()), None)
+    yield
+    with observability._lock:
+        observability._histograms.pop((dashboard_timing.EVENT_LOOP_LAG_METRIC, ()), None)
+
+
+def test_probe_measures_a_real_synchronous_block(timing_enabled, no_lag_samples):
+    """A sync block on the loop shows up as lag. This is the whole instrument.
+
+    Deliberately induced the real way -- `time.sleep` on the loop thread, which
+    is exactly what `_alert_event_loop` does with `pg_connection()` and its Redis
+    calls -- rather than by patching the clock. A probe that only detects a
+    simulated block proves nothing about the one we are hunting.
+    """
+    import asyncio
+    import time
+
+    async def _scenario() -> float:
+        sample = asyncio.ensure_future(dashboard_timing.sample_event_loop_lag(0.01))
+        await asyncio.sleep(0)  # let the probe reach its own sleep first
+        time.sleep(0.15)  # block the loop, as synchronous background work does
+        return await sample
+
+    lag = asyncio.run(_scenario())
+
+    assert lag >= 0.1, f'a 150ms block on the loop measured as {lag:.3f}s of lag'
+
+
+def test_an_unblocked_loop_reports_near_zero_lag(timing_enabled, no_lag_samples):
+    """The converse. Without it, a probe that always returns a big number passes above."""
+    import asyncio
+
+    lag = asyncio.run(dashboard_timing.sample_event_loop_lag(0.01))
+
+    assert lag < 0.1, f'an idle loop reported {lag:.3f}s of lag'
+
+
+def test_recording_a_sample_reaches_the_metric_registry(timing_enabled, no_lag_samples):
+    dashboard_timing.record_event_loop_lag(0.4)
+    dashboard_timing.record_event_loop_lag(1.25)
+
+    assert _lag_samples() == [0.4, 1.25]
+
+
+def test_a_negative_sample_is_clamped_rather_than_recorded(timing_enabled, no_lag_samples):
+    """Clock skew must not produce negative lag, which would understate a sum."""
+    dashboard_timing.record_event_loop_lag(-5.0)
+
+    assert _lag_samples() == [0.0]
+
+
+def test_samples_are_not_logged_individually(timing_enabled, no_lag_samples, caplog):
+    """Four samples a second must not become four log lines a second."""
+    with caplog.at_level(logging.DEBUG, logger='decoda.dashboard.timing'):
+        for _ in range(10):
+            dashboard_timing.record_event_loop_lag(0.01)
+
+    assert caplog.records == [], f'probe logged {len(caplog.records)} line(s) for routine samples'
+
+
+def test_only_a_sample_past_the_threshold_is_logged(monkeypatch, timing_enabled, no_lag_samples, caplog):
+    monkeypatch.setenv('DASHBOARD_EVENT_LOOP_LAG_WARN_SECONDS', '1.0')
+
+    with caplog.at_level(logging.WARNING, logger='decoda.dashboard.timing'):
+        dashboard_timing.record_event_loop_lag(0.5)
+        dashboard_timing.record_event_loop_lag(2.5)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1, f'expected one threshold line, got {messages}'
+    assert 'dashboard_event_loop_lag_exceeded' in messages[0]
+    assert 'lag_seconds=2.500' in messages[0]
+
+
+def test_the_threshold_log_can_be_disabled(monkeypatch, timing_enabled, no_lag_samples, caplog):
+    monkeypatch.setenv('DASHBOARD_EVENT_LOOP_LAG_WARN_SECONDS', '0')
+
+    with caplog.at_level(logging.WARNING, logger='decoda.dashboard.timing'):
+        dashboard_timing.record_event_loop_lag(99.0)
+
+    assert caplog.records == []
+    assert _lag_samples() == [99.0], 'disabling the log must not disable the measurement'
+
+
+@pytest.mark.parametrize(
+    ('configured', 'expected'),
+    [(None, 0.25), ('0.5', 0.5), ('0.001', 0.05), ('600', 5.0), ('not-a-number', 0.25)],
+)
+def test_probe_interval_is_clamped_to_a_sane_range(monkeypatch, configured, expected):
+    """A misconfigured interval must not become a busy loop or a useless one."""
+    if configured is None:
+        monkeypatch.delenv('DASHBOARD_EVENT_LOOP_PROBE_INTERVAL_SECONDS', raising=False)
+    else:
+        monkeypatch.setenv('DASHBOARD_EVENT_LOOP_PROBE_INTERVAL_SECONDS', configured)
+
+    assert dashboard_timing.event_loop_lag_interval_seconds() == expected
+
+
+def test_probe_is_inert_when_timing_is_disabled(monkeypatch, no_lag_samples):
+    """The same switch that silences the rest of the instrumentation stops this."""
+    import asyncio
+
+    monkeypatch.setenv('DASHBOARD_TIMING_ENABLED', 'false')
+
+    asyncio.run(asyncio.wait_for(dashboard_timing.run_event_loop_lag_probe(), timeout=5))
+
+    assert _lag_samples() == []
+
+
+def test_the_probe_performs_no_io(monkeypatch, timing_enabled, no_lag_samples):
+    """Zero DB, zero Redis, zero network, zero disk.
+
+    Asserted by making each of those raise. The probe runs on the event loop of
+    the process serving every request, so an I/O call here would block the very
+    thing it exists to measure -- and would break the timing endpoint's no-I/O
+    guarantee the moment a sample landed.
+
+    Raw ``socket.socket`` is deliberately NOT patched: asyncio builds its own
+    self-pipe from it, so forbidding it breaks the test harness rather than the
+    probe. The four entry points below are the ones this codebase actually
+    reaches the network through.
+    """
+    import asyncio
+    import socket
+    import urllib.request
+
+    from services.api.app import pilot
+    from services.api.app.domains import alert_stream
+
+    def _forbidden(name):
+        def _raise(*_args, **_kwargs):
+            raise AssertionError(f'event-loop lag probe performed {name} I/O')
+        return _raise
+
+    monkeypatch.setattr(pilot, 'pg_connection', _forbidden('database'))
+    monkeypatch.setattr(alert_stream, '_get_sync_client', _forbidden('redis'))
+    monkeypatch.setattr(socket, 'create_connection', _forbidden('outbound tcp'))
+    monkeypatch.setattr(urllib.request, 'urlopen', _forbidden('http'))
+
+    async def _one_cycle() -> None:
+        task = asyncio.ensure_future(dashboard_timing.run_event_loop_lag_probe())
+        await asyncio.sleep(0.12)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setenv('DASHBOARD_EVENT_LOOP_PROBE_INTERVAL_SECONDS', '0.05')
+    asyncio.run(_one_cycle())
+
+    assert _lag_samples(), 'the probe recorded nothing, so this proved nothing'
+
+
+def test_lag_is_exposed_on_the_timing_metrics_endpoint(api_main, timing_enabled, no_lag_samples):
+    """Exposed by the EXISTING endpoint, with no endpoint change.
+
+    `dashboard_timing_metrics()` filters on the `decoda_dashboard_` prefix, so
+    the series name alone is what puts it on the wire. If the metric were ever
+    renamed out from under that prefix, the capture harness would silently see
+    nothing -- which is why this asserts the rendered body, not the registry.
+    """
+    dashboard_timing.record_event_loop_lag(0.75)
+
+    body = api_main.ops_dashboard_timing_metrics().body.decode()
+
+    assert 'decoda_dashboard_event_loop_lag_seconds_count 1' in body
+    assert 'decoda_dashboard_event_loop_lag_seconds_sum 0.75' in body
+    assert 'decoda_dashboard_event_loop_lag_seconds_max 0.75' in body
+
+
+def test_lag_samples_do_not_cost_the_endpoint_its_no_database_guarantee(
+    api_main, monkeypatch, timing_enabled, no_lag_samples
+):
+    """The guard at the top of this section, re-run WITH lag samples present."""
+    dashboard_timing.record_event_loop_lag(0.2)
+    attempts = _count_connection_attempts(api_main, monkeypatch)
+
+    response = api_main.ops_dashboard_timing_metrics()
+
+    assert attempts == [], f'timing snapshot opened {len(attempts)} database connection(s)'
+    assert b'decoda_dashboard_event_loop_lag_seconds_sum' in response.body
+
+
+def test_lag_samples_do_not_cost_the_endpoint_its_no_redis_guarantee(
+    api_main, monkeypatch, timing_enabled, no_lag_samples
+):
+    called: list[str] = []
+
+    def _probe(name):
+        def _record(*_args, **_kwargs):
+            called.append(name)
+            return {}
+        return _record
+
+    monkeypatch.setattr(api_main, 'alert_delivery_health', _probe('alert_delivery_health'))
+    monkeypatch.setattr(api_main.alert_stream, 'subscriber_health', _probe('subscriber_health'))
+
+    dashboard_timing.record_event_loop_lag(0.2)
+    response = api_main.ops_dashboard_timing_metrics()
+
+    assert called == [], f'timing snapshot reached health/Redis paths: {called}'
+    assert b'decoda_dashboard_event_loop_lag_seconds_sum' in response.body

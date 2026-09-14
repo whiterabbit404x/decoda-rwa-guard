@@ -184,7 +184,7 @@ capture-dashboard-timings:
 # complete and is wrong.
 test-dashboard-timing:
 	python -m pytest services/api/tests/test_dashboard_timing.py -q
-	cd apps/web && npx playwright test tests/dashboard-perf.spec.ts
+	cd apps/web && npx playwright test tests/dashboard-perf.spec.ts tests/capture-dashboard-timings.spec.ts
 
 generate-release-proof:
 	python scripts/generate_release_proof.py --mode local

@@ -22,6 +22,7 @@ sees the same collector without threading a parameter through.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import os
@@ -208,3 +209,111 @@ def _emit(collector: DashboardTiming) -> None:
             flag=name,
             state=str(value),
         )
+
+
+# ---------------------------------------------------------------------------
+# Event-loop lag probe (measurement only)
+# ---------------------------------------------------------------------------
+#
+# The phases above measure work *inside* a handler. They cannot see the other
+# half of a slow request: time the request spent waiting because the single
+# uvicorn event loop was busy running synchronous work and could not accept the
+# socket, dispatch to the threadpool, or write the response.
+#
+# That time lands in the gap between the browser's request duration and this
+# collector's `total_ms` -- the same gap proxy and network latency land in. With
+# no way to tell those apart, "the backend was fast but the browser waited 4s"
+# has two explanations and no way to choose. `decoda_http_request_duration_seconds`
+# does not settle it either: it is measured from inside the loop, after the
+# request has already been accepted, so it under-reports a stall at both ends.
+#
+# A lag probe settles it. When synchronous work holds the loop, a sleep cannot
+# resume on schedule, and the overshoot IS the block. Nothing else produces it.
+#
+# Cost and safety: one `perf_counter()` read and one in-memory list append per
+# sample, four times a second by default. `observe()` touches a dict under a
+# briefly-held lock -- no database, no Redis, no network, no disk, nothing
+# persisted. The series carries no labels, so it cannot grow the series count.
+# Individual samples are never logged; only a sample past the warn threshold is,
+# which at the default interval is bounded to a handful of lines per second in
+# the pathological case and none at all in the healthy one.
+
+EVENT_LOOP_LAG_METRIC = 'decoda_dashboard_event_loop_lag_seconds'
+
+_EVENT_LOOP_PROBE_INTERVAL_DEFAULT = 0.25
+_EVENT_LOOP_PROBE_INTERVAL_MIN = 0.05
+_EVENT_LOOP_PROBE_INTERVAL_MAX = 5.0
+_EVENT_LOOP_LAG_WARN_DEFAULT = 1.0
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(str(os.getenv(name, '')).strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def event_loop_lag_interval_seconds() -> float:
+    """How often to sample, from ``DASHBOARD_EVENT_LOOP_PROBE_INTERVAL_SECONDS``.
+
+    Default 0.25s: frequent enough to resolve the sub-second blocks worth
+    finding, infrequent enough that a five-minute capture stays inside the
+    2048-sample window ``observe()`` retains.
+    """
+    return min(
+        _EVENT_LOOP_PROBE_INTERVAL_MAX,
+        max(
+            _EVENT_LOOP_PROBE_INTERVAL_MIN,
+            _float_env('DASHBOARD_EVENT_LOOP_PROBE_INTERVAL_SECONDS', _EVENT_LOOP_PROBE_INTERVAL_DEFAULT),
+        ),
+    )
+
+
+def event_loop_lag_warn_seconds() -> float:
+    """Lag past which ONE line is logged. Non-positive disables the log entirely."""
+    return _float_env('DASHBOARD_EVENT_LOOP_LAG_WARN_SECONDS', _EVENT_LOOP_LAG_WARN_DEFAULT)
+
+
+def record_event_loop_lag(lag_seconds: float) -> None:
+    """Record one lag sample. In-memory only; never raises into the caller."""
+    try:
+        observe(EVENT_LOOP_LAG_METRIC, max(0.0, float(lag_seconds)))
+    except Exception:  # pragma: no cover - instrumentation must never break the loop
+        return
+    warn_at = event_loop_lag_warn_seconds()
+    if warn_at > 0 and lag_seconds >= warn_at:
+        logger.warning(
+            'dashboard_event_loop_lag_exceeded lag_seconds=%.3f threshold_seconds=%.3f',
+            lag_seconds,
+            warn_at,
+        )
+
+
+async def sample_event_loop_lag(interval_seconds: float) -> float:
+    """Sleep ``interval_seconds`` and return how much longer than that it took.
+
+    Separated from the loop below so a test can measure one sample against a
+    real block without waiting on a running probe.
+    """
+    started = perf_counter()
+    await asyncio.sleep(interval_seconds)
+    return max(0.0, (perf_counter() - started) - interval_seconds)
+
+
+async def run_event_loop_lag_probe() -> None:
+    """Sample event-loop lag until cancelled. A no-op when timing is disabled.
+
+    Deliberately does nothing but measure: it reads no request state, touches no
+    connection, and changes nothing a customer sees.
+    """
+    if not timing_enabled():
+        return
+    interval = event_loop_lag_interval_seconds()
+    while True:
+        try:
+            record_event_loop_lag(await sample_event_loop_lag(interval))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - a probe must never kill itself
+            logger.debug('dashboard_event_loop_lag_sample_failed', exc_info=True)
+            await asyncio.sleep(interval)

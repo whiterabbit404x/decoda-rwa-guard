@@ -15,7 +15,13 @@ type Harness = {
     counters: Record<string, number>;
     flags: Record<string, number>;
     requests: Record<string, number>;
+    loopLag: { totalMs: number; samples: number; meanMs: number | null; windowMaxMs: number | null } | null;
   };
+  loopLagDelta: (
+    before: Map<string, number>,
+    after: Map<string, number>,
+  ) => { totalMs: number; samples: number; meanMs: number | null; windowMaxMs: number | null } | null;
+  outsideHandlerMs: (row: unknown, browserPath: string, backendRoute: string) => number | null;
   parseMetrics: (text: string) => Map<string, number>;
   redact: (text: string) => string;
   sumCounter: (counters: Record<string, number>, name: string) => number | null;
@@ -40,12 +46,14 @@ let flagState: Harness['flagState'];
 let otherFlags: Harness['otherFlags'];
 let topCheckpoints: Harness['topCheckpoints'];
 let renderMarkdown: Harness['renderMarkdown'];
+let loopLagDelta: Harness['loopLagDelta'];
+let outsideHandlerMs: Harness['outsideHandlerMs'];
 
 test.beforeAll(async () => {
   const harness: Harness = await import(pathToFileURL(HARNESS_PATH).href);
   ({ backendDeltas, parseMetrics, redact, sumCounter, sumPhase } = harness);
   ({ flagRoutes, flagState, otherFlags, topCheckpoints } = harness);
-  ({ renderMarkdown } = harness);
+  ({ renderMarkdown, loopLagDelta, outsideHandlerMs } = harness);
 });
 
 /**
@@ -369,5 +377,150 @@ test.describe('rendered report', () => {
     // "Not measured" must stay visibly distinct from "measured as zero".
     expect(markdown).toContain('—');
     expect(markdown).toContain('is a fact about');
+  });
+});
+
+/**
+ * The event-loop lag series and the derived subtraction.
+ *
+ * These exist because both are silent failure modes. `backendDeltas` reads a
+ * fixed set of series names, so a metric the API faithfully exposes is simply
+ * dropped unless it is read by name — the table then shows blanks that look
+ * like "no blocking" rather than "never captured". And `_max` is not cumulative,
+ * so differencing it produces a plausible, wrong number.
+ */
+test.describe('event-loop lag capture', () => {
+  const LAG = 'decoda_dashboard_event_loop_lag_seconds';
+
+  test('the lag series is captured, not silently dropped', () => {
+    const before = parseMetrics(`${LAG}_count 100\n${LAG}_sum 2.0\n${LAG}_max 0.4\n`);
+    const after = parseMetrics(`${LAG}_count 140\n${LAG}_sum 3.5\n${LAG}_max 0.9\n`);
+
+    const { loopLag } = backendDeltas(before, after);
+
+    expect(loopLag).not.toBeNull();
+    expect(loopLag?.totalMs).toBe(1500);
+    expect(loopLag?.samples).toBe(40);
+  });
+
+  test('sum and count are per-load deltas, not running totals', () => {
+    const before = parseMetrics(`${LAG}_count 1000\n${LAG}_sum 500\n`);
+    const after = parseMetrics(`${LAG}_count 1004\n${LAG}_sum 500.25\n`);
+
+    const lag = loopLagDelta(before, after);
+
+    expect(lag?.totalMs).toBe(250);
+    expect(lag?.samples).toBe(4);
+    expect(lag?.meanMs).toBe(62.5);
+  });
+
+  test('max is read absolutely, because it is not cumulative', () => {
+    // observe() drops the older half of its samples at 2048, so the retained
+    // max can FALL. Differencing it would report -100ms of lag.
+    const before = parseMetrics(`${LAG}_count 2048\n${LAG}_sum 10\n${LAG}_max 0.5\n`);
+    const after = parseMetrics(`${LAG}_count 1030\n${LAG}_sum 6\n${LAG}_max 0.4\n`);
+
+    const lag = loopLagDelta(before, after);
+
+    expect(lag?.windowMaxMs).toBe(400);
+  });
+
+  test('an API with no lag series reports null rather than zero lag', () => {
+    const before = parseMetrics('decoda_dashboard_counter_total{route="r",counter="c"} 1\n');
+    const after = parseMetrics('decoda_dashboard_counter_total{route="r",counter="c"} 2\n');
+
+    expect(loopLagDelta(before, after)).toBeNull();
+    expect(backendDeltas(before, after).loopLag).toBeNull();
+  });
+
+  test('a window with no new samples is zero lag, not a missing series', () => {
+    const before = parseMetrics(`${LAG}_count 10\n${LAG}_sum 1\n${LAG}_max 0.3\n`);
+    const after = parseMetrics(`${LAG}_count 10\n${LAG}_sum 1\n${LAG}_max 0.3\n`);
+
+    const lag = loopLagDelta(before, after);
+
+    expect(lag).not.toBeNull();
+    expect(lag?.totalMs).toBe(0);
+    expect(lag?.samples).toBe(0);
+    expect(lag?.meanMs).toBeNull();
+  });
+});
+
+test.describe('outside_handler_ms', () => {
+  const row = {
+    network: { '/api/dashboard/executive-summary': 7200.5, '/api/auth/csrf': 90 },
+    backend: { requests: { ops_dashboard_executive_summary: 3100.25, auth_csrf_token: 1.2 } },
+  };
+
+  test('is the browser leg minus the backend handler total', () => {
+    expect(outsideHandlerMs(row, '/api/dashboard/executive-summary', 'ops_dashboard_executive_summary'))
+      .toBe(4100.3);
+  });
+
+  test('works for the zero-I/O csrf control leg', () => {
+    expect(outsideHandlerMs(row, '/api/auth/csrf', 'auth_csrf_token')).toBe(88.8);
+  });
+
+  test('is null when the browser leg is missing, not zero', () => {
+    expect(outsideHandlerMs(row, '/api/auth/me', 'auth_me')).toBeNull();
+  });
+
+  test('is null when the backend total is missing, not the whole browser leg', () => {
+    const partial = { network: { '/api/auth/me': 400 }, backend: { requests: {} } };
+    expect(outsideHandlerMs(partial, '/api/auth/me', 'auth_me')).toBeNull();
+  });
+});
+
+test.describe('the derived table in the report', () => {
+  function rowWithLag() {
+    return {
+      load: 1,
+      skeletonDismissed: true,
+      wallClockMs: 8000,
+      marks: { 'dashboard.skeleton.dismissed': 7800 },
+      network: {
+        '/api/dashboard/executive-summary': 7000,
+        '/api/auth/me': 500,
+        '/api/auth/csrf': 1400,
+      },
+      criticalPath: null,
+      backend: {
+        phases: { 'ops_dashboard_executive_summary:runtime_status_ms': 2500 },
+        counters: { 'ops_dashboard_executive_summary:db_connect_count': 5 },
+        flags: {
+          'ops_dashboard_executive_summary:runtime_status_cache=miss': 1,
+          'ops_dashboard_executive_summary:runtime_status_single_flight=leader': 1,
+        },
+        requests: { ops_dashboard_executive_summary: 3000, auth_me: 420, auth_csrf_token: 2 },
+        loopLag: { totalMs: 1900, samples: 32, meanMs: 59.4, windowMaxMs: 1450 },
+      },
+      consoleErrors: [],
+    };
+  }
+
+  test('renders the derived columns and the csrf control', () => {
+    const markdown = renderMarkdown([rowWithLag()], { baseUrl: 'b', apiUrl: 'a', settleMs: 0 });
+
+    expect(markdown).toContain('outside_handler_ms');
+    expect(markdown).toContain('auth.csrf br');
+    expect(markdown).toContain('auth.csrf be');
+    expect(markdown).toContain('lag total');
+    expect(markdown).toContain('| 4000 |');
+    expect(markdown).toContain('| 1900 |');
+  });
+
+  test('says so loudly when no lag series was exposed at all', () => {
+    const row = rowWithLag();
+    row.backend.loopLag = null;
+
+    const markdown = renderMarkdown([row], { baseUrl: 'b', apiUrl: 'a', settleMs: 0 });
+
+    expect(markdown).toContain('No event-loop lag series was exposed');
+  });
+
+  test('does not print the missing-series warning when lag was captured', () => {
+    const markdown = renderMarkdown([rowWithLag()], { baseUrl: 'b', apiUrl: 'a', settleMs: 0 });
+
+    expect(markdown).not.toContain('No event-loop lag series was exposed');
   });
 });
