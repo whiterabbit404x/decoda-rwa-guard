@@ -1,4 +1,5 @@
 import { HomeIcon } from './home-icons';
+import { ScrollReveal } from './scroll-reveal';
 import { lifecycleStages, type LifecycleTone } from './home-data';
 import styles from './home.module.css';
 
@@ -11,6 +12,11 @@ const TONE_CLASS: Record<LifecycleTone, string> = {
   green: styles.lcGreen,
 };
 
+/**
+ * Horizontal enterprise process diagram on desktop, vertical on mobile. The
+ * connecting track reveals once, the first time the section enters the
+ * viewport — it never loops.
+ */
 export function IncidentLifecycleSection() {
   return (
     <section className={styles.section} id="lifecycle">
@@ -26,24 +32,24 @@ export function IncidentLifecycleSection() {
           </p>
         </div>
 
-        <ol className={styles.lcFlow}>
+        <ScrollReveal as="ol" className={styles.lcFlow}>
+          <li className={styles.lcTrack} aria-hidden="true">
+            <span className={styles.lcTrackFill} />
+          </li>
+
           {lifecycleStages.map((stage, idx) => (
-            <li key={stage.title} className={styles.lcStageWrap}>
-              <div className={`${styles.lcStage} ${TONE_CLASS[stage.tone]}`}>
-                <span className={styles.lcStageIcon}>
-                  <HomeIcon name={stage.icon} />
-                </span>
-                <span className={styles.lcStageTitle}>{stage.title}</span>
-                <span className={styles.lcStageDetail}>{stage.detail}</span>
+            <li key={stage.title} className={`${styles.lcStageWrap} ${TONE_CLASS[stage.tone]}`}>
+              <span className={styles.lcStageIcon} aria-hidden="true">
+                <HomeIcon name={stage.icon} />
+              </span>
+              <div className={styles.lcStageBody}>
+                <span className={styles.lcStep}>{`STEP ${idx + 1}`}</span>
+                <h3 className={styles.lcStageTitle}>{stage.title}</h3>
+                <p className={styles.lcStageDetail}>{stage.detail}</p>
               </div>
-              {idx < lifecycleStages.length - 1 && (
-                <span className={styles.lcArrow} aria-hidden="true">
-                  <HomeIcon name="arrowRight" />
-                </span>
-              )}
             </li>
           ))}
-        </ol>
+        </ScrollReveal>
       </div>
     </section>
   );

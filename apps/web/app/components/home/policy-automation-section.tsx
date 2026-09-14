@@ -1,5 +1,6 @@
 import { HomeIcon } from './home-icons';
-import { policySteps, type PolicyStepTone } from './home-data';
+import { ScrollReveal } from './scroll-reveal';
+import { policyLanes, type PolicyLaneId, type PolicyStepTone } from './home-data';
 import styles from './home.module.css';
 
 const TONE_CLASS: Record<PolicyStepTone, string> = {
@@ -9,6 +10,15 @@ const TONE_CLASS: Record<PolicyStepTone, string> = {
   green: styles.polGreen,
 };
 
+const LANE_CLASS: Partial<Record<PolicyLaneId, string>> = {
+  control: styles.polLaneControl,
+};
+
+/**
+ * Makes the autonomous/human boundary visible: three lanes, with the policy and
+ * approval lane styled as the loudest of the three because it is the point of
+ * the section. The steps fade in once, lane by lane, and then stay put.
+ */
 export function PolicyAutomationSection() {
   return (
     <section className={styles.section} id="policy-automation">
@@ -22,24 +32,30 @@ export function PolicyAutomationSection() {
           </p>
         </div>
 
-        <ol className={styles.polFlow}>
-          {policySteps.map((step, idx) => (
-            <li key={step.title} className={styles.polStepWrap}>
-              <div className={`${styles.polStep} ${TONE_CLASS[step.tone]}`}>
-                <span className={styles.polIcon}>
-                  <HomeIcon name={step.icon} />
-                </span>
-                <span className={styles.polTitle}>{step.title}</span>
-                <span className={styles.polDetail}>{step.detail}</span>
+        <ScrollReveal className={styles.polLanes}>
+          {policyLanes.map((lane) => (
+            <div key={lane.id} className={`${styles.polLane} ${LANE_CLASS[lane.id] ?? ''}`}>
+              <div className={styles.polLaneHead}>
+                <span className={styles.polLaneBadge}>{lane.label}</span>
               </div>
-              {idx < policySteps.length - 1 && (
-                <span className={styles.polArrow} aria-hidden="true">
-                  <HomeIcon name="arrowRight" />
-                </span>
-              )}
-            </li>
+              <p className={styles.polLaneCaption}>{lane.caption}</p>
+
+              <ol className={styles.polSteps}>
+                {lane.steps.map((step) => (
+                  <li key={step.title} className={styles.polStepWrap}>
+                    <div className={`${styles.polStep} ${TONE_CLASS[step.tone]}`}>
+                      <span className={styles.polIcon} aria-hidden="true">
+                        <HomeIcon name={step.icon} />
+                      </span>
+                      <span className={styles.polTitle}>{step.title}</span>
+                      <span className={styles.polDetail}>{step.detail}</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
           ))}
-        </ol>
+        </ScrollReveal>
       </div>
     </section>
   );

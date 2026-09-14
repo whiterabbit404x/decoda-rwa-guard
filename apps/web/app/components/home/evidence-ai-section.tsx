@@ -1,4 +1,5 @@
 import { HomeIcon } from './home-icons';
+import { ScrollReveal } from './scroll-reveal';
 import { evidencePillars, type EvidencePillar } from './home-data';
 import styles from './home.module.css';
 
@@ -8,6 +9,7 @@ const TONE_CLASS: Record<EvidencePillar['tone'], string> = {
   amber: styles.evAmber,
 };
 
+/** Institutional trust section — deliberately static, no decorative AI imagery. */
 export function EvidenceAISection() {
   return (
     <section className={styles.section} id="evidence-ai">
@@ -21,17 +23,17 @@ export function EvidenceAISection() {
           </p>
         </div>
 
-        <div className={styles.evGrid}>
+        <ScrollReveal className={styles.evGrid} stagger>
           {evidencePillars.map((pillar) => (
             <article key={pillar.title} className={`${styles.evCard} ${TONE_CLASS[pillar.tone]}`}>
-              <span className={styles.evIcon}>
+              <span className={styles.evIcon} aria-hidden="true">
                 <HomeIcon name={pillar.icon} />
               </span>
               <h3 className={styles.evTitle}>{pillar.title}</h3>
               <p className={styles.evDetail}>{pillar.detail}</p>
             </article>
           ))}
-        </div>
+        </ScrollReveal>
       </div>
     </section>
   );

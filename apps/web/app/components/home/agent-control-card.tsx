@@ -12,13 +12,13 @@ const STATE_CLASS: Record<AgentState, string> = {
 export function AgentControlCard({ plane }: { plane: AgentControlPlane }) {
   return (
     <article className={`${styles.aCard} ${STATE_CLASS[plane.state]}`}>
-      <div className={styles.aTop}>
+      <span className={styles.aIcon} aria-hidden="true">
+        <HomeIcon name={plane.icon} />
+      </span>
+      <h3 className={styles.aScreen}>
         <span className={styles.aNum}>{plane.num}</span>
-        <span className={styles.aIcon}>
-          <HomeIcon name={plane.icon} />
-        </span>
-      </div>
-      <div className={styles.aScreen}>{plane.screen}</div>
+        {plane.screen}
+      </h3>
       <div className={styles.aAgent}>{plane.agent}</div>
       <p className={styles.aDesc}>{plane.description}</p>
       <div className={styles.aFoot}>

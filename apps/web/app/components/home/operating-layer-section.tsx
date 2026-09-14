@@ -1,4 +1,5 @@
 import { AgentControlCard } from './agent-control-card';
+import { ScrollReveal } from './scroll-reveal';
 import { operatingGroups, type AgentGroup } from './home-data';
 import styles from './home.module.css';
 
@@ -11,7 +12,7 @@ const GROUP_CLASS: Record<AgentGroup, string> = {
 
 export function OperatingLayerSection() {
   return (
-    <section className={styles.section} id="operating-layer">
+    <section className={`${styles.section} ${styles.sectionFirst}`} id="operating-layer">
       <div className={styles.sectionInner}>
         <div className={styles.sectionHeadCenter}>
           <p className={styles.eyebrow}>The Decoda operating layer</p>
@@ -27,7 +28,7 @@ export function OperatingLayerSection() {
           </p>
         </div>
 
-        <div className={styles.layerGroups}>
+        <ScrollReveal className={styles.layerGroups} stagger>
           {operatingGroups.map((group) => (
             <div key={group.id} className={`${styles.group} ${GROUP_CLASS[group.id]}`}>
               <div className={styles.groupHead}>
@@ -41,7 +42,7 @@ export function OperatingLayerSection() {
               </div>
             </div>
           ))}
-        </div>
+        </ScrollReveal>
       </div>
     </section>
   );

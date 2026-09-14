@@ -23,7 +23,7 @@ const COMPANY_LINKS = [
 
 export function MarketingFooter({ supportEmail }: { supportEmail: string }) {
   return (
-    <footer className={styles.footer}>
+    <footer className={`${styles.footer} ${styles.zoneDark}`}>
       <div className={styles.footerInner}>
         <div>
           <Link href="/" className={styles.brand} prefetch={false}>
