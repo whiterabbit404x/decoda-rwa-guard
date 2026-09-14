@@ -69,6 +69,9 @@
   --focus: #1d4ed8;
   --focus-dark: #93c5fd;
 
+  /* the single entrance easing used by every one-time reveal */
+  --ease-reveal: cubic-bezier(0.22, 1, 0.36, 1);
+
   min-height: 100vh;
   background: var(--bg);
   color: var(--text);
@@ -131,8 +134,8 @@
   max-width: 720px;
 }
 .sectionHeadCenter {
-  /* wide enough that "12 security control planes. One evidence chain."
-     holds on the single line the <br /> in the heading intends */
+  /* wide enough that each half of the operating-layer headline holds on
+     the single line the <br /> in the heading intends */
   max-width: 980px;
   margin: 0 auto;
   text-align: center;
@@ -802,175 +805,247 @@
 /* ============================================================
    Scroll reveal (secondary + tertiary motion)
 
-   Content is visible by default. The hidden start state only
-   applies once the client has confirmed it can drive the reveal
-   AND the visitor has not asked for reduced motion — so a no-JS
-   visitor, and a reduced-motion visitor, simply read the page.
-   Only opacity/transform move, so nothing reflows.
+   Content is visible by default. Both the hidden and the revealed
+   rule are keyed on `data-reveal`, an attribute only scroll-reveal.tsx
+   sets, so a no-JS visitor — and a reduced-motion visitor, who never
+   opts in — simply reads the finished page.
+
+   The transition is declared on the REVEALED rule only. Applying the
+   hidden state is therefore instantaneous and cannot fade readable
+   content out; the out -> in change picks the transition up from the
+   after-change style and animates the entrance.
+
+   `.revealParts` marks a wrapper that sequences its own descendants
+   instead of moving as one block.
+
+   Only opacity/transform animate, so revealing never reflows.
    ============================================================ */
-.reveal {
-  /* visible unless the client opts the document in (see scroll-reveal.tsx) */
-}
-:global(html[data-landing-reveal='on']) .reveal {
+.reveal[data-reveal='out']:not(.revealParts) {
   opacity: 0;
-  transform: translateY(14px);
-  transition: opacity 0.42s ease-out, transform 0.42s ease-out;
+  transform: translateY(20px);
 }
-:global(html[data-landing-reveal='on']) .reveal[data-reveal='in'] {
+.reveal[data-reveal='in']:not(.revealParts) {
   opacity: 1;
   transform: none;
+  transition: opacity 0.58s var(--ease-reveal), transform 0.58s var(--ease-reveal);
 }
+
 /* staggered children — delays as classes, never inline styles */
-:global(html[data-landing-reveal='on']) .revealStagger > * {
+.revealStagger[data-reveal='out'] > * {
   opacity: 0;
-  transform: translateY(12px);
-  transition: opacity 0.4s ease-out, transform 0.4s ease-out;
+  transform: translateY(20px);
 }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > * {
+.revealStagger[data-reveal='in'] > * {
   opacity: 1;
   transform: none;
+  transition: opacity 0.54s var(--ease-reveal), transform 0.54s var(--ease-reveal);
 }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(2) { transition-delay: 60ms; }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(3) { transition-delay: 120ms; }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(4) { transition-delay: 180ms; }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(5) { transition-delay: 240ms; }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(6) { transition-delay: 300ms; }
-:global(html[data-landing-reveal='on']) .revealStagger[data-reveal='in'] > *:nth-child(7) { transition-delay: 360ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(2) { transition-delay: 90ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(3) { transition-delay: 180ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(4) { transition-delay: 270ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(5) { transition-delay: 360ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(6) { transition-delay: 450ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(7) { transition-delay: 540ms; }
+
+/* Section headings: eyebrow, headline, lead — 0 / 80 / 160ms. */
+.revealHead[data-reveal='in'] > *:nth-child(2) { transition-delay: 80ms; }
+.revealHead[data-reveal='in'] > *:nth-child(3) { transition-delay: 160ms; }
+.revealHead[data-reveal='in'] > *:nth-child(4) { transition-delay: 240ms; }
 
 /* ============================================================
-   Operating layer — 12 control planes (light)
+   The Decoda operating layer — four outcome pillars (light)
+
+   Restrained enterprise treatment only: white surface, one-pixel
+   neutral border, a small shadow and the brand blue as the single
+   accent. No neon, no glow, no glass, no 3D, nothing floating.
    ============================================================ */
-.layerGroups {
-  margin-top: 44px;
+.pillars {
+  margin-top: 46px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px;
-  align-items: start;
+  gap: 18px;
+  align-items: stretch;
 }
-.group {
+.pillar {
   display: flex;
   flex-direction: column;
-  gap: 10px;
   min-width: 0;
-}
-.groupObserve { --group: #0e7490; }
-.groupDetect { --group: #1d4ed8; }
-.groupRespond { --group: #6d28d9; }
-.groupGovern { --group: #15803d; }
-
-.groupHead {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding-bottom: 10px;
-  border-bottom: 2px solid var(--group);
-}
-.groupTick {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  background: var(--group);
-  flex: none;
-}
-.groupLabel {
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text);
-}
-.groupCards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.aCard {
-  position: relative;
-  display: grid;
-  grid-template-columns: 32px 1fr;
-  gap: 2px 11px;
-  padding: 13px 14px;
+  padding: 22px 20px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
-.aCard:hover {
+.pillar:hover {
   border-color: var(--border-strong);
   box-shadow: 0 4px 14px -6px rgba(15, 23, 42, 0.16);
 }
-.aIcon {
-  grid-row: 1 / span 2;
+.pillarHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pillarIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--surface-soft);
-  border: 1px solid var(--border);
-  color: var(--group);
-}
-.aIcon svg { width: 16px; height: 16px; }
-.aScreen {
-  margin: 0;
-  align-self: end;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
-.aNum {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--text-3);
-  letter-spacing: 0.06em;
-  margin-right: 6px;
-}
-.aAgent {
-  align-self: start;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--group);
-}
-.aDesc {
-  grid-column: 1 / -1;
-  margin: 8px 0 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--text-2);
-}
-.aFoot {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border);
-}
-.aDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--brand-soft);
+  border: 1px solid #dbe6fb;
+  color: var(--brand);
   flex: none;
 }
-.aState {
-  font-size: 11px;
-  font-weight: 600;
+.pillarIcon svg { width: 18px; height: 18px; }
+.pillarNum {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   color: var(--text-3);
-  letter-spacing: 0.02em;
 }
-.stCont .aDot { background: var(--healthy); }
-.stEvent .aDot { background: var(--info); }
-.stPolicy .aDot { background: var(--medium); }
-.stVerified .aDot { background: var(--healthy); }
-.stCont .aState { color: var(--healthy); }
-.stEvent .aState { color: var(--info); }
-.stPolicy .aState { color: var(--medium); }
-.stVerified .aState { color: var(--healthy); }
+.pillarTitle {
+  margin: 16px 0 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.pillarOutcome {
+  margin: 8px 0 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  /* Reserve three lines so the rule above each capability list lands at the
+     same height across the row, whatever length each sentence happens to be. */
+  min-height: calc(3 * 1.55 * 13.5px);
+}
+.pillarCaps {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.pillarCap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.pillarCapDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--brand);
+  flex: none;
+}
+
+/* ── the operating lifecycle, as a thin ribbon under the pillars ── */
+.ribbon {
+  position: relative;
+  list-style: none;
+  margin: 44px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.ribbonTrack {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.ribbonTrackFill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0e7490, var(--brand), #15803d);
+  transform: scaleX(1);
+  transform-origin: left center;
+}
+.ribbonStep {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ribbonNode {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--brand);
+  background: var(--surface);
+  flex: none;
+}
+.ribbonLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  text-align: center;
+}
+
+/* ── one-time entrance, choreographed from a single trigger ──
+   eyebrow 0 · headline 80 · description 160 · pillars 240+ · ribbon 560+ */
+.opStage[data-reveal='out'] .opEyebrow,
+.opStage[data-reveal='out'] .opTitle,
+.opStage[data-reveal='out'] .opLead,
+.opStage[data-reveal='out'] .ribbonStep {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.opStage[data-reveal='out'] .pillar {
+  opacity: 0;
+  transform: translateY(16px) scale(0.985);
+}
+.opStage[data-reveal='out'] .ribbonTrackFill {
+  transform: scaleX(0);
+}
+.opStage[data-reveal='in'] .opEyebrow,
+.opStage[data-reveal='in'] .opTitle,
+.opStage[data-reveal='in'] .opLead,
+.opStage[data-reveal='in'] .pillar,
+.opStage[data-reveal='in'] .ribbonStep {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.58s var(--ease-reveal), transform 0.58s var(--ease-reveal);
+}
+.opStage[data-reveal='in'] .opTitle { transition-delay: 80ms; }
+.opStage[data-reveal='in'] .opLead { transition-delay: 160ms; }
+.opStage[data-reveal='in'] .pillar {
+  transition-duration: 0.5s;
+  transition-delay: 240ms;
+}
+.opStage[data-reveal='in'] .pillar:nth-child(2) { transition-delay: 320ms; }
+.opStage[data-reveal='in'] .pillar:nth-child(3) { transition-delay: 400ms; }
+.opStage[data-reveal='in'] .pillar:nth-child(4) { transition-delay: 480ms; }
+.opStage[data-reveal='in'] .ribbonTrackFill {
+  transform: scaleX(1);
+  transition: transform 0.72s var(--ease-reveal) 560ms;
+}
+/* the track is the ribbon's first <li>, so the steps start at child 2 */
+.opStage[data-reveal='in'] .ribbonStep {
+  transition-duration: 0.46s;
+  transition-delay: 600ms;
+}
+.opStage[data-reveal='in'] .ribbonStep:nth-child(3) { transition-delay: 670ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(4) { transition-delay: 740ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(5) { transition-delay: 810ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(6) { transition-delay: 880ms; }
 
 /* ============================================================
    Incident lifecycle — horizontal enterprise process (light)
@@ -1002,14 +1077,33 @@
   transform: scaleX(1);
   transform-origin: left center;
 }
-/* one-time progressive reveal when the section first enters the viewport */
-:global(html[data-landing-reveal='on']) .lcFlow .lcTrackFill {
+/* ── one-time progression: stage activates, connector draws, next stage ──
+   Telemetry -> Threat Detection -> ... -> Cryptographic Evidence, about
+   1.6s end to end, then it stays put. The track advances underneath the
+   stages for the whole run, so each connector is drawn between two
+   activations rather than sweeping ahead of them. */
+.lcFlow[data-reveal='out'] .lcTrackFill {
   transform: scaleX(0);
-  transition: transform 1.15s cubic-bezier(0.33, 0.12, 0.2, 1);
 }
-:global(html[data-landing-reveal='on']) .lcFlow[data-reveal='in'] .lcTrackFill {
+.lcFlow[data-reveal='out'] .lcStageWrap {
+  opacity: 0;
+  transform: translateY(16px);
+}
+.lcFlow[data-reveal='in'] .lcTrackFill {
   transform: scaleX(1);
+  transition: transform 1.5s var(--ease-reveal);
 }
+.lcFlow[data-reveal='in'] .lcStageWrap {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.44s var(--ease-reveal), transform 0.44s var(--ease-reveal);
+}
+/* the track is the flow's first <li>, so the stages start at child 2 */
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(3) { transition-delay: 230ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(4) { transition-delay: 460ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(5) { transition-delay: 690ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(6) { transition-delay: 920ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(7) { transition-delay: 1150ms; }
 
 .lcStageWrap {
   position: relative;
@@ -1082,6 +1176,50 @@
 }
 .consoleFrameWrap {
   margin-top: 40px;
+}
+/* the frame itself enters a little further than the page default */
+.consoleFrameWrap[data-reveal='out'] {
+  transform: translateY(22px);
+}
+
+/* ── one short contextual sequence after the frame has landed ──
+   System Health -> Open Incidents -> Open Alerts -> Evidence Integrity.
+   A ring overlay fades in and back out over each in turn: opacity only,
+   so nothing in the frame repaints its own box or moves. It runs once —
+   `forwards` is deliberate, the end state is the resting state — and the
+   figures underneath are never changed, only pointed at. */
+.mockMetric,
+.callout {
+  position: relative;
+}
+.mockMetric::after,
+.callout::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid var(--brand);
+  background: rgba(29, 78, 216, 0.05);
+  opacity: 0;
+  pointer-events: none;
+}
+.consoleFrameWrap[data-reveal='in'] .mockMetric:nth-child(1)::after {
+  animation: conFocus 1s var(--ease-reveal) 700ms forwards;
+}
+.consoleFrameWrap[data-reveal='in'] .mockMetric:nth-child(2)::after {
+  animation: conFocus 1s var(--ease-reveal) 1000ms forwards;
+}
+.consoleFrameWrap[data-reveal='in'] .mockMetric:nth-child(3)::after {
+  animation: conFocus 1s var(--ease-reveal) 1300ms forwards;
+}
+.consoleFrameWrap[data-reveal='in'] .callout:nth-child(4)::after {
+  animation: conFocus 1s var(--ease-reveal) 1600ms forwards;
+}
+@keyframes conFocus {
+  0% { opacity: 0; }
+  35% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
 }
 .mock {
   border-radius: var(--radius-lg);
@@ -1433,18 +1571,28 @@
 .polGate .polDetail,
 .polAmber .polDetail { color: #92400e; font-weight: 600; }
 
-/* one-time progress sweep across the lanes on first view */
-:global(html[data-landing-reveal='on']) .polLanes .polStep {
+/* ── one-time progression across all seven steps, ~1.6s end to end ──
+   Observe -> Investigate -> Recommend (blue, autonomous) -> Policy
+   evaluation -> Human approval (amber, controlled) -> Execute ->
+   Record evidence (green, proven). Step by step rather than lane by
+   lane, so the hand-off from automation to human control is the part
+   the eye actually follows. Tones are the resting styles above; the
+   sequence only fades each step in. */
+.polLanes[data-reveal='out'] .polStep {
   opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.38s ease-out, transform 0.38s ease-out;
+  transform: translateY(16px);
 }
-:global(html[data-landing-reveal='on']) .polLanes[data-reveal='in'] .polStep {
+.polLanes[data-reveal='in'] .polStep {
   opacity: 1;
   transform: none;
+  transition: opacity 0.52s var(--ease-reveal), transform 0.52s var(--ease-reveal);
 }
-:global(html[data-landing-reveal='on']) .polLanes[data-reveal='in'] .polLane:nth-child(2) .polStep { transition-delay: 160ms; }
-:global(html[data-landing-reveal='on']) .polLanes[data-reveal='in'] .polLane:nth-child(3) .polStep { transition-delay: 320ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(2) .polStep { transition-delay: 180ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(3) .polStep { transition-delay: 360ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(1) .polStep { transition-delay: 540ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(2) .polStep { transition-delay: 720ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(1) .polStep { transition-delay: 900ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(2) .polStep { transition-delay: 1080ms; }
 
 /* ============================================================
    Pricing — completely static
@@ -1653,16 +1801,36 @@
     transition: none !important;
     scroll-behavior: auto !important;
   }
-  :global(html[data-landing-reveal='on']) .reveal,
-  :global(html[data-landing-reveal='on']) .revealStagger > *,
-  :global(html[data-landing-reveal='on']) .polLanes .polStep {
+  /* scroll-reveal.tsx never opts a reduced-motion visitor in, so no
+     element carries data-reveal at all. These rules are the belt to that
+     braces: they also cover someone who turns the preference on after the
+     page has already revealed. Every sequence lands on its completed
+     state — nothing is left hidden, mid-progress or waiting on a delay. */
+  .reveal,
+  .revealStagger > *,
+  .opStage .opEyebrow,
+  .opStage .opTitle,
+  .opStage .opLead,
+  .opStage .pillar,
+  .opStage .ribbonStep,
+  .lcFlow .lcStageWrap,
+  .polLanes .polStep {
     opacity: 1 !important;
     transform: none !important;
   }
-  :global(html[data-landing-reveal='on']) .lcFlow .lcTrackFill {
+  .lcFlow .lcTrackFill {
     transform: scaleX(1) !important;
   }
-  .wfIcon::after { opacity: 0 !important; }
+  /* horizontal on desktop, vertical once stacked — `none` is the resting,
+     fully drawn state on both axes */
+  .opStage .ribbonTrackFill {
+    transform: none !important;
+  }
+  .wfIcon::after,
+  .mockMetric::after,
+  .callout::after {
+    opacity: 0 !important;
+  }
 }
 
 /* ============================================================
@@ -1691,7 +1859,7 @@
     padding-top: 44px;
   }
   .heroLead, .heroLead2, .capRow { max-width: none; }
-  .layerGroups { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+  .pillars { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
   .lcFlow { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 32px; }
   .lcTrack { display: none; }
   .consoleCallouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1717,7 +1885,18 @@
   .heroTitle { font-size: clamp(30px, 8.6vw, 40px); }
   .heroCtas { flex-direction: column; align-items: stretch; }
   .capRow { grid-template-columns: 1fr; gap: 12px; }
-  .layerGroups { grid-template-columns: 1fr; gap: 22px; }
+  .pillars { grid-template-columns: 1fr; gap: 14px; }
+  /* one per row: nothing to line up with, so the reserved lines only add space */
+  .pillarOutcome { min-height: 0; }
+  /* the ribbon becomes a vertical list rather than five squeezed columns */
+  .ribbon { grid-template-columns: 1fr; gap: 0; margin-top: 34px; }
+  .ribbonTrack { left: 6px; right: auto; top: 10px; bottom: 10px; width: 2px; height: auto; }
+  /* the track runs top-to-bottom here, so it must draw on the other axis */
+  .ribbonTrackFill { transform-origin: center top; }
+  .opStage[data-reveal='out'] .ribbonTrackFill { transform: scaleY(0); }
+  .opStage[data-reveal='in'] .ribbonTrackFill { transform: scaleY(1); }
+  .ribbonStep { flex-direction: row; align-items: center; gap: 14px; padding: 9px 0; }
+  .ribbonLabel { text-align: left; }
   .lcFlow { grid-template-columns: 1fr; row-gap: 4px; }
   /* vertical process on mobile rather than a squeezed horizontal diagram */
   .lcStageWrap {

@@ -7,12 +7,12 @@ export function RWASecuritySection() {
   return (
     <section className={styles.section} id="rwa-security">
       <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
+        <ScrollReveal className={`${styles.sectionHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>Built for tokenized assets</p>
           <h2 className={styles.sectionTitle}>
             Security controls for the operational risks unique to RWA.
           </h2>
-        </div>
+        </ScrollReveal>
 
         <ScrollReveal className={styles.cardGrid4} stagger>
           {rwaCards.map((card) => (

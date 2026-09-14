@@ -21,7 +21,7 @@ export function IncidentLifecycleSection() {
   return (
     <section className={styles.section} id="lifecycle">
       <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
+        <ScrollReveal className={`${styles.sectionHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>Incident lifecycle</p>
           <h2 className={styles.sectionTitle}>
             From a blockchain signal to defensible evidence.
@@ -30,9 +30,9 @@ export function IncidentLifecycleSection() {
             Every conclusion remains connected to the telemetry, transactions, findings, approvals
             and response actions that produced it.
           </p>
-        </div>
+        </ScrollReveal>
 
-        <ScrollReveal as="ol" className={styles.lcFlow}>
+        <ScrollReveal as="ol" className={`${styles.lcFlow} ${styles.revealParts}`}>
           <li className={styles.lcTrack} aria-hidden="true">
             <span className={styles.lcTrackFill} />
           </li>

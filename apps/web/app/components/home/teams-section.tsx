@@ -7,12 +7,12 @@ export function TeamsSection() {
   return (
     <section className={styles.section} id="teams">
       <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
+        <ScrollReveal className={`${styles.sectionHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>Built for teams</p>
           <h2 className={styles.sectionTitle}>
             Built for teams responsible for tokenized financial infrastructure.
           </h2>
-        </div>
+        </ScrollReveal>
 
         <ScrollReveal className={styles.cardGrid3} stagger>
           {teamCards.map((card) => (

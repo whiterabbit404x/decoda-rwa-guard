@@ -35,7 +35,7 @@ export function ProductConsoleSection() {
   return (
     <section className={styles.section} id="console">
       <div className={styles.consoleInner}>
-        <div className={styles.consoleHead}>
+        <ScrollReveal className={`${styles.consoleHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>The security console</p>
           <h2 className={styles.sectionTitle}>One operational view from risk to response.</h2>
           <p className={styles.sectionLead}>
@@ -47,7 +47,7 @@ export function ProductConsoleSection() {
               Explore the platform
             </a>
           </div>
-        </div>
+        </ScrollReveal>
 
         <ScrollReveal className={styles.consoleFrameWrap}>
           <div className={styles.mock} aria-label="Decoda security console preview (illustration)">
