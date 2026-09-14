@@ -1,87 +1,377 @@
-﻿/* --- Design tokens ----------------------------------------------- */
+﻿/* --- Design tokens -----------------------------------------------
+   Decoda RWA Guard — institutional security-operations design system.
+
+   ONE token layer drives every authenticated screen. Raw palettes are
+   declared once (`--l-*` light, `--d-*` dark); the semantic names below
+   point at one of them. A theme switch re-points the semantic layer and
+   nothing else, so Light and Dark can never drift apart per screen.
+
+   Themes: System (default resolution) / Light / Dark.
+   `app/theme-script.ts` stamps the resolved theme on <html data-theme>
+   BEFORE first paint, so there is no flash and no hydration mismatch.
+
+   The sidebar is deliberately NOT part of the flip: `--sidebar-*` stays
+   dark navy in both themes. That is the product's visual identity —
+   dark navy structural navigation beside a light operational workspace.
+   ---------------------------------------------------------------- */
 :root {
-  /* Fallback so any remaining native controls (scrollbars, date pickers,
-     autofill, un-migrated <select>s) follow the active theme. The app is
-     pinned dark today via <html data-theme="dark">; the theme-scoped rules
-     below let future Light / System themes flip it in one place. */
-  color-scheme: light dark;
   font-family: Inter, system-ui, Arial, sans-serif;
 
+  /* ═══ Raw palette — LIGHT ═══════════════════════════════════════
+     Matches the public site's institutional palette so the product and
+     the marketing surface read as one brand. */
+  --l-bg-base:      #f7f9fc;
+  --l-bg-surface:   #ffffff;
+  --l-bg-card:      #ffffff;
+  --l-bg-subtle:    #f1f5f9;
+  --l-bg-hover:     #f8fafc;
+  --l-bg-header:    #ffffff;
+  --l-bg-input:     #ffffff;
+  --l-bg-inset:     #f8fafc;
+  --l-border:       #e2e8f0;
+  --l-border-strong:#cbd5e1;
+  --l-border-accent:rgba(37, 99, 235, 0.24);
+  --l-border-hover: #2563eb;
+  --l-text-primary: #0f172a;
+  --l-text-secondary:#475569;
+  --l-text-muted:   #64748b;
+  --l-text-accent:  #1d4ed8;
+  --l-accent-blue:  #2563eb;
+  --l-accent-strong:#1d4ed8;
+  --l-accent-bg:    rgba(37, 99, 235, 0.08);
+  --l-success-fg:   #15803d;
+  --l-success-bg:   rgba(21, 128, 61, 0.09);
+  --l-success-bdr:  rgba(21, 128, 61, 0.26);
+  --l-warning-fg:   #b45309;
+  --l-warning-bg:   rgba(180, 83, 9, 0.09);
+  --l-warning-bdr:  rgba(180, 83, 9, 0.26);
+  --l-danger-fg:    #b91c1c;
+  --l-danger-bg:    rgba(185, 28, 28, 0.08);
+  --l-danger-bdr:   rgba(185, 28, 28, 0.24);
+  --l-info-fg:      #1d4ed8;
+  --l-info-bg:      rgba(29, 78, 216, 0.08);
+  --l-info-bdr:     rgba(29, 78, 216, 0.24);
+  --l-violet-fg:    #6d28d9;
+  --l-violet-bg:    rgba(109, 40, 217, 0.08);
+  --l-violet-bdr:   rgba(109, 40, 217, 0.24);
+  --l-neutral-fg:   #475569;
+  --l-neutral-bg:   rgba(100, 116, 139, 0.10);
+  --l-neutral-bdr:  rgba(100, 116, 139, 0.26);
+  /* Tinted overlays. On light surfaces a white wash is invisible, so the
+     scale is slate-on-white; the dark theme mirrors it as white-on-navy. */
+  --l-overlay-01:   rgba(15, 23, 42, 0.02);
+  --l-overlay-02:   rgba(15, 23, 42, 0.03);
+  --l-overlay-03:   rgba(15, 23, 42, 0.045);
+  --l-overlay-04:   rgba(15, 23, 42, 0.06);
+  --l-overlay-06:   rgba(15, 23, 42, 0.08);
+  --l-overlay-10:   rgba(15, 23, 42, 0.12);
+  --l-shadow-xs:    0 1px 2px rgba(15, 23, 42, 0.05);
+  --l-shadow-sm:    0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --l-shadow-md:    0 4px 12px rgba(15, 23, 42, 0.08);
+  --l-shadow-lg:    0 12px 32px rgba(15, 23, 42, 0.12);
+  --l-scrim:        rgba(15, 23, 42, 0.42);
+  --l-code-bg:      #f1f5f9;
+
+  /* ═══ Raw palette — DARK ════════════════════════════════════════
+     Deep navy, never pure black; readable rather than neon. */
+  --d-bg-base:      #08111f;
+  --d-bg-surface:   #0f1a2b;
+  --d-bg-card:      #0f1a2b;
+  --d-bg-subtle:    #132033;
+  --d-bg-hover:     #16243a;
+  --d-bg-header:    #0b1524;
+  --d-bg-input:     #0b1524;
+  --d-bg-inset:     #0a1322;
+  --d-border:       #263449;
+  --d-border-strong:#33455f;
+  --d-border-accent:rgba(125, 174, 255, 0.26);
+  --d-border-hover: #60a5fa;
+  --d-text-primary: #f8fafc;
+  --d-text-secondary:#cbd5e1;
+  --d-text-muted:   #94a3b8;
+  --d-text-accent:  #7daeff;
+  --d-accent-blue:  #3b82f6;
+  --d-accent-strong:#2563eb;
+  --d-accent-bg:    rgba(59, 130, 246, 0.16);
+  --d-success-fg:   #4ade80;
+  --d-success-bg:   rgba(34, 197, 94, 0.14);
+  --d-success-bdr:  rgba(34, 197, 94, 0.34);
+  --d-warning-fg:   #fbbf24;
+  --d-warning-bg:   rgba(251, 191, 36, 0.14);
+  --d-warning-bdr:  rgba(251, 191, 36, 0.34);
+  --d-danger-fg:    #f87171;
+  --d-danger-bg:    rgba(239, 68, 68, 0.14);
+  --d-danger-bdr:   rgba(239, 68, 68, 0.34);
+  --d-info-fg:      #93c5fd;
+  --d-info-bg:      rgba(59, 130, 246, 0.14);
+  --d-info-bdr:     rgba(59, 130, 246, 0.34);
+  --d-violet-fg:    #a78bfa;
+  --d-violet-bg:    rgba(167, 139, 250, 0.14);
+  --d-violet-bdr:   rgba(167, 139, 250, 0.34);
+  --d-neutral-fg:   #cbd5e1;
+  --d-neutral-bg:   rgba(148, 163, 184, 0.14);
+  --d-neutral-bdr:  rgba(148, 163, 184, 0.28);
+  --d-overlay-01:   rgba(255, 255, 255, 0.02);
+  --d-overlay-02:   rgba(255, 255, 255, 0.03);
+  --d-overlay-03:   rgba(255, 255, 255, 0.045);
+  --d-overlay-04:   rgba(255, 255, 255, 0.06);
+  --d-overlay-06:   rgba(255, 255, 255, 0.08);
+  --d-overlay-10:   rgba(255, 255, 255, 0.12);
+  --d-shadow-xs:    0 1px 2px rgba(2, 6, 16, 0.4);
+  --d-shadow-sm:    0 1px 3px rgba(2, 6, 16, 0.45);
+  --d-shadow-md:    0 4px 14px rgba(2, 6, 16, 0.5);
+  --d-shadow-lg:    0 16px 40px rgba(2, 6, 16, 0.6);
+  --d-scrim:        rgba(2, 6, 16, 0.66);
+  --d-code-bg:      #0a1322;
+
+  /* ═══ Semantic layer — resolves to LIGHT by default ═════════════ */
+  color-scheme: light;
+
   /* backgrounds */
-  --bg-base:    #070b14;
-  --bg-sidebar: #080e1c;
-  --bg-surface: #0e1625;
-  --bg-card:    rgba(14, 22, 37, 0.96);
-  --bg-header:  rgba(8, 14, 26, 0.97);
+  --bg-base:    var(--l-bg-base);
+  --bg-surface: var(--l-bg-surface);
+  --bg-card:    var(--l-bg-card);
+  --bg-subtle:  var(--l-bg-subtle);
+  --bg-hover:   var(--l-bg-hover);
+  --bg-header:  var(--l-bg-header);
+  --bg-input:   var(--l-bg-input);
+  --bg-inset:   var(--l-bg-inset);
+  --code-bg:    var(--l-code-bg);
 
   /* borders */
-  --border:        rgba(255, 255, 255, 0.08);
-  --border-accent: rgba(106, 169, 255, 0.22);
-  --border-hover:  rgba(106, 169, 255, 0.55);
+  --border:        var(--l-border);
+  --border-strong: var(--l-border-strong);
+  --border-accent: var(--l-border-accent);
+  --border-hover:  var(--l-border-hover);
 
   /* text */
-  --text-primary:   #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted:     #5a6478;
-  --text-accent:    #6aa9ff;
+  --text-primary:   var(--l-text-primary);
+  --text-secondary: var(--l-text-secondary);
+  --text-muted:     var(--l-text-muted);
+  --text-accent:    var(--l-text-accent);
 
   /* accent colours */
-  --accent-blue:    #3b82f6;
-  --accent-blue-bg: rgba(59, 130, 246, 0.14);
+  --accent-blue:        var(--l-accent-blue);
+  --accent-blue-strong: var(--l-accent-strong);
+  --accent-blue-bg:     var(--l-accent-bg);
 
-  /* status */
-  --success-fg:  #4ade80;
-  --success-bg:  rgba(34, 197, 94, 0.12);
-  --success-bdr: rgba(34, 197, 94, 0.32);
+  /* status — one treatment per meaning, identical on every screen */
+  --success-fg:  var(--l-success-fg);
+  --success-bg:  var(--l-success-bg);
+  --success-bdr: var(--l-success-bdr);
 
-  --warning-fg:  #fbbf24;
-  --warning-bg:  rgba(251, 191, 36, 0.12);
-  --warning-bdr: rgba(251, 191, 36, 0.32);
+  --warning-fg:  var(--l-warning-fg);
+  --warning-bg:  var(--l-warning-bg);
+  --warning-bdr: var(--l-warning-bdr);
 
-  --danger-fg:   #f87171;
-  --danger-bg:   rgba(239, 68, 68, 0.12);
-  --danger-bdr:  rgba(239, 68, 68, 0.32);
+  --danger-fg:   var(--l-danger-fg);
+  --danger-bg:   var(--l-danger-bg);
+  --danger-bdr:  var(--l-danger-bdr);
 
-  --info-fg:   #93c5fd;
-  --info-bg:   rgba(59, 130, 246, 0.12);
-  --info-bdr:  rgba(59, 130, 246, 0.32);
+  --info-fg:   var(--l-info-fg);
+  --info-bg:   var(--l-info-bg);
+  --info-bdr:  var(--l-info-bdr);
 
-  /* Human/governance accent. These name the violet the product ALREADY uses
-     (#a78bfa — the chain/governance/isolation icons below) so the Screen 7
-     Human Actions evidence domain reuses an existing product colour through a
-     token instead of hard-coding a fifth one. */
-  --violet-fg:  #a78bfa;
-  --violet-bg:  rgba(167, 139, 250, 0.12);
-  --violet-bdr: rgba(167, 139, 250, 0.32);
+  /* Human/governance accent — the violet the product already uses for
+     chain/governance/isolation, kept as a token so it stays one colour. */
+  --violet-fg:  var(--l-violet-fg);
+  --violet-bg:  var(--l-violet-bg);
+  --violet-bdr: var(--l-violet-bdr);
+
+  /* UNKNOWN / no-data. Deliberately grey: absence of data is never shown
+     in a colour that reads as healthy. */
+  --neutral-fg:  var(--l-neutral-fg);
+  --neutral-bg:  var(--l-neutral-bg);
+  --neutral-bdr: var(--l-neutral-bdr);
+
+  /* tinted overlays + elevation */
+  --overlay-01: var(--l-overlay-01);
+  --overlay-02: var(--l-overlay-02);
+  --overlay-03: var(--l-overlay-03);
+  --overlay-04: var(--l-overlay-04);
+  --overlay-06: var(--l-overlay-06);
+  --overlay-10: var(--l-overlay-10);
+  --shadow-xs:  var(--l-shadow-xs);
+  --shadow-sm:  var(--l-shadow-sm);
+  --shadow-md:  var(--l-shadow-md);
+  --shadow-lg:  var(--l-shadow-lg);
+  --scrim:      var(--l-scrim);
+
+  /* ═══ Sidebar — dark navy in BOTH themes ════════════════════════ */
+  --sidebar-bg:          #081426;
+  --sidebar-surface:     #0e1b2e;
+  --sidebar-hover:       rgba(255, 255, 255, 0.06);
+  --sidebar-border:      rgba(148, 163, 184, 0.16);
+  --sidebar-text:        #94a3b8;
+  --sidebar-text-strong: #e2e8f0;
+  --sidebar-text-active: #ffffff;
+  --sidebar-active-bg:   rgba(37, 99, 235, 0.28);
+  --sidebar-accent:      #7daeff;
+  --bg-sidebar:          var(--sidebar-bg);
 
   /* radii */
   --radius-xs: 0.35rem;
-  --radius-sm: 0.6rem;
-  --radius-md: 0.85rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.25rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.65rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 0.875rem;
 
-  /* sidebar */
+  /* sidebar width */
   --sidebar-w: 240px;
 
-  /* semantic surface aliases used by shared controls (Select popover, etc.).
-     Aliased to existing tokens so future Light / System themes override in
-     one place rather than hard-coding control colours. */
+  /* semantic surface aliases used by shared controls (Select popover,
+     dialogs, tooltips) so overlay chrome follows the active theme. */
   --popover:     var(--bg-surface);
   --popover-fg:  var(--text-primary);
   --ring:        var(--accent-blue);
+  --on-accent:   #ffffff;
 }
 
-/* Theme pinning + native control colour scheme.
-   Default (:root) follows the system; an explicit theme wins when set. */
+/* ═══ Explicit DARK theme ═════════════════════════════════════════
+   Re-points the semantic layer at the dark palette. Declaration list is
+   identical to the System-dark block below — both consume `--d-*`, so a
+   palette change lands in both at once. */
 [data-theme="dark"],
 .dark {
   color-scheme: dark;
+
+  --bg-base:    var(--d-bg-base);
+  --bg-surface: var(--d-bg-surface);
+  --bg-card:    var(--d-bg-card);
+  --bg-subtle:  var(--d-bg-subtle);
+  --bg-hover:   var(--d-bg-hover);
+  --bg-header:  var(--d-bg-header);
+  --bg-input:   var(--d-bg-input);
+  --bg-inset:   var(--d-bg-inset);
+  --code-bg:    var(--d-code-bg);
+
+  --border:        var(--d-border);
+  --border-strong: var(--d-border-strong);
+  --border-accent: var(--d-border-accent);
+  --border-hover:  var(--d-border-hover);
+
+  --text-primary:   var(--d-text-primary);
+  --text-secondary: var(--d-text-secondary);
+  --text-muted:     var(--d-text-muted);
+  --text-accent:    var(--d-text-accent);
+
+  --accent-blue:        var(--d-accent-blue);
+  --accent-blue-strong: var(--d-accent-strong);
+  --accent-blue-bg:     var(--d-accent-bg);
+
+  --success-fg:  var(--d-success-fg);
+  --success-bg:  var(--d-success-bg);
+  --success-bdr: var(--d-success-bdr);
+
+  --warning-fg:  var(--d-warning-fg);
+  --warning-bg:  var(--d-warning-bg);
+  --warning-bdr: var(--d-warning-bdr);
+
+  --danger-fg:   var(--d-danger-fg);
+  --danger-bg:   var(--d-danger-bg);
+  --danger-bdr:  var(--d-danger-bdr);
+
+  --info-fg:   var(--d-info-fg);
+  --info-bg:   var(--d-info-bg);
+  --info-bdr:  var(--d-info-bdr);
+
+  --violet-fg:  var(--d-violet-fg);
+  --violet-bg:  var(--d-violet-bg);
+  --violet-bdr: var(--d-violet-bdr);
+
+  --neutral-fg:  var(--d-neutral-fg);
+  --neutral-bg:  var(--d-neutral-bg);
+  --neutral-bdr: var(--d-neutral-bdr);
+
+  --overlay-01: var(--d-overlay-01);
+  --overlay-02: var(--d-overlay-02);
+  --overlay-03: var(--d-overlay-03);
+  --overlay-04: var(--d-overlay-04);
+  --overlay-06: var(--d-overlay-06);
+  --overlay-10: var(--d-overlay-10);
+  --shadow-xs:  var(--d-shadow-xs);
+  --shadow-sm:  var(--d-shadow-sm);
+  --shadow-md:  var(--d-shadow-md);
+  --shadow-lg:  var(--d-shadow-lg);
+  --scrim:      var(--d-scrim);
 }
 
+/* Explicit LIGHT theme. The semantic layer above is already light, so
+   this only has to win over a System-dark preference. */
 [data-theme="light"],
 .light {
   color-scheme: light;
+}
+
+/* ═══ System theme ════════════════════════════════════════════════
+   Only reached when no explicit choice is stamped on <html>. The
+   pre-paint script normally stamps a resolved theme, so this is the
+   no-JavaScript path — and the reason a JS-disabled visitor on a dark
+   OS still gets the dark product rather than a flash of white. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+
+    --bg-base:    var(--d-bg-base);
+    --bg-surface: var(--d-bg-surface);
+    --bg-card:    var(--d-bg-card);
+    --bg-subtle:  var(--d-bg-subtle);
+    --bg-hover:   var(--d-bg-hover);
+    --bg-header:  var(--d-bg-header);
+    --bg-input:   var(--d-bg-input);
+    --bg-inset:   var(--d-bg-inset);
+    --code-bg:    var(--d-code-bg);
+
+    --border:        var(--d-border);
+    --border-strong: var(--d-border-strong);
+    --border-accent: var(--d-border-accent);
+    --border-hover:  var(--d-border-hover);
+
+    --text-primary:   var(--d-text-primary);
+    --text-secondary: var(--d-text-secondary);
+    --text-muted:     var(--d-text-muted);
+    --text-accent:    var(--d-text-accent);
+
+    --accent-blue:        var(--d-accent-blue);
+    --accent-blue-strong: var(--d-accent-strong);
+    --accent-blue-bg:     var(--d-accent-bg);
+
+    --success-fg:  var(--d-success-fg);
+    --success-bg:  var(--d-success-bg);
+    --success-bdr: var(--d-success-bdr);
+
+    --warning-fg:  var(--d-warning-fg);
+    --warning-bg:  var(--d-warning-bg);
+    --warning-bdr: var(--d-warning-bdr);
+
+    --danger-fg:   var(--d-danger-fg);
+    --danger-bg:   var(--d-danger-bg);
+    --danger-bdr:  var(--d-danger-bdr);
+
+    --info-fg:   var(--d-info-fg);
+    --info-bg:   var(--d-info-bg);
+    --info-bdr:  var(--d-info-bdr);
+
+    --violet-fg:  var(--d-violet-fg);
+    --violet-bg:  var(--d-violet-bg);
+    --violet-bdr: var(--d-violet-bdr);
+
+    --neutral-fg:  var(--d-neutral-fg);
+    --neutral-bg:  var(--d-neutral-bg);
+    --neutral-bdr: var(--d-neutral-bdr);
+
+    --overlay-01: var(--d-overlay-01);
+    --overlay-02: var(--d-overlay-02);
+    --overlay-03: var(--d-overlay-03);
+    --overlay-04: var(--d-overlay-04);
+    --overlay-06: var(--d-overlay-06);
+    --overlay-10: var(--d-overlay-10);
+    --shadow-xs:  var(--d-shadow-xs);
+    --shadow-sm:  var(--d-shadow-sm);
+    --shadow-md:  var(--d-shadow-md);
+    --shadow-lg:  var(--d-shadow-lg);
+    --scrim:      var(--d-scrim);
+  }
 }
 
 * {
@@ -90,10 +380,24 @@
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top, rgba(88, 166, 255, 0.12), transparent 30%),
-    #0d1117;
-  color: #e6edf3;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Motion inside the product is functional only. A reduced-motion request
+   removes transform/animation work without removing state feedback:
+   colour, border and opacity changes still land, they just land at once. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .container {
@@ -118,7 +422,7 @@ main.container {
   margin: 0 0 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #58a6ff;
+  color: var(--text-accent);
   font-size: 0.85rem;
   font-weight: 700;
 }
@@ -132,7 +436,7 @@ p {
 
 .lede {
   max-width: 60ch;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   font-size: 1.05rem;
   line-height: 1.6;
 }
@@ -142,10 +446,10 @@ p {
 .serviceCard,
 .metricCard,
 .dataCard {
-  border: 1px solid #30363d;
-  border-radius: 16px;
-  background: rgba(22, 27, 34, 0.92);
-  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
 }
 
 .heroPanel,
@@ -196,7 +500,7 @@ p {
   margin: 0 0 0.6rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #8b949e;
+  color: var(--text-secondary);
   font-size: 0.78rem;
   font-weight: 700;
 }
@@ -209,7 +513,7 @@ p {
 }
 
 .overviewActions a {
-  color: #8cc8ff;
+  color: var(--text-accent);
   text-decoration: none;
   font-weight: 600;
 }
@@ -220,7 +524,7 @@ p {
   gap: 0.85rem;
   align-items: flex-start;
   padding-top: 0.75rem;
-  border-top: 1px solid #21262d;
+  border-top: 1px solid var(--border);
 }
 
 .overviewListItem:first-of-type {
@@ -231,7 +535,7 @@ p {
 .metricLabel,
 .label,
 .tableMeta {
-  color: #8b949e;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -246,7 +550,7 @@ p {
 .sectionHeader p,
 .timestamp,
 .tableMeta {
-  color: #9ba7b4;
+  color: var(--text-secondary);
 }
 
 .grid {
@@ -271,17 +575,17 @@ p {
 .serviceTag,
 .pill {
   background: rgba(88, 166, 255, 0.16);
-  color: #8cc8ff;
+  color: var(--text-accent);
   text-transform: uppercase;
 }
 
 .serviceTag.subtle {
   background: rgba(99, 110, 123, 0.18);
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .status {
-  color: #58a6ff;
+  color: var(--text-accent);
   font-weight: 600;
 }
 
@@ -295,26 +599,26 @@ p {
   margin-top: 1.25rem;
   padding: 0.95rem 1rem;
   border-radius: 16px;
-  border: 1px solid #30363d;
-  background: rgba(22, 27, 34, 0.92);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
 }
 
 .banner-online {
   border-color: rgba(46, 160, 67, 0.35);
   background: rgba(46, 160, 67, 0.12);
-  color: #c4f2c8;
+  color: var(--success-fg);
 }
 
 .banner-degraded {
   border-color: rgba(242, 204, 96, 0.35);
   background: rgba(187, 128, 9, 0.14);
-  color: #ffe59b;
+  color: var(--warning-fg);
 }
 
 .banner-offline {
   border-color: rgba(248, 81, 73, 0.35);
   background: rgba(248, 81, 73, 0.14);
-  color: #ffb4af;
+  color: var(--danger-fg);
 }
 
 .sectionHeader {
@@ -372,32 +676,32 @@ p {
 }
 
 .allow {
-  color: #7ee787;
+  color: var(--success-fg);
   background: rgba(46, 160, 67, 0.15);
   border-color: rgba(46, 160, 67, 0.35);
 }
 
 .review {
-  color: #f2cc60;
+  color: var(--warning-fg);
   background: rgba(187, 128, 9, 0.16);
   border-color: rgba(242, 204, 96, 0.35);
 }
 
 .block,
 .critical {
-  color: #ff7b72;
+  color: var(--danger-fg);
   background: rgba(248, 81, 73, 0.15);
   border-color: rgba(248, 81, 73, 0.35);
 }
 
 .high {
-  color: #ffa657;
+  color: var(--warning-fg);
   background: rgba(210, 153, 34, 0.15);
   border-color: rgba(255, 166, 87, 0.3);
 }
 
 .low {
-  color: #8ddb8c;
+  color: var(--success-fg);
   background: rgba(46, 160, 67, 0.15);
   border-color: rgba(46, 160, 67, 0.35);
 }
@@ -435,11 +739,11 @@ p {
 .ruleChip {
   font-weight: 600;
   background: rgba(88, 166, 255, 0.12);
-  color: #c9e6ff;
+  color: var(--info-fg);
 }
 
 .explanation {
-  color: #d2dae2;
+  color: var(--text-primary);
   line-height: 1.55;
 }
 
@@ -449,7 +753,7 @@ p {
 }
 
 .statusBadge {
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
   font-size: 0.72rem;
@@ -459,19 +763,19 @@ p {
 .statusBadge--critical,
 .statusBadge--failed {
   border-color: rgba(248, 81, 73, 0.55);
-  color: #ffb4af;
+  color: var(--danger-fg);
 }
 
 .statusBadge--high,
 .statusBadge--acknowledged {
   border-color: rgba(242, 204, 96, 0.55);
-  color: #ffdca5;
+  color: var(--warning-fg);
 }
 
 .statusBadge--medium,
 .statusBadge--in_progress {
   border-color: rgba(88, 166, 255, 0.55);
-  color: #9dd2ff;
+  color: var(--info-fg);
 }
 
 .statusBadge--low,
@@ -480,7 +784,7 @@ p {
 .statusBadge--closed,
 .statusBadge--succeeded {
   border-color: rgba(46, 160, 67, 0.55);
-  color: #bff1c6;
+  color: var(--success-fg);
 }
 
 .dataCard input,
@@ -488,11 +792,42 @@ p {
 .dataCard textarea {
   width: 100%;
   margin-bottom: 0.6rem;
-  border: 1px solid #30363d;
-  border-radius: 10px;
-  background: #0d1117;
-  color: #e6edf3;
-  padding: 0.55rem 0.7rem;
+  min-height: 2.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 0.5rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.dataCard input::placeholder,
+.dataCard textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.dataCard input:focus,
+.dataCard select:focus,
+.dataCard textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+.dataCard input:disabled,
+.dataCard select:disabled,
+.dataCard textarea:disabled {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.dataCard input[aria-invalid="true"],
+.dataCard select[aria-invalid="true"],
+.dataCard textarea[aria-invalid="true"] {
+  border-color: var(--danger-bdr);
 }
 
 .dataCard textarea {
@@ -507,36 +842,37 @@ p {
 
 .formField label {
   margin-bottom: 0.35rem;
-  color: #e6edf3;
+  color: var(--text-primary);
   font-weight: 600;
 }
 
 .requiredMark {
-  color: #ff7b72;
+  color: var(--danger-fg);
 }
 
 .inputHint {
   margin: 0.2rem 0 0;
-  color: #9fb0c4;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
 .fieldError {
   margin: 0.25rem 0 0;
-  color: #ffb4af;
+  color: var(--danger-fg);
   font-size: 0.85rem;
 }
 
 .successLine {
   border-color: rgba(46, 160, 67, 0.55);
-  color: #bff1c6;
+  color: var(--success-fg);
 }
 
 .tableWrap {
   overflow-x: auto;
-  border: 1px solid #30363d;
-  border-radius: 16px;
-  background: rgba(22, 27, 34, 0.92);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
 }
 
 table {
@@ -545,15 +881,58 @@ table {
 }
 
 thead {
-  background: rgba(88, 166, 255, 0.08);
+  background: var(--bg-subtle);
 }
 
-th,
+th {
+  padding: 0.6rem 0.9rem;
+  vertical-align: bottom;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 td {
-  padding: 0.95rem 1rem;
+  padding: 0.7rem 0.9rem;
   vertical-align: top;
   text-align: left;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+
+tbody tr {
+  transition: background 0.1s;
+}
+
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+/* Selected row. Marked with a left rail as well as a tint so the state
+   survives greyscale and colour-vision differences. */
+tbody tr[aria-selected="true"],
+tbody tr[data-selected="true"],
+tbody tr.isSelected {
+  background: var(--accent-blue-bg);
+  box-shadow: inset 3px 0 0 var(--accent-blue);
+}
+
+th[aria-sort] {
+  color: var(--text-secondary);
+}
+
+th[aria-sort="ascending"]::after {
+  content: ' \2191';
+}
+
+th[aria-sort="descending"]::after {
+  content: ' \2193';
 }
 
 tbody tr:last-child td {
@@ -569,8 +948,8 @@ td .tableMeta {
   display: inline-block;
   padding: 0.2rem 0.45rem;
   border-radius: 0.35rem;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
 }
 
 @media (max-width: 980px) {
@@ -642,10 +1021,10 @@ td .tableMeta {
 
 .demoButton {
   cursor: pointer;
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(13, 17, 23, 0.7);
-  color: #e6edf3;
+  background: var(--bg-inset);
+  color: var(--text-primary);
   padding: 0.55rem 0.85rem;
   font-size: 0.9rem;
 }
@@ -671,8 +1050,8 @@ td .tableMeta {
   max-height: 320px;
   overflow: auto;
   border-radius: 14px;
-  border: 1px solid #30363d;
-  background: #0d1117;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
   padding: 0.85rem;
   font-size: 0.82rem;
   line-height: 1.45;
@@ -681,7 +1060,7 @@ td .tableMeta {
 .demoReasonList {
   margin: 0.75rem 0 0;
   padding-left: 1.1rem;
-  color: #d2dae2;
+  color: var(--text-primary);
 }
 
 .compactKvGrid {
@@ -699,9 +1078,9 @@ td .tableMeta {
   width: 100%;
   margin-top: 0.5rem;
   border-radius: 12px;
-  border: 1px solid #30363d;
-  background: #0d1117;
-  color: #e6edf3;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  color: var(--text-primary);
   padding: 0.75rem 0.9rem;
   font: inherit;
 }
@@ -721,8 +1100,8 @@ td .tableMeta {
   max-height: 240px;
   overflow: auto;
   border-radius: 14px;
-  border: 1px solid #30363d;
-  background: #0d1117;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
   padding: 0.85rem;
   font-size: 0.8rem;
   line-height: 1.45;
@@ -731,7 +1110,7 @@ td .tableMeta {
 }
 
 .errorText {
-  color: #ffb4af;
+  color: var(--danger-fg);
 }
 
 .banner-pilot {
@@ -745,9 +1124,9 @@ td .tableMeta {
 .banner-pilot a,
 .banner-pilot button {
   border-radius: 999px;
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
   background: rgba(88, 166, 255, 0.12);
-  color: #e6edf3;
+  color: var(--text-primary);
   padding: 0.45rem 0.8rem;
   text-decoration: none;
   cursor: pointer;
@@ -767,12 +1146,18 @@ td .tableMeta {
   width: 100%;
   margin-top: 0.5rem;
   margin-bottom: 1rem;
-  border-radius: 12px;
-  border: 1px solid #30363d;
-  background: #0d1117;
-  color: #e6edf3;
-  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 0.7rem 0.9rem;
   font: inherit;
+}
+
+.authForm input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
 }
 
 .authForm button {
@@ -802,7 +1187,7 @@ td .tableMeta {
   margin-top: 1rem;
   padding: 0.7rem 1rem;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--overlay-10);
   color: inherit;
   text-decoration: none;
   font-weight: 600;
@@ -823,12 +1208,12 @@ td .tableMeta {
 }
 
 .previewDeploymentNotice a {
-  color: #fbbf24;
+  color: var(--warning-fg);
   font-weight: 600;
 }
 
 .previewDeploymentNotice strong {
-  color: #ffdf8c;
+  color: var(--warning-fg);
 }
 
 .nestedCard {
@@ -865,9 +1250,9 @@ td .tableMeta {
 
 .marketingPanel,
 .polishedCard {
-  background: linear-gradient(180deg, rgba(19, 27, 48, 0.96), rgba(9, 14, 26, 0.94));
+  background: linear-gradient(180deg, var(--bg-subtle), var(--bg-header));
   border: 1px solid rgba(106, 169, 255, 0.24);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-md);
 }
 
 .marketingSection {
@@ -900,13 +1285,13 @@ td .tableMeta {
 }
 
 .primaryCta {
-  background: #6aa9ff;
-  color: #08101d;
+  background: var(--text-accent);
+  color: var(--bg-base);
 }
 
 .secondaryCta,
 .tertiaryCta {
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--overlay-10);
   color: inherit;
 }
 
@@ -933,7 +1318,7 @@ td .tableMeta {
 
 .statusBadge-live {
   background: rgba(70, 196, 140, 0.12);
-  color: #7ff0b4;
+  color: var(--success-fg);
   border-color: rgba(70, 196, 140, 0.24);
 }
 
@@ -941,13 +1326,13 @@ td .tableMeta {
 .statusBadge-degraded,
 .statusBadge-fallback {
   background: rgba(255, 186, 73, 0.12);
-  color: #ffd280;
+  color: var(--warning-fg);
   border-color: rgba(255, 186, 73, 0.24);
 }
 
 .statusBadge-offline {
   background: rgba(255, 130, 130, 0.12);
-  color: #ffb3b3;
+  color: var(--danger-fg);
   border-color: rgba(255, 130, 130, 0.24);
 }
 
@@ -957,7 +1342,7 @@ td .tableMeta {
 .statusBadge-sample,
 .statusBadge-unavailable {
   background: rgba(143, 155, 179, 0.16);
-  color: #dbe5ff;
+  color: var(--info-fg);
   border-color: rgba(143, 155, 179, 0.26);
 }
 
@@ -1000,7 +1385,7 @@ td .tableMeta {
   right: calc(50% + 22px);
   left: calc(-50% + 22px);
   height: 2px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--overlay-10);
   z-index: 0;
 }
 
@@ -1031,15 +1416,15 @@ td .tableMeta {
 }
 
 .stepCircle[data-state="current"] {
-  background: var(--accent-blue-bg);
+  background: var(--accent-blue);
   border: 2px solid var(--accent-blue);
-  color: #fff;
+  color: var(--on-accent);
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
 }
 
 .stepCircle[data-state="upcoming"] {
-  background: rgba(255, 255, 255, 0.04);
-  border: 2px solid rgba(255, 255, 255, 0.14);
+  background: var(--overlay-03);
+  border: 2px solid var(--overlay-10);
   color: var(--text-muted);
 }
 
@@ -1143,9 +1528,10 @@ td .tableMeta {
   gap: 0.5rem;
   height: 100vh;
   overflow-y: auto;
-  padding: 1rem 0.75rem;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
+  padding: 0.875rem 0.75rem;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  color: var(--sidebar-text);
   scrollbar-width: none;
 }
 
@@ -1155,7 +1541,7 @@ td .tableMeta {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  background: linear-gradient(180deg, rgba(8, 12, 22, 0.98), rgba(5, 8, 16, 0.99));
+  background: var(--bg-base);
 }
 
 .appShellTop {
@@ -1192,38 +1578,44 @@ td .tableMeta {
   margin-bottom: 1rem;
   padding: 0.75rem 1rem;
   border-radius: 0.8rem;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--overlay-10);
   font-size: 0.86rem;
 }
 
 .statusBannerLive {
-  background: rgba(31, 116, 75, 0.22);
+  background: var(--success-bg);
+  border-color: var(--success-bdr);
+  color: var(--text-primary);
 }
 
 .statusBannerDemo {
-  background: rgba(53, 76, 127, 0.22);
+  background: var(--info-bg);
+  border-color: var(--info-bdr);
+  color: var(--text-primary);
 }
 
 .statusBannerDegraded {
-  background: rgba(127, 53, 53, 0.22);
+  background: var(--danger-bg);
+  border-color: var(--danger-bdr);
+  color: var(--text-primary);
 }
 
 .brandBlock {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.7rem 0.75rem;
+  padding: 0.65rem 0.6rem;
   border-radius: var(--radius-md);
   text-decoration: none;
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
-  margin-bottom: 0.35rem;
+  color: var(--sidebar-text-active);
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  margin-bottom: 0.5rem;
   transition: background 0.15s;
 }
 
 .brandBlock:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--sidebar-hover);
 }
 
 .brandLogo {
@@ -1237,7 +1629,7 @@ td .tableMeta {
   justify-content: center;
   font-size: 0.8rem;
   font-weight: 800;
-  color: #fff;
+  color: var(--on-accent);
   letter-spacing: -0.03em;
 }
 
@@ -1251,14 +1643,14 @@ td .tableMeta {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-size: 0.6rem;
-  color: var(--text-accent);
+  color: var(--sidebar-accent);
   font-weight: 700;
 }
 
 .brandName {
   font-size: 0.82rem;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--sidebar-text-active);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1271,38 +1663,62 @@ td .tableMeta {
 }
 
 .appNavSection {
-  margin-top: 0.6rem;
-  margin-bottom: 0.2rem;
-  padding: 0 0.5rem;
-  font-size: 0.62rem;
+  margin: 0.85rem 0 0.3rem;
+  padding: 0 0.65rem;
+  font-size: 0.625rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--text-muted);
+  letter-spacing: 0.11em;
+  color: var(--sidebar-text);
+  opacity: 0.72;
+}
+
+.appNavSection:first-child {
+  margin-top: 0.15rem;
 }
 
 .appNav a {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.55rem 0.65rem;
+  padding: 0.5rem 0.65rem;
   border-radius: var(--radius-sm);
   text-decoration: none;
-  color: var(--text-secondary);
-  font-size: 0.85rem;
+  color: var(--sidebar-text);
+  font-size: 0.825rem;
   font-weight: 500;
   transition: background 0.12s, color 0.12s;
 }
 
 .appNav a:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
 }
 
+/* Active state is carried by three signals, not colour alone: a filled
+   surface, a left rail, and a weight change. */
 .appNav a.active {
-  background: var(--accent-blue-bg);
-  color: #93c5fd;
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-text-active);
   font-weight: 600;
+}
+
+.appNav a.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 1.15rem;
+  border-radius: 0 3px 3px 0;
+  background: var(--sidebar-accent);
+}
+
+.appNav a:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
 }
 
 .appNavIcon {
@@ -1332,7 +1748,8 @@ td .tableMeta {
 /* --- Sidebar divider -------------------------------------------- */
 .sidebarDivider {
   height: 1px;
-  background: var(--border);
+  border: 0;
+  background: var(--sidebar-border);
   margin: 0.5rem 0;
 }
 
@@ -1340,20 +1757,96 @@ td .tableMeta {
   flex: 1;
 }
 
-.sidebarMetaCard,
 .systemStatusPanel,
 .emptyStatePanel,
 .detailDrawer {
-  background: rgba(14, 22, 40, 0.74);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   padding: 1rem;
+}
+
+.sidebarMetaCard {
+  background: var(--sidebar-surface);
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-md);
+  padding: 0.8rem;
+  color: var(--sidebar-text);
+}
+
+.sidebarMetaCard .sectionEyebrow {
+  color: var(--sidebar-text);
+  opacity: 0.75;
+}
+
+.sidebarMetaCard .muted,
+.sidebarMetaCard .tableMeta {
+  color: var(--sidebar-text);
+  opacity: 0.8;
+}
+
+.sidebarMetaCard a {
+  color: var(--sidebar-accent);
+}
+
+.sidebarWorkspaceName {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--sidebar-text-active);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebarSignOut {
+  font-size: 0.8rem;
+  background: none;
+  border: none;
+  color: var(--sidebar-accent);
+  cursor: pointer;
+  padding: 0;
+  font-weight: 600;
+}
+
+.sidebarSignOut:hover {
+  text-decoration: underline;
+}
+
+.sidebarMetaEmail {
+  margin: 0 0 0.7rem;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.sidebarMetaLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.sidebarLegal {
+  margin: 0.7rem 0 0;
+  font-size: 0.7rem;
+}
+
+.appNavGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+/* Sidebar error line: the sidebar never flips, so its danger tone is the
+   dark-surface red rather than the workspace token. */
+.appSidebar .statusLine {
+  color: #fca5a5;
 }
 
 .tableWrap table thead,
 .tableWrap table thead tr,
 .tableWrap table th {
-  background: rgba(15, 25, 46, 0.95);
+  background: var(--bg-subtle);
 }
 
 .chipRow .ruleChip,
@@ -1382,7 +1875,7 @@ td .tableMeta {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
 }
 
 .statusMatrixRow:first-child {
@@ -1475,7 +1968,7 @@ td .tableMeta {
 }
 
 .authBuildBadgeSummary {
-  color: #d2dae2;
+  color: var(--text-primary);
   line-height: 1.5;
 }
 
@@ -1487,8 +1980,8 @@ td .tableMeta {
   min-height: 4.35rem;
   padding: 0.75rem 0.85rem;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(13, 17, 23, 0.45);
+  border: 1px solid var(--overlay-06);
+  background: var(--bg-inset);
 }
 
 .workflowHeader {
@@ -1514,8 +2007,8 @@ td .tableMeta {
 }
 
 .scenarioGroup {
-  border: 1px solid #2f3741;
-  background: rgba(13, 17, 23, 0.45);
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
   border-radius: 14px;
   padding: 0.75rem;
 }
@@ -1543,21 +2036,21 @@ td .tableMeta {
 .demoRunStrip p,
 .auditMetaGrid p {
   margin: 0;
-  background: rgba(13, 17, 23, 0.55);
-  border: 1px solid #2d333b;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.5rem 0.6rem;
   display: grid;
   gap: 0.2rem;
   text-transform: none;
   letter-spacing: normal;
-  color: #d2dae2;
+  color: var(--text-primary);
   font-size: 0.86rem;
 }
 
 .demoRunStrip span,
 .auditMetaGrid span {
-  color: #8b949e;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.66rem;
@@ -1565,7 +2058,7 @@ td .tableMeta {
 
 .primaryResult {
   margin-top: 1rem;
-  border: 1px solid #34404d;
+  border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0.9rem;
   background: rgba(12, 17, 25, 0.75);
@@ -1579,9 +2072,9 @@ td .tableMeta {
 }
 
 .explainabilityCard {
-  border: 1px solid #2d333b;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(13, 17, 23, 0.5);
+  background: var(--bg-inset);
   padding: 0.65rem;
 }
 
@@ -1601,9 +2094,9 @@ td .tableMeta {
 .quickActionsRow a,
 .payloadToggle {
   border-radius: 999px;
-  border: 1px solid #3a4552;
+  border: 1px solid var(--border-strong);
   background: rgba(88, 166, 255, 0.12);
-  color: #dbe9f7;
+  color: var(--info-fg);
   padding: 0.42rem 0.8rem;
   text-decoration: none;
   font-size: 0.8rem;
@@ -1618,7 +2111,7 @@ td .tableMeta {
 
 .secondaryResult {
   margin-top: 0.9rem;
-  border-top: 1px solid #2a3038;
+  border-top: 1px solid var(--border);
   padding-top: 0.8rem;
 }
 
@@ -1641,7 +2134,7 @@ td .tableMeta {
 
 .monitoringHeaderCard {
   padding: 1.25rem;
-  background: linear-gradient(180deg, rgba(20, 30, 50, 0.92), rgba(14, 21, 35, 0.9));
+  background: linear-gradient(180deg, var(--bg-subtle), rgba(14, 21, 35, 0.9));
   border-color: rgba(106, 169, 255, 0.3);
 }
 
@@ -1722,9 +2215,9 @@ td .tableMeta {
   min-height: 38px;
   padding: 0.55rem 0.9rem;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--overlay-10);
   text-decoration: none;
-  color: #dce8ff;
+  color: var(--info-fg);
   background: rgba(106, 169, 255, 0.08);
 }
 
@@ -1736,14 +2229,14 @@ td .tableMeta {
 .statusBadge-attention,
 .statusBadge-degraded {
   background: rgba(255, 186, 73, 0.12);
-  color: #ffd280;
+  color: var(--warning-fg);
   border-color: rgba(255, 186, 73, 0.24);
 }
 
 .statusBadge-healthy,
 .statusBadge-live {
   background: rgba(70, 196, 140, 0.12);
-  color: #7ff0b4;
+  color: var(--success-fg);
   border-color: rgba(70, 196, 140, 0.24);
 }
 
@@ -1769,7 +2262,7 @@ td .tableMeta {
 .sharedTableShell {
   background: linear-gradient(180deg, rgba(14, 22, 35, 0.92), rgba(10, 16, 26, 0.95));
   border: 1px solid rgba(124, 156, 196, 0.24);
-  box-shadow: 0 20px 45px rgba(1, 7, 19, 0.35);
+  box-shadow: var(--shadow-md);
   backdrop-filter: blur(8px);
 }
 
@@ -1782,7 +2275,7 @@ td .tableMeta {
 .dcSelectTrigger {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   width: 100%; text-align: left; cursor: pointer;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-02);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
@@ -1812,7 +2305,7 @@ td .tableMeta {
   color: var(--popover-fg);
   border: 1px solid var(--border-accent);
   border-radius: var(--radius-sm);
-  box-shadow: 0 12px 34px rgba(1, 7, 19, 0.55);
+  box-shadow: var(--shadow-md);
   overflow-y: auto; z-index: 1000;
   scrollbar-width: thin;
   scrollbar-color: rgba(124, 156, 196, 0.45) transparent;
@@ -1851,7 +2344,7 @@ td .tableMeta {
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #9fb4ce;
+  color: var(--text-secondary);
   border-bottom: 1px solid rgba(124, 156, 196, 0.22);
 }
 
@@ -1904,20 +2397,55 @@ td .tableMeta {
   align-items: center;
   gap: 0.45rem;
   padding: 0.35rem 0.65rem;
+  min-height: 2rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-surface);
   cursor: pointer;
   color: var(--text-primary);
   font-size: 0.85rem;
   font-weight: 600;
   white-space: nowrap;
   text-decoration: none;
-  transition: background 0.12s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
 .shellWorkspaceSelector:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+/* Page title + breadcrumb. The top bar stays visually light: the title
+   carries the hierarchy, not a heavy bar. */
+.shellPageTitle {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.shellPageTitle h1 {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shellBreadcrumb {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.shellHeaderDivider {
+  width: 1px;
+  height: 1.4rem;
+  background: var(--border);
+  flex: none;
 }
 
 .shellWorkspaceName {
@@ -1952,7 +2480,7 @@ td .tableMeta {
 }
 
 .shellIconBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-04);
   color: var(--text-primary);
 }
 
@@ -1961,17 +2489,172 @@ td .tableMeta {
   align-items: center;
   gap: 0.45rem;
   padding: 0.3rem 0.6rem 0.3rem 0.35rem;
+  min-height: 2rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-surface);
   font-size: 0.8rem;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
-.shellUserChip:hover {
-  background: rgba(255, 255, 255, 0.08);
+.shellUserChip:hover,
+.shellUserChip[aria-expanded="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.shellUserChipEmail {
+  font-size: 0.78rem;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── User menu ──────────────────────────────────────────────────────
+   Replaces a chip whose only behaviour was to sign the analyst out the
+   instant it was clicked, while showing a chevron that promised a menu.
+   Account, workspace, appearance and sign-out now all live here. */
+.shellUserMenuWrap {
+  position: relative;
+}
+
+.shellUserMenu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 60;
+  min-width: 15rem;
+  padding: 0.35rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  color: var(--popover-fg);
+  box-shadow: var(--shadow-lg);
+}
+
+.shellUserMenuHead {
+  padding: 0.5rem 0.6rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.3rem;
+}
+
+.shellUserMenuEmail {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.shellUserMenuRole {
+  margin: 0.2rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.shellUserMenuItem {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.shellUserMenuItem:hover,
+.shellUserMenuItem:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.shellUserMenuItem--danger {
+  color: var(--danger-fg);
+}
+
+.shellUserMenuSep {
+  height: 1px;
+  margin: 0.3rem 0;
+  background: var(--border);
+  border: 0;
+}
+
+.shellUserMenuLabel {
+  padding: 0.45rem 0.6rem 0.25rem;
+  margin: 0;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ── Theme control ──────────────────────────────────────────────────
+   A three-way segmented control. The same component backs the user menu
+   shortcut and Settings › Appearance, so both write one preference. */
+.themeToggle {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  margin: 0 0.35rem 0.2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.themeToggleOption {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.35rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.themeToggleOption:hover {
+  color: var(--text-primary);
+}
+
+.themeToggleOption[aria-checked="true"] {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xs);
+}
+
+.themeToggleOption:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+/* Settings › Appearance renders the same control at a comfortable size. */
+.themeToggle--settings {
+  max-width: 22rem;
+  margin: 0.5rem 0 0;
+}
+
+.themeToggle--settings .themeToggleOption {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.82rem;
 }
 
 .shellAvatar {
@@ -1984,7 +2667,7 @@ td .tableMeta {
   justify-content: center;
   font-size: 0.65rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--on-accent);
   flex-shrink: 0;
 }
 
@@ -2122,9 +2805,17 @@ td .tableMeta {
 }
 
 .pill-neutral {
-  background: rgba(99, 110, 123, 0.18);
-  color: #c9d1d9;
-  border-color: rgba(99, 110, 123, 0.3);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  border-color: var(--neutral-bdr);
+}
+
+/* The four remaining semantic states, sharing the pill treatment so one
+   screen can never say amber for what another says green for. */
+.pill-violet {
+  background: var(--violet-bg);
+  color: var(--violet-fg);
+  border-color: var(--violet-bdr);
 }
 
 /* --- Buttons ------------------------------------------------------ */
@@ -2150,22 +2841,24 @@ td .tableMeta {
 
 .btn-primary {
   background: var(--accent-blue);
-  color: #fff;
+  color: var(--on-accent);
   border-color: transparent;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: var(--accent-blue-strong);
 }
 
 .btn-secondary {
-  background: var(--accent-blue-bg);
-  color: var(--info-fg);
-  border-color: var(--info-bdr);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.22);
+  background: var(--bg-hover);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-strong);
 }
 
 .btn-ghost {
@@ -2175,8 +2868,53 @@ td .tableMeta {
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--overlay-03);
   color: var(--text-primary);
+}
+
+/* Destructive-confirmation: a filled red, reserved for the final step of an
+   irreversible action so it never looks like the same weight as "Cancel". */
+.btn-destructive {
+  background: var(--danger-fg);
+  color: var(--on-accent);
+  border-color: var(--danger-fg);
+}
+
+.btn-destructive:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+/* Loading: the label stays in place (no layout shift) behind a spinner. */
+.btn[data-loading="true"] {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+
+.btn[data-loading="true"]::after {
+  content: '';
+  position: absolute;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  color: var(--text-secondary);
+  animation: btnSpin 0.6s linear infinite;
+}
+
+.btn-primary[data-loading="true"]::after,
+.btn-destructive[data-loading="true"]::after {
+  color: var(--on-accent);
+}
+
+@keyframes btnSpin {
+  to { transform: rotate(360deg); }
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 .btn-danger {
@@ -2186,7 +2924,8 @@ td .tableMeta {
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.22);
+  background: var(--danger-bg);
+  border-color: var(--danger-fg);
 }
 
 /* --- Cards -------------------------------------------------------- */
@@ -2554,7 +3293,7 @@ td .tableMeta {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.75rem;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-02);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
@@ -2586,7 +3325,7 @@ td .tableMeta {
   height: 80px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--overlay-01);
 }
 
 .execAlertList,
@@ -2969,7 +3708,7 @@ td .tableMeta {
 .execDriverTop { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .execDriverLabel { font-size: max(0.8rem, 12px); color: var(--text-primary); }
 .execDriverPercent { font-size: max(0.8rem, 12px); font-weight: 700; color: var(--text-accent); }
-.execDriverBarTrack { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden; }
+.execDriverBarTrack { height: 6px; background: var(--overlay-04); border-radius: 3px; overflow: hidden; }
 .execDriverBarFill { height: 100%; background: linear-gradient(90deg, var(--text-accent), var(--danger-fg)); border-radius: 3px; }
 
 .execInsightRow { display: flex; gap: 0.5rem; align-items: flex-start; }
@@ -2989,7 +3728,7 @@ td .tableMeta {
 .execDrawerBackdrop {
   position: fixed;
   inset: 0;
-  background: rgba(3, 7, 16, 0.72);
+  background: var(--scrim);
   display: flex;
   justify-content: flex-end;
   z-index: 1000;
@@ -3073,6 +3812,13 @@ td .tableMeta {
     gap: 0.25rem;
   }
 
+  .appNavGroup {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .appNavSection,
   .sidebarDivider,
   .sidebarSpacer,
   .sidebarMetaCard {
@@ -3133,19 +3879,19 @@ td .tableMeta {
 }
 
 .healthIconLive {
-  color: #7ff0b4;
+  color: var(--success-fg);
   background: rgba(70, 196, 140, 0.16);
   border: 1px solid rgba(70, 196, 140, 0.32);
 }
 
 .healthIconDegraded {
-  color: #ffd280;
+  color: var(--warning-fg);
   background: rgba(251, 191, 36, 0.14);
   border: 1px solid rgba(251, 191, 36, 0.3);
 }
 
 .healthIconOffline {
-  color: #ffb3b3;
+  color: var(--danger-fg);
   background: rgba(248, 81, 73, 0.14);
   border: 1px solid rgba(248, 81, 73, 0.3);
 }
@@ -3165,7 +3911,7 @@ td .tableMeta {
 /* === SIGN IN SAAS REDESIGN START === */
 .siPage {
   min-height: 100vh;
-  background: #070b14;
+  background: var(--bg-base);
   display: flex;
   flex-direction: column;
 }
@@ -3193,15 +3939,15 @@ td .tableMeta {
   border-radius: 20px;
   overflow: hidden;
   border: 1px solid rgba(106, 169, 255, 0.13);
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(106, 169, 255, 0.04);
+  box-shadow: var(--shadow-lg);
 }
 
 .siBrand {
-  background: linear-gradient(160deg, #0b1829 0%, #060c16 100%);
+  background: var(--bg-surface);
   padding: 2.5rem;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid var(--overlay-04);
   position: relative;
   overflow: hidden;
 }
@@ -3239,14 +3985,14 @@ td .tableMeta {
   font-size: 1.1rem;
   font-weight: 800;
   letter-spacing: 0.12em;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .siLogoSub {
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.2em;
-  color: #3b82f6;
+  color: var(--accent-blue);
   margin-top: 0.15rem;
 }
 
@@ -3257,7 +4003,7 @@ td .tableMeta {
   border-radius: 999px;
   border: 1px solid rgba(59, 130, 246, 0.38);
   background: rgba(59, 130, 246, 0.1);
-  color: #93c5fd;
+  color: var(--info-fg);
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -3269,7 +4015,7 @@ td .tableMeta {
   font-size: clamp(1.5rem, 2.5vw, 2rem);
   font-weight: 800;
   line-height: 1.18;
-  color: #f0f6fc;
+  color: var(--text-primary);
   margin: 0 0 1rem;
   letter-spacing: -0.02em;
 }
@@ -3277,7 +4023,7 @@ td .tableMeta {
 .siLede {
   font-size: 0.925rem;
   line-height: 1.65;
-  color: #8b949e;
+  color: var(--text-secondary);
   margin: 0 0 2rem;
   max-width: 38ch;
 }
@@ -3295,7 +4041,7 @@ td .tableMeta {
   gap: 0.85rem;
   align-items: flex-start;
   padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--overlay-03);
 }
 
 .siFeatureItem:last-child {
@@ -3312,7 +4058,7 @@ td .tableMeta {
   border-radius: 9px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.2);
-  color: #93c5fd;
+  color: var(--info-fg);
   flex-shrink: 0;
 }
 
@@ -3320,13 +4066,13 @@ td .tableMeta {
   margin: 0 0 0.2rem;
   font-size: 0.9rem;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .siFeatureDesc {
   margin: 0;
   font-size: 0.8rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -3341,7 +4087,7 @@ td .tableMeta {
   background:
     linear-gradient(0deg, rgba(59, 130, 246, 0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(59, 130, 246, 0.06) 1px, transparent 1px),
-    linear-gradient(180deg, transparent 60%, rgba(6, 12, 22, 0.98) 100%);
+    linear-gradient(180deg, transparent 60%, var(--bg-base) 100%);
   background-size: 24px 24px, 24px 24px, 100% 100%;
   border-radius: 8px;
   border: 1px solid rgba(59, 130, 246, 0.1);
@@ -3361,12 +4107,12 @@ td .tableMeta {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.82rem;
-  color: #6e7e8f;
+  color: var(--text-muted);
   margin: 0;
 }
 
 .siFormPanel {
-  background: #0e1625;
+  background: var(--bg-surface);
   padding: 2.75rem 2.5rem;
   display: flex;
   flex-direction: column;
@@ -3375,21 +4121,21 @@ td .tableMeta {
 .siNextPath {
   margin: 0 0 1rem;
   font-size: 0.875rem;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .siFormTitle {
   margin: 0 0 0.3rem;
   font-size: 1.6rem;
   font-weight: 700;
-  color: #f0f6fc;
+  color: var(--text-primary);
   letter-spacing: -0.02em;
 }
 
 .siFormSubtitle {
   margin: 0 0 1.75rem;
   font-size: 0.925rem;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .siFormGroup {
@@ -3401,7 +4147,7 @@ td .tableMeta {
   margin-bottom: 0.45rem;
   font-size: 0.875rem;
   font-weight: 500;
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .siInputWrap {
@@ -3413,7 +4159,7 @@ td .tableMeta {
 .siInputIcon {
   position: absolute;
   left: 0.9rem;
-  color: #5a6478;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   pointer-events: none;
@@ -3423,17 +4169,17 @@ td .tableMeta {
 .siInput {
   width: 100%;
   padding: 0.7rem 0.9rem;
-  background: #0d1422;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-06);
   border-radius: 10px;
-  color: #e6edf3;
+  color: var(--text-primary);
   font: inherit;
   font-size: 0.925rem;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .siInput::placeholder {
-  color: #3d4d5f;
+  color: var(--border-strong);
 }
 
 .siInput:focus {
@@ -3458,7 +4204,7 @@ td .tableMeta {
   justify-content: center;
   background: none;
   border: none;
-  color: #5a6478;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0.25rem;
   border-radius: 4px;
@@ -3466,7 +4212,7 @@ td .tableMeta {
 }
 
 .siPasswordToggle:hover {
-  color: #93c5fd;
+  color: var(--info-fg);
 }
 
 .siCheckRow {
@@ -3481,26 +4227,26 @@ td .tableMeta {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.875rem;
-  color: #c9d1d9;
+  color: var(--text-primary);
   cursor: pointer;
 }
 
 .siCheckbox {
   width: 16px;
   height: 16px;
-  accent-color: #3b82f6;
+  accent-color: var(--accent-blue);
   cursor: pointer;
 }
 
 .siLink {
-  color: #3b82f6;
+  color: var(--accent-blue);
   text-decoration: none;
   font-size: 0.875rem;
   transition: color 0.15s;
 }
 
 .siLink:hover {
-  color: #60a5fa;
+  color: var(--text-accent);
   text-decoration: underline;
 }
 
@@ -3515,13 +4261,13 @@ td .tableMeta {
 .siAlertError {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.28);
-  color: #fca5a5;
+  color: var(--danger-fg);
 }
 
 .siAlertWarn {
   background: rgba(251, 191, 36, 0.1);
   border: 1px solid rgba(251, 191, 36, 0.28);
-  color: #fde68a;
+  color: var(--warning-fg);
 }
 
 .siSubmitBtn {
@@ -3530,7 +4276,7 @@ td .tableMeta {
   border-radius: 10px;
   border: none;
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  color: #fff;
+  color: var(--on-accent);
   font: inherit;
   font-size: 0.975rem;
   font-weight: 600;
@@ -3562,9 +4308,9 @@ td .tableMeta {
   width: 100%;
   padding: 0.7rem 1rem;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-06);
   background: transparent;
-  color: #8b949e;
+  color: var(--text-secondary);
   font: inherit;
   font-size: 0.875rem;
   cursor: pointer;
@@ -3573,14 +4319,14 @@ td .tableMeta {
 }
 
 .siSecondaryBtn:hover:not(:disabled) {
-  color: #c9d1d9;
-  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+  border-color: var(--overlay-10);
 }
 
 .siAccountRow {
   margin: 0;
   font-size: 0.875rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   text-align: center;
 }
 
@@ -3604,15 +4350,15 @@ td .tableMeta {
 
 .siMuted {
   font-size: 0.8rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin-bottom: 1rem;
 }
 
 .siDiagCard {
   grid-column: 2;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--overlay-04);
   border-radius: 14px;
-  background: rgba(14, 22, 37, 0.8);
+  background: var(--bg-surface);
   padding: 1rem 1.25rem;
 }
 
@@ -3638,7 +4384,7 @@ td .tableMeta {
   border-radius: 8px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.18);
-  color: #60a5fa;
+  color: var(--text-accent);
   flex-shrink: 0;
 }
 
@@ -3646,13 +4392,13 @@ td .tableMeta {
   margin: 0 0 0.1rem;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .siDiagSubtitle {
   margin: 0;
   font-size: 0.78rem;
-  color: #5a6478;
+  color: var(--text-muted);
 }
 
 .siDiagToggle {
@@ -3661,9 +4407,9 @@ td .tableMeta {
   gap: 0.4rem;
   padding: 0.4rem 0.85rem;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-06);
   background: transparent;
-  color: #8b949e;
+  color: var(--text-secondary);
   font: inherit;
   font-size: 0.82rem;
   cursor: pointer;
@@ -3673,8 +4419,8 @@ td .tableMeta {
 }
 
 .siDiagToggle:hover {
-  color: #c9d1d9;
-  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+  border-color: var(--overlay-10);
 }
 
 .siDiagChevron {
@@ -3684,7 +4430,7 @@ td .tableMeta {
 .siDiagContent {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
 }
 
 .siDiagGrid {
@@ -3698,8 +4444,8 @@ td .tableMeta {
   display: grid;
   gap: 0.2rem;
   padding: 0.55rem 0.7rem;
-  background: rgba(13, 17, 23, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-inset);
+  border: 1px solid var(--overlay-04);
   border-radius: 8px;
 }
 
@@ -3708,12 +4454,12 @@ td .tableMeta {
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: #5a6478;
+  color: var(--text-muted);
 }
 
 .siDiagValue {
   font-size: 0.8rem;
-  color: #c9d1d9;
+  color: var(--text-primary);
   word-break: break-all;
 }
 
@@ -3722,16 +4468,16 @@ td .tableMeta {
   align-items: center;
   padding: 0.45rem 0.85rem;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #8b949e;
+  border: 1px solid var(--overlay-06);
+  color: var(--text-secondary);
   font-size: 0.82rem;
   text-decoration: none;
   transition: color 0.15s, border-color 0.15s;
 }
 
 .siDiagHealthLink:hover {
-  color: #c9d1d9;
-  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+  border-color: var(--overlay-10);
 }
 
 .siFooter {
@@ -3741,13 +4487,13 @@ td .tableMeta {
   justify-content: space-between;
   gap: 0.75rem 1.5rem;
   padding: 1.25rem 2rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
 }
 
 .siFooterCopy {
   margin: 0;
   font-size: 0.8rem;
-  color: #5a6478;
+  color: var(--text-muted);
 }
 
 .siFooterLinks {
@@ -3757,19 +4503,19 @@ td .tableMeta {
 }
 
 .siFooterLink {
-  color: #3b82f6;
+  color: var(--accent-blue);
   font-size: 0.8rem;
   text-decoration: none;
   transition: color 0.15s;
 }
 
 .siFooterLink:hover {
-  color: #60a5fa;
+  color: var(--text-accent);
   text-decoration: underline;
 }
 
 .siFooterSep {
-  color: #3d4d5f;
+  color: var(--border-strong);
   font-size: 0.75rem;
 }
 
@@ -3778,7 +4524,7 @@ td .tableMeta {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.8rem;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .siStatusDot {
@@ -3789,20 +4535,20 @@ td .tableMeta {
 }
 
 .siStatusDotGreen {
-  background: #4ade80;
+  background: var(--success-fg);
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
 }
 
 .siStatusDotGray {
-  background: #5a6478;
+  background: var(--text-muted);
 }
 
 .siStatusHealthy {
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .siStatusUnknown {
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 900px) {
@@ -3812,7 +4558,7 @@ td .tableMeta {
 
   .siBrand {
     border-right: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--overlay-04);
     padding: 2rem;
   }
 
@@ -3866,7 +4612,7 @@ td .tableMeta {
   margin: 0.4rem 0 0;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: #fca5a5;
+  color: var(--danger-fg);
 }
 
 /* === ACCOUNT RECOVERY (/reset-password) START === */
@@ -3899,9 +4645,9 @@ td .tableMeta {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: #0d1422;
-  color: #6e7e8f;
+  border: 1px solid var(--overlay-10);
+  background: var(--bg-surface);
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-weight: 700;
   flex-shrink: 0;
@@ -3910,28 +4656,28 @@ td .tableMeta {
 .rpStepLabel {
   font-size: 0.78rem;
   line-height: 1.35;
-  color: #6e7e8f;
+  color: var(--text-muted);
 }
 
 .rpStep--active .rpStepMarker {
-  border-color: #3b82f6;
-  background: #2563eb;
-  color: #fff;
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-strong);
+  color: var(--on-accent);
 }
 
 .rpStep--active .rpStepLabel {
-  color: #e6edf3;
+  color: var(--text-primary);
   font-weight: 600;
 }
 
 .rpStep--done .rpStepMarker {
   border-color: rgba(59, 130, 246, 0.5);
   background: rgba(59, 130, 246, 0.12);
-  color: #93c5fd;
+  color: var(--info-fg);
 }
 
 .rpStep--done .rpStepLabel {
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 /* Left-panel assurances --------------------------------------------------- */
@@ -3958,7 +4704,7 @@ td .tableMeta {
   border-radius: 50%;
   border: 1px solid rgba(59, 130, 246, 0.3);
   background: rgba(59, 130, 246, 0.1);
-  color: #60a5fa;
+  color: var(--text-accent);
   flex-shrink: 0;
 }
 
@@ -3966,7 +4712,7 @@ td .tableMeta {
   display: block;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .rpAssuranceBody {
@@ -3974,7 +4720,7 @@ td .tableMeta {
   margin-top: 0.15rem;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 /* Card content ------------------------------------------------------------ */
@@ -4001,23 +4747,23 @@ td .tableMeta {
 .rpStatusIcon--info {
   border-color: rgba(59, 130, 246, 0.35);
   background: rgba(59, 130, 246, 0.12);
-  color: #60a5fa;
+  color: var(--text-accent);
 }
 
 .rpStatusIcon--success {
   border-color: rgba(74, 222, 128, 0.35);
   background: rgba(74, 222, 128, 0.12);
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .rpStatusIcon--warn {
   border-color: rgba(251, 191, 36, 0.35);
   background: rgba(251, 191, 36, 0.12);
-  color: #fbbf24;
+  color: var(--warning-fg);
 }
 
 .rpEmphasis {
-  color: #e6edf3;
+  color: var(--text-primary);
   font-weight: 600;
   word-break: break-word;
 }
@@ -4026,7 +4772,7 @@ td .tableMeta {
   margin: 0.45rem 0 0;
   font-size: 0.8rem;
   line-height: 1.5;
-  color: #6e7e8f;
+  color: var(--text-muted);
 }
 
 .rpBlockError {
@@ -4051,7 +4797,7 @@ td .tableMeta {
 
 .rpReadOnlyInput {
   padding-right: 5.5rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   cursor: default;
 }
 
@@ -4060,7 +4806,7 @@ td .tableMeta {
   right: 0.85rem;
   font-size: 0.72rem;
   font-style: italic;
-  color: #5a6478;
+  color: var(--text-muted);
   pointer-events: none;
 }
 
@@ -4080,29 +4826,29 @@ td .tableMeta {
 .rpStrengthLabel {
   font-size: 0.82rem;
   font-weight: 500;
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .rpStrengthValue {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .rpStrengthValue--too-weak {
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .rpStrengthValue--weak {
-  color: #fca5a5;
+  color: var(--danger-fg);
 }
 
 .rpStrengthValue--good {
-  color: #fbbf24;
+  color: var(--warning-fg);
 }
 
 .rpStrengthValue--strong {
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .rpStrengthTrack {
@@ -4115,19 +4861,19 @@ td .tableMeta {
   flex: 1;
   height: 4px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--overlay-06);
 }
 
 .rpStrengthSegment--weak {
-  background: #ef4444;
+  background: var(--danger-fg);
 }
 
 .rpStrengthSegment--good {
-  background: #fbbf24;
+  background: var(--warning-fg);
 }
 
 .rpStrengthSegment--strong {
-  background: #4ade80;
+  background: var(--success-fg);
 }
 
 .rpRequirements {
@@ -4145,7 +4891,7 @@ td .tableMeta {
   gap: 0.5rem;
   font-size: 0.8rem;
   line-height: 1.4;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .rpRequirementMark {
@@ -4155,19 +4901,19 @@ td .tableMeta {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--overlay-10);
   color: transparent;
   flex-shrink: 0;
 }
 
 .rpRequirement--met {
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .rpRequirement--met .rpRequirementMark {
   border-color: rgba(74, 222, 128, 0.55);
   background: rgba(74, 222, 128, 0.14);
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 /* Verifying --------------------------------------------------------------- */
@@ -4178,7 +4924,7 @@ td .tableMeta {
   margin-bottom: 1.1rem;
   border-radius: 50%;
   border: 2px solid rgba(59, 130, 246, 0.22);
-  border-top-color: #3b82f6;
+  border-top-color: var(--accent-blue);
   animation: rpSpin 0.8s linear infinite;
 }
 
@@ -4259,10 +5005,10 @@ td .tableMeta {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(7, 11, 20, 0.92);
+  background: var(--bg-base);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .mktNavInner {
@@ -4292,14 +5038,14 @@ td .tableMeta {
 .mktNavLogoBrand {
   font-size: 1rem;
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   letter-spacing: 0.04em;
 }
 
 .mktNavLogoProduct {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #6aa9ff;
+  color: var(--text-accent);
   letter-spacing: 0.06em;
 }
 
@@ -4313,7 +5059,7 @@ td .tableMeta {
 
 .mktNavLink {
   padding: 0.45rem 0.85rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.88rem;
   font-weight: 500;
@@ -4322,8 +5068,8 @@ td .tableMeta {
 }
 
 .mktNavLink:hover {
-  color: #e6edf3;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  background: var(--overlay-04);
 }
 
 .mktNavRight {
@@ -4334,7 +5080,7 @@ td .tableMeta {
 }
 
 .mktNavSignIn {
-  color: #9ba7b4;
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.88rem;
   font-weight: 500;
@@ -4344,7 +5090,7 @@ td .tableMeta {
 }
 
 .mktNavSignIn:hover {
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .mktNavStartPilot {
@@ -4352,8 +5098,8 @@ td .tableMeta {
   align-items: center;
   padding: 0.5rem 1.1rem;
   border-radius: 999px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.85rem;
   font-weight: 600;
   text-decoration: none;
@@ -4361,7 +5107,7 @@ td .tableMeta {
 }
 
 .mktNavStartPilot:hover {
-  background: #2563eb;
+  background: var(--accent-blue-strong);
   box-shadow: 0 0 22px rgba(59, 130, 246, 0.4);
 }
 
@@ -4396,7 +5142,7 @@ td .tableMeta {
   padding: 0.35rem 0.9rem;
   font-size: 0.8rem;
   font-weight: 500;
-  color: #93c5fd;
+  color: var(--info-fg);
   margin-bottom: 1.5rem;
   width: fit-content;
 }
@@ -4405,7 +5151,7 @@ td .tableMeta {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-fg);
   box-shadow: 0 0 7px rgba(74, 222, 128, 0.75);
   flex-shrink: 0;
   animation: mktPulseDot 2.2s ease-in-out infinite;
@@ -4420,13 +5166,13 @@ td .tableMeta {
   font-size: clamp(2.1rem, 3.8vw, 3.3rem);
   font-weight: 800;
   line-height: 1.12;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin-bottom: 1.25rem;
   letter-spacing: -0.022em;
 }
 
 .mktH1Accent {
-  background: linear-gradient(92deg, #60a5fa 0%, #818cf8 55%, #a78bfa 100%);
+  background: linear-gradient(92deg, var(--text-accent) 0%, var(--violet-fg) 55%, var(--violet-fg) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -4434,7 +5180,7 @@ td .tableMeta {
 
 .mktSubtitle {
   font-size: 1.05rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   max-width: 52ch;
   margin-bottom: 2rem;
@@ -4452,8 +5198,8 @@ td .tableMeta {
   align-items: center;
   padding: 0.75rem 1.5rem;
   border-radius: 999px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.95rem;
   font-weight: 600;
   text-decoration: none;
@@ -4462,7 +5208,7 @@ td .tableMeta {
 }
 
 .mktCtaPrimary:hover {
-  background: #2563eb;
+  background: var(--accent-blue-strong);
   box-shadow: 0 4px 30px rgba(59, 130, 246, 0.5);
 }
 
@@ -4471,8 +5217,8 @@ td .tableMeta {
   align-items: center;
   padding: 0.75rem 1.5rem;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  color: #e6edf3;
+  border: 1px solid var(--overlay-10);
+  color: var(--text-primary);
   font-size: 0.95rem;
   font-weight: 600;
   text-decoration: none;
@@ -4496,16 +5242,16 @@ td .tableMeta {
   gap: 0.4rem;
   padding: 0.3rem 0.75rem;
   border-radius: 999px;
-  background: rgba(22, 27, 34, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-06);
   font-size: 0.78rem;
   font-weight: 500;
-  color: #9ba7b4;
+  color: var(--text-secondary);
 }
 
 .mktChipLive {
   border-color: rgba(74, 222, 128, 0.28);
-  color: #6ee7b7;
+  color: var(--success-fg);
   background: rgba(74, 222, 128, 0.07);
 }
 
@@ -4513,7 +5259,7 @@ td .tableMeta {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-fg);
   flex-shrink: 0;
 }
 
@@ -4526,12 +5272,12 @@ td .tableMeta {
 
 .mktHeroPanel {
   flex: 1;
-  background: linear-gradient(155deg, rgba(14, 22, 40, 0.98) 0%, rgba(7, 11, 22, 0.97) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-base) 100%);
   border: 1px solid rgba(59, 130, 246, 0.22);
   border-radius: 18px;
   padding: 1.35rem;
   box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.45),
+    var(--shadow-lg),
     0 0 44px rgba(59, 130, 246, 0.06);
 }
 
@@ -4541,14 +5287,14 @@ td .tableMeta {
   justify-content: space-between;
   margin-bottom: 1rem;
   padding-bottom: 0.85rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .lcTitle {
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.11em;
-  color: #5a6478;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
@@ -4558,14 +5304,14 @@ td .tableMeta {
   gap: 0.4rem;
   font-size: 0.77rem;
   font-weight: 600;
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .lcDot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-fg);
   box-shadow: 0 0 7px rgba(74, 222, 128, 0.65);
   flex-shrink: 0;
 }
@@ -4580,7 +5326,7 @@ td .tableMeta {
   align-items: center;
   gap: 0.85rem;
   padding: 0.8rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--overlay-03);
 }
 
 .lcRow:last-child {
@@ -4598,10 +5344,10 @@ td .tableMeta {
   flex-shrink: 0;
 }
 
-.lcRowIcon--eth   { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
-.lcRowIcon--chain { background: rgba(167, 139, 250, 0.15); color: #a78bfa; }
-.lcRowIcon--ops   { background: rgba(52, 211, 153, 0.15); color: #34d399; }
-.lcRowIcon--deploy{ background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+.lcRowIcon--eth   { background: rgba(96, 165, 250, 0.15); color: var(--text-accent); }
+.lcRowIcon--chain { background: rgba(167, 139, 250, 0.15); color: var(--violet-fg); }
+.lcRowIcon--ops   { background: rgba(52, 211, 153, 0.15); color: var(--success-fg); }
+.lcRowIcon--deploy{ background: rgba(251, 146, 60, 0.15); color: var(--warning-fg); }
 
 .lcRowBody {
   flex: 1;
@@ -4611,13 +5357,13 @@ td .tableMeta {
 .lcRowTitle {
   font-size: 0.865rem;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin-bottom: 0.18rem;
 }
 
 .lcRowSub {
   font-size: 0.76rem;
-  color: #5a6478;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4629,9 +5375,9 @@ td .tableMeta {
   flex-shrink: 0;
 }
 
-.lcStatusLive   { color: #4ade80; }
-.lcStatusOp     { color: #60a5fa; }
-.lcStatusHealth { color: #4ade80; }
+.lcStatusLive   { color: var(--success-fg); }
+.lcStatusOp     { color: var(--text-accent); }
+.lcStatusHealth { color: var(--success-fg); }
 
 .lcFooter {
   display: flex;
@@ -4639,13 +5385,13 @@ td .tableMeta {
   gap: 0.45rem;
   flex-wrap: wrap;
   font-size: 0.75rem;
-  color: #5a6478;
+  color: var(--text-muted);
   padding-top: 0.85rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
 }
 
 .lcFooterLockIcon {
-  color: #5a6478;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -4655,7 +5401,7 @@ td .tableMeta {
 }
 
 .lcFooterLink {
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-decoration: none;
   font-weight: 600;
   white-space: nowrap;
@@ -4678,7 +5424,7 @@ td .tableMeta {
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.13em;
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-transform: uppercase;
   margin: 0 0 0.6rem;
 }
@@ -4686,7 +5432,7 @@ td .tableMeta {
 .mktSectionTitle {
   font-size: clamp(1.5rem, 2.4vw, 2rem);
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   line-height: 1.25;
   max-width: 44ch;
   margin: 0;
@@ -4701,7 +5447,7 @@ td .tableMeta {
 }
 
 .mktPlatformCard {
-  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
   border: 1px solid rgba(59, 130, 246, 0.15);
   border-radius: 16px;
   padding: 1.5rem;
@@ -4712,7 +5458,7 @@ td .tableMeta {
 
 .mktPlatformCard:hover {
   border-color: rgba(59, 130, 246, 0.38);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-md);
   transform: translateY(-2px);
 }
 
@@ -4726,21 +5472,21 @@ td .tableMeta {
   margin-bottom: 1.1rem;
 }
 
-.mktPlatformCard--threat    .mktPlatformCardIcon { background: rgba(239, 68, 68, 0.13); color: #f87171; }
-.mktPlatformCard--compliance .mktPlatformCardIcon { background: rgba(59, 130, 246, 0.13); color: #60a5fa; }
-.mktPlatformCard--resilience .mktPlatformCardIcon { background: rgba(251, 191, 36, 0.13); color: #fbbf24; }
-.mktPlatformCard--evidence  .mktPlatformCardIcon { background: rgba(52, 211, 153, 0.13); color: #34d399; }
+.mktPlatformCard--threat    .mktPlatformCardIcon { background: rgba(239, 68, 68, 0.13); color: var(--danger-fg); }
+.mktPlatformCard--compliance .mktPlatformCardIcon { background: rgba(59, 130, 246, 0.13); color: var(--text-accent); }
+.mktPlatformCard--resilience .mktPlatformCardIcon { background: rgba(251, 191, 36, 0.13); color: var(--warning-fg); }
+.mktPlatformCard--evidence  .mktPlatformCardIcon { background: rgba(52, 211, 153, 0.13); color: var(--success-fg); }
 
 .mktPlatformCardTitle {
   font-size: 1rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.65rem;
 }
 
 .mktPlatformCardDesc {
   font-size: 0.875rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.6;
   margin: 0 0 1.35rem;
   flex: 1;
@@ -4749,7 +5495,7 @@ td .tableMeta {
 .mktPlatformCardLink {
   font-size: 0.84rem;
   font-weight: 600;
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-decoration: none;
   margin-top: auto;
 }
@@ -4764,15 +5510,15 @@ td .tableMeta {
   grid-template-columns: 200px 1fr;
   border: 1px solid rgba(59, 130, 246, 0.18);
   border-radius: 18px;
-  background: rgba(7, 11, 20, 0.98);
+  background: var(--bg-base);
   overflow: hidden;
-  box-shadow: 0 32px 88px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.03);
+  box-shadow: var(--shadow-lg);
   min-height: 460px;
 }
 
 .mktDashSidebar {
-  background: rgba(5, 8, 18, 0.99);
-  border-right: 1px solid rgba(255, 255, 255, 0.055);
+  background: var(--bg-base);
+  border-right: 1px solid var(--overlay-03);
   padding: 1.25rem 0;
   display: flex;
   flex-direction: column;
@@ -4790,7 +5536,7 @@ td .tableMeta {
   font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.07em;
-  color: #6aa9ff;
+  color: var(--text-accent);
 }
 
 .mktDashNav {
@@ -4807,13 +5553,13 @@ td .tableMeta {
   padding: 0.48rem 0.75rem;
   border-radius: 8px;
   font-size: 0.8rem;
-  color: #5a6478;
+  color: var(--text-muted);
   cursor: default;
 }
 
 .mktDashNavItemActive {
   background: rgba(59, 130, 246, 0.12);
-  color: #6aa9ff;
+  color: var(--text-accent);
   font-weight: 600;
 }
 
@@ -4821,7 +5567,7 @@ td .tableMeta {
   width: 18px;
   height: 18px;
   border-radius: 5px;
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--overlay-03);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4860,7 +5606,7 @@ td .tableMeta {
 .mktDashOverviewTitle {
   font-size: 1.05rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0;
 }
 
@@ -4870,14 +5616,14 @@ td .tableMeta {
   gap: 0.35rem;
   font-size: 0.76rem;
   font-weight: 600;
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .mktDashLiveDot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-fg);
   box-shadow: 0 0 5px rgba(74, 222, 128, 0.65);
   flex-shrink: 0;
 }
@@ -4890,18 +5636,18 @@ td .tableMeta {
 
 .mktDashFilter {
   padding: 0.28rem 0.6rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-06);
   border-radius: 8px;
   font-size: 0.73rem;
-  color: #8b949e;
-  background: rgba(22, 27, 34, 0.6);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
   cursor: default;
   user-select: none;
 }
 
 .mktDashRefresh {
   padding: 0.28rem 0.45rem;
-  color: #5a6478;
+  color: var(--text-muted);
 }
 
 .mktDashMetrics {
@@ -4911,8 +5657,8 @@ td .tableMeta {
 }
 
 .mktDashMetric {
-  background: rgba(14, 22, 37, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 12px;
   padding: 0.85rem 0.95rem;
   display: flex;
@@ -4921,7 +5667,7 @@ td .tableMeta {
 
 .mktDashMetricLabel {
   font-size: 0.73rem;
-  color: #5a6478;
+  color: var(--text-muted);
   font-weight: 500;
   margin: 0 0 0.4rem;
 }
@@ -4929,22 +5675,22 @@ td .tableMeta {
 .mktDashMetricVal {
   font-size: 1.7rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   line-height: 1.1;
   margin: 0 0 0.35rem;
 }
 
-.mktValAlert { color: #f87171; }
-.mktValWarn  { color: #fbbf24; }
+.mktValAlert { color: var(--danger-fg); }
+.mktValWarn  { color: var(--warning-fg); }
 
 .mktDashMetricDelta {
   font-size: 0.7rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin: 0;
 }
 
-.mktDeltaUp   { color: #4ade80; }
-.mktDeltaDown { color: #f87171; }
+.mktDeltaUp   { color: var(--success-fg); }
+.mktDeltaDown { color: var(--danger-fg); }
 
 .mktDashBody {
   display: grid;
@@ -4970,12 +5716,12 @@ td .tableMeta {
 .mktDashActivityTitle {
   font-size: 0.84rem;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .mktDashActivityViewAll {
   font-size: 0.73rem;
-  color: #6aa9ff;
+  color: var(--text-accent);
   cursor: default;
 }
 
@@ -4997,17 +5743,17 @@ td .tableMeta {
   font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.09em;
-  color: #5a6478;
+  color: var(--text-muted);
   text-transform: uppercase;
   padding: 0.48rem 0.6rem;
   text-align: left;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .mktDashTable td {
   padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  color: #8b949e;
+  border-bottom: 1px solid var(--overlay-03);
+  color: var(--text-secondary);
   vertical-align: middle;
 }
 
@@ -5016,18 +5762,18 @@ td .tableMeta {
 }
 
 .mktDashTime {
-  color: #5a6478;
+  color: var(--text-muted);
   font-family: ui-monospace, 'Cascadia Code', monospace;
   font-size: 0.73rem;
   white-space: nowrap;
 }
 
 .mktDashEvent {
-  color: #c9d1d9;
+  color: var(--text-primary);
 }
 
 .mktDashAsset {
-  color: #6aa9ff;
+  color: var(--text-accent);
   font-family: ui-monospace, 'Cascadia Code', monospace;
   font-size: 0.73rem;
 }
@@ -5043,13 +5789,13 @@ td .tableMeta {
 
 .mktSevHigh {
   background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
+  color: var(--danger-fg);
   border: 1px solid rgba(239, 68, 68, 0.25);
 }
 
 .mktSevMed {
   background: rgba(59, 130, 246, 0.14);
-  color: #93c5fd;
+  color: var(--info-fg);
   border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
@@ -5062,14 +5808,14 @@ td .tableMeta {
   font-weight: 600;
 }
 
-.mktStatInv   { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.22); }
-.mktStatBlock { background: rgba(239, 68,68,0.10); color: #f87171; border: 1px solid rgba(239, 68,68,0.22); }
-.mktStatAlert { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.22); }
+.mktStatInv   { background: rgba(251,191,36,0.12); color: var(--warning-fg); border: 1px solid rgba(251,191,36,0.22); }
+.mktStatBlock { background: rgba(239, 68,68,0.10); color: var(--danger-fg); border: 1px solid rgba(239, 68,68,0.22); }
+.mktStatAlert { background: rgba(251,191,36,0.12); color: var(--warning-fg); border: 1px solid rgba(251,191,36,0.22); }
 
 /* Threat heatmap card */
 .mktDashHeatmap {
-  background: rgba(14, 22, 37, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 12px;
   padding: 0.85rem;
   display: flex;
@@ -5080,7 +5826,7 @@ td .tableMeta {
 .mktDashHeatmapTitle {
   font-size: 0.77rem;
   font-weight: 600;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   margin: 0;
 }
 
@@ -5105,9 +5851,9 @@ td .tableMeta {
   font-weight: 600;
 }
 
-.mktHeatmapLow  { color: #4ade80; }
-.mktHeatmapMed  { color: #fbbf24; }
-.mktHeatmapHigh { color: #f87171; }
+.mktHeatmapLow  { color: var(--success-fg); }
+.mktHeatmapMed  { color: var(--warning-fg); }
+.mktHeatmapHigh { color: var(--danger-fg); }
 
 /* ── Why customers buy ────────────────────────────────────────── */
 .mktSectionSplit {
@@ -5124,7 +5870,7 @@ td .tableMeta {
 }
 
 .mktWhyCard {
-  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
   border: 1px solid rgba(59, 130, 246, 0.14);
   border-radius: 14px;
   padding: 1.25rem;
@@ -5145,21 +5891,21 @@ td .tableMeta {
   margin-bottom: 0.85rem;
 }
 
-.mktWhyIcon--coverage   { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-.mktWhyIcon--governance { background: rgba(167, 139, 250, 0.15); color: #a78bfa; }
-.mktWhyIcon--incident   { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
-.mktWhyIcon--audit      { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.mktWhyIcon--coverage   { background: rgba(59, 130, 246, 0.15); color: var(--text-accent); }
+.mktWhyIcon--governance { background: rgba(167, 139, 250, 0.15); color: var(--violet-fg); }
+.mktWhyIcon--incident   { background: rgba(251, 191, 36, 0.15); color: var(--warning-fg); }
+.mktWhyIcon--audit      { background: rgba(59, 130, 246, 0.15); color: var(--text-accent); }
 
 .mktWhyTitle {
   font-size: 0.93rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.45rem;
 }
 
 .mktWhyDesc {
   font-size: 0.845rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.58;
   margin: 0;
 }
@@ -5167,7 +5913,7 @@ td .tableMeta {
 /* ── Final CTA ────────────────────────────────────────────────── */
 .mktFinalCta {
   margin-top: 6rem;
-  background: linear-gradient(155deg, rgba(14, 22, 50, 0.9) 0%, rgba(8, 14, 26, 0.96) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
   border: 1px solid rgba(59, 130, 246, 0.22);
   border-radius: 22px;
   padding: 4rem 2.5rem;
@@ -5178,14 +5924,14 @@ td .tableMeta {
 .mktFinalCtaTitle {
   font-size: clamp(1.75rem, 2.8vw, 2.4rem);
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 1rem;
   letter-spacing: -0.02em;
 }
 
 .mktFinalCtaText {
   font-size: 1rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   max-width: 48ch;
   margin: 0 auto 2.25rem;
   line-height: 1.65;
@@ -5295,7 +6041,7 @@ td .tableMeta {
   border-radius: 9px;
   font-size: 0.88rem;
   font-weight: 600;
-  color: #6aa9ff;
+  color: var(--text-accent);
   background: transparent;
   text-decoration: none;
   transition: border-color 0.18s, color 0.18s, background 0.18s;
@@ -5304,14 +6050,14 @@ td .tableMeta {
 
 .mktCtaTertiary:hover {
   border-color: rgba(106, 169, 255, 0.55);
-  color: #93c5fd;
+  color: var(--info-fg);
   background: rgba(59, 130, 246, 0.07);
 }
 
 /* ── Section subtitle ─────────────────────────────────────── */
 .mktSectionSubtitle {
   font-size: 0.97rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   margin: 0.35rem 0 0;
   max-width: 56ch;
   line-height: 1.6;
@@ -5333,7 +6079,7 @@ td .tableMeta {
   border: 1px solid rgba(251, 191, 36, 0.22);
   font-size: 0.72rem;
   font-weight: 600;
-  color: #fbbf24;
+  color: var(--warning-fg);
   letter-spacing: 0.03em;
 }
 
@@ -5343,8 +6089,8 @@ td .tableMeta {
   flex-wrap: wrap;
   gap: 0.75rem;
   padding: 2.5rem 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
+  border-bottom: 1px solid var(--overlay-04);
   margin: 0 0 3.5rem;
 }
 
@@ -5354,7 +6100,7 @@ td .tableMeta {
   gap: 0.6rem;
   flex: 1;
   min-width: 220px;
-  background: rgba(14, 22, 37, 0.7);
+  background: var(--bg-surface);
   border: 1px solid rgba(59, 130, 246, 0.14);
   border-radius: 12px;
   padding: 0.9rem 1.1rem;
@@ -5372,7 +6118,7 @@ td .tableMeta {
   border-radius: 50%;
   background: rgba(34, 197, 94, 0.15);
   border: 1px solid rgba(34, 197, 94, 0.3);
-  color: #4ade80;
+  color: var(--success-fg);
   font-size: 0.72rem;
   font-weight: 800;
   display: flex;
@@ -5390,12 +6136,12 @@ td .tableMeta {
 .mktTrustBadgeLabel {
   font-size: 0.82rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .mktTrustBadgeSub {
   font-size: 0.73rem;
-  color: #5a6478;
+  color: var(--text-muted);
   line-height: 1.45;
 }
 
@@ -5408,8 +6154,8 @@ td .tableMeta {
 }
 
 .mktProblemCard {
-  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
+  border: 1px solid var(--overlay-04);
   border-radius: 14px;
   padding: 1.5rem;
   position: relative;
@@ -5425,20 +6171,20 @@ td .tableMeta {
   height: 2px;
 }
 
-.mktProblemCard--exploit::before { background: linear-gradient(90deg, #f87171, transparent); }
-.mktProblemCard--compliance::before { background: linear-gradient(90deg, #fbbf24, transparent); }
-.mktProblemCard--recovery::before { background: linear-gradient(90deg, #60a5fa, transparent); }
+.mktProblemCard--exploit::before { background: linear-gradient(90deg, var(--danger-fg), transparent); }
+.mktProblemCard--compliance::before { background: linear-gradient(90deg, var(--warning-fg), transparent); }
+.mktProblemCard--recovery::before { background: linear-gradient(90deg, var(--text-accent), transparent); }
 
 .mktProblemHeading {
   font-size: 0.97rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.75rem;
 }
 
 .mktProblemBody {
   font-size: 0.85rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.62;
   margin: 0;
 }
@@ -5453,7 +6199,7 @@ td .tableMeta {
 }
 
 .mktHowStep {
-  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
   border: 1px solid rgba(59, 130, 246, 0.14);
   border-radius: 14px;
   padding: 1.5rem;
@@ -5463,7 +6209,7 @@ td .tableMeta {
 .mktHowStepNum {
   font-size: 2rem;
   font-weight: 800;
-  color: rgba(59, 130, 246, 0.25);
+  color: var(--border-accent);
   font-variant-numeric: tabular-nums;
   margin-bottom: 0.75rem;
   line-height: 1;
@@ -5472,13 +6218,13 @@ td .tableMeta {
 .mktHowStepTitle {
   font-size: 1rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.55rem;
 }
 
 .mktHowStepDesc {
   font-size: 0.86rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.62;
   margin: 0;
 }
@@ -5488,7 +6234,7 @@ td .tableMeta {
   top: 50%;
   right: -1.1rem;
   transform: translateY(-50%);
-  color: #3b82f6;
+  color: var(--accent-blue);
   font-size: 1.1rem;
   z-index: 1;
 }
@@ -5500,7 +6246,7 @@ td .tableMeta {
   gap: 0.35rem;
   margin-top: 1.75rem;
   padding: 0.85rem 1.25rem;
-  background: rgba(14, 22, 37, 0.7);
+  background: var(--bg-surface);
   border: 1px solid rgba(59, 130, 246, 0.12);
   border-radius: 12px;
 }
@@ -5508,19 +6254,19 @@ td .tableMeta {
 .mktHowFlowItem {
   font-size: 0.77rem;
   font-weight: 600;
-  color: #8b949e;
+  color: var(--text-secondary);
   padding: 0.2rem 0.6rem;
   border-radius: 6px;
   background: transparent;
 }
 
 .mktHowFlowItem--active {
-  color: #93c5fd;
+  color: var(--info-fg);
   background: rgba(59, 130, 246, 0.1);
 }
 
 .mktHowFlowArrow {
-  color: #3b4a5e;
+  color: var(--border-strong);
   font-size: 0.8rem;
 }
 
@@ -5533,8 +6279,8 @@ td .tableMeta {
 }
 
 .mktWhoCard {
-  background: linear-gradient(155deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
+  border: 1px solid var(--overlay-04);
   border-radius: 14px;
   padding: 1.5rem;
   display: flex;
@@ -5545,13 +6291,13 @@ td .tableMeta {
 .mktWhoRole {
   font-size: 0.97rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0;
 }
 
 .mktWhoDesc {
   font-size: 0.85rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.6;
   margin: 0;
   flex: 1;
@@ -5570,7 +6316,7 @@ td .tableMeta {
   border-radius: 6px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.18);
-  color: #6aa9ff;
+  color: var(--text-accent);
   font-size: 0.7rem;
   font-weight: 600;
 }
@@ -5585,8 +6331,8 @@ td .tableMeta {
 }
 
 .mktPricingCard {
-  background: linear-gradient(160deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, var(--bg-surface) 0%, var(--bg-header) 100%);
+  border: 1px solid var(--overlay-06);
   border-radius: 16px;
   padding: 1.75rem;
   display: flex;
@@ -5598,7 +6344,7 @@ td .tableMeta {
 .mktPricingCard--featured {
   border-color: rgba(59, 130, 246, 0.4);
   box-shadow: 0 0 50px rgba(59, 130, 246, 0.08);
-  background: linear-gradient(160deg, rgba(20, 30, 55, 0.98) 0%, rgba(10, 18, 38, 0.97) 100%);
+  background: linear-gradient(160deg, var(--bg-subtle) 0%, rgba(10, 18, 38, 0.97) 100%);
 }
 
 .mktPricingBadge {
@@ -5606,8 +6352,8 @@ td .tableMeta {
   top: -0.65rem;
   left: 50%;
   transform: translateX(-50%);
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.68rem;
   font-weight: 700;
   padding: 0.22rem 0.75rem;
@@ -5619,7 +6365,7 @@ td .tableMeta {
 .mktPricingCardTier {
   font-size: 0.8rem;
   font-weight: 700;
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 0.25rem;
@@ -5628,24 +6374,24 @@ td .tableMeta {
 .mktPricingCardPrice {
   font-size: 2.25rem;
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   line-height: 1;
   letter-spacing: -0.02em;
 }
 
 .mktPricingCardPriceSub {
   font-size: 0.77rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin-bottom: 0.5rem;
 }
 
 .mktPricingCardDesc {
   font-size: 0.84rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.55;
   margin: 0 0 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .mktPricingCardFeatures {
@@ -5662,7 +6408,7 @@ td .tableMeta {
   align-items: center;
   gap: 0.55rem;
   font-size: 0.83rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
 }
 
 .mktPricingCardCta {
@@ -5675,7 +6421,7 @@ td .tableMeta {
   font-weight: 600;
   text-decoration: none;
   border: 1px solid rgba(106, 169, 255, 0.3);
-  color: #6aa9ff;
+  color: var(--text-accent);
   background: transparent;
   transition: all 0.18s;
   margin-top: auto;
@@ -5687,20 +6433,20 @@ td .tableMeta {
 }
 
 .mktPricingCardCta--featured {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: var(--on-accent);
 }
 
 .mktPricingCardCta--featured:hover {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: var(--accent-blue-strong);
+  border-color: var(--accent-blue-strong);
 }
 
 .mktPricingNote {
   text-align: center;
   font-size: 0.78rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin: 1.25rem 0 0;
   line-height: 1.5;
 }
@@ -5708,7 +6454,7 @@ td .tableMeta {
 /* ── Security callout ─────────────────────────────────────── */
 .mktSecurityCallout {
   margin: 4.5rem 0;
-  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88) 0%, rgba(8, 14, 26, 0.94) 100%);
+  background: linear-gradient(155deg, var(--bg-surface) 0%, var(--bg-header) 100%);
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: 16px;
   padding: 2rem 2rem;
@@ -5738,13 +6484,13 @@ td .tableMeta {
 .mktSecurityCalloutTitle {
   font-size: 1.05rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.35rem;
 }
 
 .mktSecurityCalloutDesc {
   font-size: 0.86rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.6;
   margin: 0;
 }
@@ -5757,7 +6503,7 @@ td .tableMeta {
   border-radius: 9px;
   font-size: 0.85rem;
   font-weight: 600;
-  color: #6aa9ff;
+  color: var(--text-accent);
   border: 1px solid rgba(59, 130, 246, 0.3);
   text-decoration: none;
   white-space: nowrap;
@@ -5778,8 +6524,8 @@ td .tableMeta {
 }
 
 .mktFaqItem {
-  background: rgba(14, 22, 37, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 12px;
   padding: 1.25rem;
 }
@@ -5787,23 +6533,23 @@ td .tableMeta {
 .mktFaqQ {
   font-size: 0.9rem;
   font-weight: 700;
-  color: #c9d1d9;
+  color: var(--text-primary);
   margin: 0 0 0.55rem;
 }
 
 .mktFaqA {
   font-size: 0.84rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.62;
   margin: 0;
 }
 
 /* ── Footer ───────────────────────────────────────────────── */
 .mktFooter {
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--overlay-04);
   margin-top: 5rem;
   padding: 3rem clamp(1.5rem, 4vw, 5rem) 2rem;
-  background: rgba(7, 11, 20, 0.96);
+  background: var(--bg-base);
 }
 
 .mktFooterInner {
@@ -5828,7 +6574,7 @@ td .tableMeta {
 
 .mktFooterTagline {
   font-size: 0.83rem;
-  color: #5a6478;
+  color: var(--text-muted);
   line-height: 1.55;
   margin: 0;
 }
@@ -5842,13 +6588,13 @@ td .tableMeta {
 
 .mktFooterLink {
   font-size: 0.82rem;
-  color: #5a6478;
+  color: var(--text-muted);
   text-decoration: none;
   transition: color 0.15s;
 }
 
 .mktFooterLink:hover {
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .mktFooterBottom {
@@ -5856,14 +6602,14 @@ td .tableMeta {
   align-items: center;
   justify-content: space-between;
   padding-top: 1.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--overlay-03);
   gap: 1rem;
   flex-wrap: wrap;
 }
 
 .mktFooterCopy {
   font-size: 0.77rem;
-  color: #3d4a5c;
+  color: var(--border-strong);
 }
 
 .mktFooterContact {
@@ -5878,7 +6624,7 @@ td .tableMeta {
   max-width: 960px;
   margin: 0 auto;
   padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .trustNav {
@@ -5887,13 +6633,13 @@ td .tableMeta {
 
 .trustNavBack {
   font-size: 0.84rem;
-  color: #5a6478;
+  color: var(--text-muted);
   text-decoration: none;
   transition: color 0.15s;
 }
 
 .trustNavBack:hover {
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .trustHero {
@@ -5903,7 +6649,7 @@ td .tableMeta {
 .trustHeroTitle {
   font-size: clamp(1.8rem, 3vw, 2.6rem);
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   letter-spacing: -0.025em;
   line-height: 1.2;
   margin: 0.5rem 0 1rem;
@@ -5911,7 +6657,7 @@ td .tableMeta {
 
 .trustHeroSubtitle {
   font-size: 1rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 0 1.5rem;
   max-width: 60ch;
@@ -5926,7 +6672,7 @@ td .tableMeta {
 .trustHeroProofLine {
   margin: 0.9rem 0 0;
   font-size: 0.85rem;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .trustHeroBadge {
@@ -5941,13 +6687,13 @@ td .tableMeta {
 .trustHeroBadge--green {
   background: rgba(34, 197, 94, 0.1);
   border: 1px solid rgba(34, 197, 94, 0.28);
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .trustHeroBadge--yellow {
   background: rgba(251, 191, 36, 0.1);
   border: 1px solid rgba(251, 191, 36, 0.28);
-  color: #fbbf24;
+  color: var(--warning-fg);
 }
 
 .trustSection {
@@ -5957,15 +6703,15 @@ td .tableMeta {
 .trustSectionTitle {
   font-size: 1.3rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 1.25rem;
   padding-bottom: 0.65rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .trustSectionIntro {
   font-size: 0.9rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 0 1.25rem;
   max-width: 60ch;
@@ -5978,7 +6724,7 @@ td .tableMeta {
 }
 
 .trustPrincipleCard {
-  background: rgba(14, 22, 37, 0.7);
+  background: var(--bg-surface);
   border: 1px solid rgba(59, 130, 246, 0.12);
   border-radius: 12px;
   padding: 1.25rem;
@@ -5998,26 +6744,26 @@ td .tableMeta {
   justify-content: center;
   margin-bottom: 0.75rem;
   background: rgba(59, 130, 246, 0.12);
-  color: #60a5fa;
+  color: var(--text-accent);
 }
 
-.trustPrincipleIcon--failclosed  { background: rgba(239, 68, 68, 0.1); color: #f87171; }
-.trustPrincipleIcon--truthful    { background: rgba(59, 130, 246, 0.1); color: #60a5fa; }
-.trustPrincipleIcon--isolation   { background: rgba(167, 139, 250, 0.1); color: #a78bfa; }
-.trustPrincipleIcon--evidence    { background: rgba(52, 211, 153, 0.1); color: #34d399; }
-.trustPrincipleIcon--auditlog    { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
-.trustPrincipleIcon--proofgates  { background: rgba(59, 130, 246, 0.1); color: #60a5fa; }
+.trustPrincipleIcon--failclosed  { background: rgba(239, 68, 68, 0.1); color: var(--danger-fg); }
+.trustPrincipleIcon--truthful    { background: rgba(59, 130, 246, 0.1); color: var(--text-accent); }
+.trustPrincipleIcon--isolation   { background: rgba(167, 139, 250, 0.1); color: var(--violet-fg); }
+.trustPrincipleIcon--evidence    { background: rgba(52, 211, 153, 0.1); color: var(--success-fg); }
+.trustPrincipleIcon--auditlog    { background: rgba(251, 191, 36, 0.1); color: var(--warning-fg); }
+.trustPrincipleIcon--proofgates  { background: rgba(59, 130, 246, 0.1); color: var(--text-accent); }
 
 .trustPrincipleTitle {
   font-size: 0.92rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.4rem;
 }
 
 .trustPrincipleBody {
   font-size: 0.84rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.62;
   margin: 0;
 }
@@ -6027,7 +6773,7 @@ td .tableMeta {
 }
 
 .trustCallout {
-  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88), rgba(8, 14, 26, 0.94));
+  background: linear-gradient(155deg, var(--bg-surface), var(--bg-header));
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: 14px;
   padding: 1.75rem 2rem;
@@ -6036,13 +6782,13 @@ td .tableMeta {
 .trustCalloutTitle {
   font-size: 1.1rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.65rem;
 }
 
 .trustCalloutIntro {
   font-size: 0.88rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.6;
   margin: 0 0 1rem;
 }
@@ -6058,7 +6804,7 @@ td .tableMeta {
 
 .trustRuleList li {
   font-size: 0.86rem;
-  color: #c9d1d9;
+  color: var(--text-primary);
   padding-left: 1.25rem;
   position: relative;
 }
@@ -6067,7 +6813,7 @@ td .tableMeta {
   content: '→';
   position: absolute;
   left: 0;
-  color: #3b82f6;
+  color: var(--accent-blue);
   font-size: 0.75rem;
 }
 
@@ -6085,13 +6831,13 @@ td .tableMeta {
   align-items: flex-start;
   gap: 0.6rem;
   font-size: 0.86rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
 .trustDataCheck {
   flex-shrink: 0;
-  color: #4ade80;
+  color: var(--success-fg);
   font-weight: 700;
   margin-top: 0.05rem;
 }
@@ -6103,8 +6849,8 @@ td .tableMeta {
 }
 
 .trustFaqItem {
-  background: rgba(14, 22, 37, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 12px;
   padding: 1.25rem;
 }
@@ -6112,13 +6858,13 @@ td .tableMeta {
 .trustFaqQ {
   font-size: 0.9rem;
   font-weight: 700;
-  color: #c9d1d9;
+  color: var(--text-primary);
   margin: 0 0 0.5rem;
 }
 
 .trustFaqA {
   font-size: 0.84rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.62;
   margin: 0;
 }
@@ -6128,8 +6874,8 @@ td .tableMeta {
 }
 
 .trustDisclosureCard {
-  background: rgba(14, 22, 37, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 14px;
   padding: 1.75rem 2rem;
 }
@@ -6137,20 +6883,20 @@ td .tableMeta {
 .trustDisclosureTitle {
   font-size: 1.1rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.65rem;
 }
 
 .trustDisclosureBody {
   font-size: 0.88rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 0 0.75rem;
 }
 
 .trustDisclosureContact {
   font-size: 0.88rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   margin: 0;
 }
 
@@ -6165,7 +6911,7 @@ td .tableMeta {
 
 .trustOpsList li {
   font-size: 0.87rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   line-height: 1.55;
   padding-left: 1.25rem;
   position: relative;
@@ -6175,18 +6921,18 @@ td .tableMeta {
   content: '·';
   position: absolute;
   left: 0.25rem;
-  color: #3b4a5e;
+  color: var(--border-strong);
 }
 
 .trustLink {
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-decoration: none;
   font-size: 0.84rem;
   transition: color 0.15s;
 }
 
 .trustLink:hover {
-  color: #93c5fd;
+  color: var(--info-fg);
 }
 
 .trustFooterLinks {
@@ -6195,7 +6941,7 @@ td .tableMeta {
   gap: 0.5rem 1.5rem;
   margin-top: 3rem;
   padding-top: 1.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--overlay-04);
 }
 
 /* ============================================================
@@ -6206,7 +6952,7 @@ td .tableMeta {
   max-width: 1120px;
   margin: 0 auto;
   padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .pricingHero {
@@ -6217,14 +6963,14 @@ td .tableMeta {
 .pricingHeroTitle {
   font-size: clamp(1.9rem, 3vw, 2.8rem);
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   letter-spacing: -0.025em;
   margin: 0.5rem 0 1rem;
 }
 
 .pricingHeroSubtitle {
   font-size: 1rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 auto;
   max-width: 54ch;
@@ -6239,8 +6985,8 @@ td .tableMeta {
 }
 
 .pricingTierCard {
-  background: linear-gradient(160deg, rgba(14, 22, 37, 0.97) 0%, rgba(8, 14, 26, 0.95) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, var(--bg-surface) 0%, var(--bg-header) 100%);
+  border: 1px solid var(--overlay-06);
   border-radius: 16px;
   padding: 1.75rem;
   display: flex;
@@ -6259,8 +7005,8 @@ td .tableMeta {
   top: -0.65rem;
   left: 50%;
   transform: translateX(-50%);
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.68rem;
   font-weight: 700;
   padding: 0.22rem 0.75rem;
@@ -6272,7 +7018,7 @@ td .tableMeta {
 .pricingTierName {
   font-size: 0.8rem;
   font-weight: 700;
-  color: #6aa9ff;
+  color: var(--text-accent);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -6280,7 +7026,7 @@ td .tableMeta {
 .pricingTierPrice {
   font-size: 2.4rem;
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   line-height: 1;
   letter-spacing: -0.02em;
 }
@@ -6298,7 +7044,7 @@ td .tableMeta {
 
 .pricingTierPriceSub {
   font-size: 0.77rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin-bottom: 0.35rem;
   /* Reserve the line even when a plan has no sub-price, so the cards in the
      grid keep the same vertical rhythm and their CTAs stay aligned. */
@@ -6307,11 +7053,11 @@ td .tableMeta {
 
 .pricingTierDesc {
   font-size: 0.85rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.55;
   margin: 0 0 1.25rem;
   padding-bottom: 1.25rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .pricingTierCta {
@@ -6324,7 +7070,7 @@ td .tableMeta {
   font-weight: 600;
   text-decoration: none;
   border: 1px solid rgba(106, 169, 255, 0.3);
-  color: #6aa9ff;
+  color: var(--text-accent);
   background: transparent;
   transition: all 0.18s;
 }
@@ -6335,21 +7081,21 @@ td .tableMeta {
 }
 
 .pricingTierCta--featured {
-  background: #3b82f6;
-  border-color: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: var(--on-accent);
 }
 
 .pricingTierCta--featured:hover {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: var(--accent-blue-strong);
+  border-color: var(--accent-blue-strong);
 }
 
 .pricingTierFeatures {
   list-style: none;
   margin: 1.25rem 0 0;
   padding: 1.15rem 0 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
@@ -6361,7 +7107,7 @@ td .tableMeta {
   gap: 0.6rem;
   font-size: 0.82rem;
   line-height: 1.45;
-  color: #9ba7b4;
+  color: var(--text-secondary);
 }
 
 .pricingTierFeature svg {
@@ -6376,14 +7122,14 @@ td .tableMeta {
 .pricingComparisonTitle {
   font-size: 1.3rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 1.5rem;
 }
 
 .pricingComparisonWrap {
   overflow-x: auto;
   border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--overlay-04);
 }
 
 .pricingComparisonTable {
@@ -6397,21 +7143,21 @@ td .tableMeta {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #5a6478;
+  color: var(--text-muted);
   text-transform: uppercase;
   text-align: left;
-  background: rgba(14, 22, 37, 0.85);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--overlay-04);
 }
 
 .pricingComparisonFeaturedCol {
-  color: #6aa9ff !important;
+  color: var(--text-accent) !important;
   background: rgba(59, 130, 246, 0.07) !important;
 }
 
 .pricingComparisonTable td {
   padding: 0.75rem 1.25rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--overlay-03);
   vertical-align: middle;
 }
 
@@ -6420,7 +7166,7 @@ td .tableMeta {
 }
 
 .pricingComparisonFeatureLabel {
-  color: #9ba7b4;
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -6429,7 +7175,7 @@ td .tableMeta {
 }
 
 .pricingComparisonValue {
-  color: #8b949e;
+  color: var(--text-secondary);
   text-align: center;
 }
 
@@ -6438,11 +7184,11 @@ td .tableMeta {
 }
 
 .pricingFeatureNa {
-  color: #3d4a5c;
+  color: var(--border-strong);
 }
 
 .pricingFeatureText {
-  color: #9ba7b4;
+  color: var(--text-secondary);
 }
 
 .pricingFaqSection {
@@ -6452,12 +7198,12 @@ td .tableMeta {
 .pricingFaqTitle {
   font-size: 1.3rem;
   font-weight: 700;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 1.5rem;
 }
 
 .pricingEnterpriseCallout {
-  background: linear-gradient(155deg, rgba(14, 22, 50, 0.88), rgba(8, 14, 26, 0.94));
+  background: linear-gradient(155deg, var(--bg-surface), var(--bg-header));
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: 16px;
   padding: 2.5rem;
@@ -6468,13 +7214,13 @@ td .tableMeta {
 .pricingEnterpriseTitle {
   font-size: 1.5rem;
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   margin: 0 0 0.75rem;
 }
 
 .pricingEnterpriseDesc {
   font-size: 0.93rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 auto 1.75rem;
   max-width: 52ch;
@@ -6488,7 +7234,7 @@ td .tableMeta {
   max-width: 960px;
   margin: 0 auto;
   padding: 2rem clamp(1rem, 3vw, 2.5rem) 5rem;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .proofHero {
@@ -6498,14 +7244,14 @@ td .tableMeta {
 .proofHeroTitle {
   font-size: clamp(1.8rem, 3vw, 2.5rem);
   font-weight: 800;
-  color: #e6edf3;
+  color: var(--text-primary);
   letter-spacing: -0.025em;
   margin: 0.5rem 0 1rem;
 }
 
 .proofHeroSubtitle {
   font-size: 0.97rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.65;
   margin: 0 0 1.5rem;
   max-width: 60ch;
@@ -6523,25 +7269,25 @@ td .tableMeta {
 .proofSummaryBadge--pass {
   background: rgba(34, 197, 94, 0.12);
   border: 1px solid rgba(34, 197, 94, 0.3);
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .proofSummaryBadge--fail {
   background: rgba(239, 68, 68, 0.12);
   border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #f87171;
+  color: var(--danger-fg);
 }
 
 .proofSummaryBadge--warn {
   background: rgba(251, 191, 36, 0.12);
   border: 1px solid rgba(251, 191, 36, 0.3);
-  color: #fbbf24;
+  color: var(--warning-fg);
 }
 
 .proofSummaryBadge--neutral {
   background: rgba(148, 163, 184, 0.1);
   border: 1px solid rgba(148, 163, 184, 0.24);
-  color: var(--text-secondary, #94a3b8);
+  color: var(--text-secondary);
   font-weight: 600;
 }
 
@@ -6553,15 +7299,15 @@ td .tableMeta {
 }
 
 .proofCard {
-  background: rgba(14, 22, 37, 0.8);
+  background: var(--bg-surface);
   border-radius: 14px;
   padding: 1.25rem 1.4rem;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--overlay-04);
 }
 
 .proofCard--pass  { border-color: rgba(34, 197, 94, 0.2); }
 .proofCard--fail  { border-color: rgba(239, 68, 68, 0.2); }
-.proofCard--unknown { border-color: rgba(255, 255, 255, 0.07); }
+.proofCard--unknown { border-color: var(--overlay-04); }
 
 .proofCardHeader {
   display: flex;
@@ -6574,7 +7320,7 @@ td .tableMeta {
 .proofCardTitle {
   font-size: 0.9rem;
   font-weight: 700;
-  color: #c9d1d9;
+  color: var(--text-primary);
   margin: 0;
   line-height: 1.3;
 }
@@ -6588,9 +7334,9 @@ td .tableMeta {
   white-space: nowrap;
 }
 
-.proofCardStatus--pass    { background: rgba(34, 197, 94, 0.12); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.25); }
-.proofCardStatus--fail    { background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); }
-.proofCardStatus--unknown { background: rgba(91, 100, 120, 0.15); color: #5a6478; border: 1px solid rgba(91, 100, 120, 0.2); }
+.proofCardStatus--pass    { background: rgba(34, 197, 94, 0.12); color: var(--success-fg); border: 1px solid rgba(34, 197, 94, 0.25); }
+.proofCardStatus--fail    { background: rgba(239, 68, 68, 0.12); color: var(--danger-fg); border: 1px solid rgba(239, 68, 68, 0.25); }
+.proofCardStatus--unknown { background: rgba(91, 100, 120, 0.15); color: var(--text-muted); border: 1px solid rgba(91, 100, 120, 0.2); }
 
 .proofCardTable {
   width: 100%;
@@ -6599,7 +7345,7 @@ td .tableMeta {
 }
 
 .proofCardTable tr {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--overlay-03);
 }
 
 .proofCardTable tr:last-child {
@@ -6607,7 +7353,7 @@ td .tableMeta {
 }
 
 .proofCardLabel {
-  color: #5a6478;
+  color: var(--text-muted);
   padding: 0.35rem 0.5rem 0.35rem 0;
   width: 42%;
   vertical-align: top;
@@ -6615,7 +7361,7 @@ td .tableMeta {
 }
 
 .proofCardValue {
-  color: #9ba7b4;
+  color: var(--text-secondary);
   padding: 0.35rem 0;
   font-family: ui-monospace, 'Cascadia Code', monospace;
   word-break: break-all;
@@ -6624,17 +7370,17 @@ td .tableMeta {
 
 .proofCardNote {
   font-size: 0.77rem;
-  color: #5a6478;
+  color: var(--text-muted);
   line-height: 1.55;
   margin: 0.75rem 0 0;
   padding-top: 0.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--overlay-03);
   font-style: italic;
 }
 
 .proofHonestyNote {
-  background: rgba(14, 22, 37, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   border-radius: 12px;
   padding: 1.5rem;
   margin-bottom: 2rem;
@@ -6643,7 +7389,7 @@ td .tableMeta {
 .proofHonestyTitle {
   font-size: 0.92rem;
   font-weight: 700;
-  color: #c9d1d9;
+  color: var(--text-primary);
   margin: 0 0 0.75rem;
 }
 
@@ -6658,7 +7404,7 @@ td .tableMeta {
 
 .proofHonestyList li {
   font-size: 0.83rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.5;
   padding-left: 1.1rem;
   position: relative;
@@ -6668,14 +7414,14 @@ td .tableMeta {
   content: '·';
   position: absolute;
   left: 0.2rem;
-  color: #3b4a5e;
+  color: var(--border-strong);
 }
 
 .proofHonestyList code {
   font-family: ui-monospace, 'Cascadia Code', monospace;
   font-size: 0.8em;
   background: rgba(59, 130, 246, 0.1);
-  color: #6aa9ff;
+  color: var(--text-accent);
   padding: 0.1em 0.35em;
   border-radius: 4px;
 }
@@ -6754,8 +7500,8 @@ td .tableMeta {
   top: -56px;
   left: 1rem;
   padding: 0.55rem 1.1rem;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.88rem;
   font-weight: 600;
   text-decoration: none;
@@ -6781,7 +7527,7 @@ textarea:focus-visible,
 label:focus-visible,
 [role="button"]:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -6817,13 +7563,13 @@ button:focus:not(:focus-visible) {
   display: block;
   width: 100%;
   height: 2px;
-  background: #8b949e;
+  background: var(--text-secondary);
   border-radius: 2px;
   transition: transform 0.22s ease, opacity 0.22s ease, background 0.22s;
 }
 
 .mktMobileHamburger:hover .mktMobileBar {
-  background: #e6edf3;
+  background: var(--text-primary);
 }
 
 /* Mobile nav overlay */
@@ -6834,21 +7580,21 @@ button:focus:not(:focus-visible) {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(7, 11, 20, 0.97);
+  background: var(--bg-base);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   z-index: 98;
   flex-direction: column;
   padding: 1.25rem 1rem;
   gap: 0.15rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--overlay-04);
   overflow-y: auto;
 }
 
 .mktMobileNavLink {
   display: block;
   padding: 0.85rem 1rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 1rem;
   font-weight: 500;
@@ -6857,13 +7603,13 @@ button:focus:not(:focus-visible) {
 }
 
 .mktMobileNavLink:hover {
-  color: #e6edf3;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  background: var(--overlay-04);
 }
 
 .mktMobileNavDivider {
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--overlay-04);
   margin: 0.6rem 0;
 }
 
@@ -6875,14 +7621,14 @@ button:focus:not(:focus-visible) {
   border-radius: 10px;
   background: rgba(59, 130, 246, 0.14);
   border: 1px solid rgba(59, 130, 246, 0.32);
-  color: #93c5fd !important;
+  color: var(--info-fg) !important;
   font-weight: 600;
   margin-top: 0.25rem;
 }
 
 .mktMobileNavLinkCta:hover {
   background: rgba(59, 130, 246, 0.22) !important;
-  color: #bfdbfe !important;
+  color: var(--info-fg) !important;
 }
 
 @media (max-width: 720px) {
@@ -6899,7 +7645,7 @@ button:focus:not(:focus-visible) {
   /* Animate bars to X when open */
   .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(1) {
     transform: translateY(10px) rotate(45deg);
-    background: #e6edf3;
+    background: var(--text-primary);
   }
   .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(2) {
     opacity: 0;
@@ -6907,7 +7653,7 @@ button:focus:not(:focus-visible) {
   }
   .mktMobileToggleInput:checked ~ .mktNavInner .mktMobileHamburger .mktMobileBar:nth-child(3) {
     transform: translateY(-10px) rotate(-45deg);
-    background: #e6edf3;
+    background: var(--text-primary);
   }
 }
 
@@ -6928,10 +7674,10 @@ a.mktTrustBadge:hover {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(7, 11, 20, 0.92);
+  background: var(--bg-base);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--overlay-04);
   margin-bottom: 0;
 }
 
@@ -6951,7 +7697,7 @@ a.mktTrustBadge:hover {
   gap: 0.55rem;
   text-decoration: none;
   flex-shrink: 0;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .mktStandaloneNavBrand {
@@ -6963,7 +7709,7 @@ a.mktTrustBadge:hover {
 .mktStandaloneNavProduct {
   font-size: 0.7rem;
   font-weight: 700;
-  color: #6aa9ff;
+  color: var(--text-accent);
   letter-spacing: 0.06em;
 }
 
@@ -6976,7 +7722,7 @@ a.mktTrustBadge:hover {
 
 .mktStandaloneNavLink {
   padding: 0.4rem 0.75rem;
-  color: #9ba7b4;
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.86rem;
   font-weight: 500;
@@ -6985,8 +7731,8 @@ a.mktTrustBadge:hover {
 }
 
 .mktStandaloneNavLink:hover {
-  color: #e6edf3;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  background: var(--overlay-04);
 }
 
 .mktStandaloneNavRight {
@@ -6997,7 +7743,7 @@ a.mktTrustBadge:hover {
 }
 
 .mktStandaloneNavSignIn {
-  color: #9ba7b4;
+  color: var(--text-secondary);
   text-decoration: none;
   font-size: 0.85rem;
   font-weight: 500;
@@ -7006,22 +7752,22 @@ a.mktTrustBadge:hover {
   transition: color 0.15s;
 }
 
-.mktStandaloneNavSignIn:hover { color: #e6edf3; }
+.mktStandaloneNavSignIn:hover { color: var(--text-primary); }
 
 .mktStandaloneNavCta {
   display: inline-flex;
   align-items: center;
   padding: 0.45rem 1rem;
   border-radius: 999px;
-  background: #3b82f6;
-  color: #fff;
+  background: var(--accent-blue);
+  color: var(--on-accent);
   font-size: 0.82rem;
   font-weight: 600;
   text-decoration: none;
   transition: background 0.15s;
 }
 
-.mktStandaloneNavCta:hover { background: #2563eb; }
+.mktStandaloneNavCta:hover { background: var(--accent-blue-strong); }
 
 @media (max-width: 640px) {
   .mktStandaloneNavLinks { display: none; }
@@ -7037,26 +7783,26 @@ a.mktTrustBadge:hover {
 .onboardingStepItem[data-step-status="complete"] .stepCircle {
   background: rgba(34, 197, 94, 0.15);
   border-color: rgba(34, 197, 94, 0.5);
-  color: #4ade80;
+  color: var(--success-fg);
 }
 
 .onboardingStepItem[data-step-status="current"] .stepCircle {
   background: rgba(59, 130, 246, 0.18);
   border-color: rgba(59, 130, 246, 0.6);
-  color: #93c5fd;
+  color: var(--info-fg);
   box-shadow: 0 0 12px rgba(59, 130, 246, 0.25);
 }
 
 .onboardingStepItem[data-step-status="upcoming"] .stepCircle {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.12);
-  color: #5a6478;
+  background: var(--overlay-03);
+  border-color: var(--overlay-10);
+  color: var(--text-muted);
 }
 
 /* === SIGN UP SAAS REDESIGN === */
 .suPage {
   min-height: 100vh;
-  background: #070b14;
+  background: var(--bg-base);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -7145,14 +7891,14 @@ a.mktTrustBadge:hover {
   font-size: 1.1rem;
   font-weight: 800;
   letter-spacing: 0.12em;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .suLogoSub {
   font-size: 0.68rem;
   font-weight: 600;
   letter-spacing: 0.2em;
-  color: #3b82f6;
+  color: var(--accent-blue);
   margin-top: 0.18rem;
 }
 
@@ -7164,7 +7910,7 @@ a.mktTrustBadge:hover {
   border-radius: 999px;
   border: 1px solid rgba(59, 130, 246, 0.38);
   background: rgba(59, 130, 246, 0.1);
-  color: #93c5fd;
+  color: var(--info-fg);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -7176,13 +7922,13 @@ a.mktTrustBadge:hover {
   font-size: clamp(1.8rem, 3vw, 2.6rem);
   font-weight: 800;
   line-height: 1.16;
-  color: #f0f6fc;
+  color: var(--text-primary);
   margin: 0 0 1.25rem;
   letter-spacing: -0.025em;
 }
 
 .suHeadlineAccent {
-  background: linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd);
+  background: linear-gradient(90deg, var(--accent-blue), var(--text-accent), var(--info-fg));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -7191,7 +7937,7 @@ a.mktTrustBadge:hover {
 .suLede {
   font-size: 0.95rem;
   line-height: 1.65;
-  color: #8b949e;
+  color: var(--text-secondary);
   margin: 0 0 2.25rem;
   max-width: 42ch;
 }
@@ -7207,8 +7953,8 @@ a.mktTrustBadge:hover {
   align-items: flex-start;
   padding: 0.9rem 1rem;
   border-radius: 12px;
-  background: rgba(14, 22, 37, 0.65);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-04);
   transition: border-color 0.15s;
 }
 
@@ -7225,7 +7971,7 @@ a.mktTrustBadge:hover {
   border-radius: 9px;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.2);
-  color: #93c5fd;
+  color: var(--info-fg);
   flex-shrink: 0;
 }
 
@@ -7233,25 +7979,25 @@ a.mktTrustBadge:hover {
   margin: 0 0 0.2rem;
   font-size: 0.88rem;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text-primary);
 }
 
 .suFeatureCardDesc {
   margin: 0;
   font-size: 0.8rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
 .suTrustSection {
   margin-top: 2.25rem;
   padding-top: 1.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
 }
 
 .suTrustLine {
   font-size: 0.82rem;
-  color: #5a6478;
+  color: var(--text-muted);
   margin: 0 0 1rem;
 }
 
@@ -7265,7 +8011,7 @@ a.mktTrustBadge:hover {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #3d4d5f;
+  color: var(--border-strong);
   text-transform: uppercase;
 }
 
@@ -7276,11 +8022,11 @@ a.mktTrustBadge:hover {
 }
 
 .suCard {
-  background: rgba(14, 22, 37, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-06);
   border-radius: 20px;
   padding: 2.5rem;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(59, 130, 246, 0.06);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
@@ -7289,14 +8035,14 @@ a.mktTrustBadge:hover {
   margin: 0 0 0.4rem;
   font-size: 1.45rem;
   font-weight: 700;
-  color: #f0f6fc;
+  color: var(--text-primary);
   letter-spacing: -0.02em;
 }
 
 .suCardSubtitle {
   margin: 0 0 1.75rem;
   font-size: 0.9rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -7310,7 +8056,7 @@ a.mktTrustBadge:hover {
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #8b949e;
+  color: var(--text-secondary);
 }
 
 .suInputWrap {
@@ -7322,7 +8068,7 @@ a.mktTrustBadge:hover {
 .suInputIcon {
   position: absolute;
   left: 0.9rem;
-  color: #5a6478;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   pointer-events: none;
@@ -7332,17 +8078,17 @@ a.mktTrustBadge:hover {
 .suInput {
   width: 100%;
   padding: 0.72rem 0.9rem;
-  background: #0d1422;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--bg-surface);
+  border: 1px solid var(--overlay-06);
   border-radius: 10px;
-  color: #e6edf3;
+  color: var(--text-primary);
   font: inherit;
   font-size: 0.925rem;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .suInput::placeholder {
-  color: #3d4d5f;
+  color: var(--border-strong);
 }
 
 .suInput:focus {
@@ -7363,8 +8109,8 @@ a.mktTrustBadge:hover {
    address. Styled as locked so the page does not look like it is inviting an
    edit that the backend would refuse anyway. */
 .suInputLocked {
-  background: #0a0f1a;
-  color: #9aa8bb;
+  background: var(--bg-inset);
+  color: var(--text-secondary);
   cursor: not-allowed;
 }
 
@@ -7376,7 +8122,7 @@ a.mktTrustBadge:hover {
   justify-content: center;
   background: none;
   border: none;
-  color: #5a6478;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0.25rem;
   border-radius: 4px;
@@ -7384,13 +8130,13 @@ a.mktTrustBadge:hover {
 }
 
 .suPasswordToggle:hover {
-  color: #93c5fd;
+  color: var(--info-fg);
 }
 
 .suInputHint {
   margin: 0.4rem 0 0;
   font-size: 0.78rem;
-  color: #5a6478;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
@@ -7405,13 +8151,13 @@ a.mktTrustBadge:hover {
 .suAlertError {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.28);
-  color: #fca5a5;
+  color: var(--danger-fg);
 }
 
 .suAlertWarn {
   background: rgba(251, 191, 36, 0.1);
   border: 1px solid rgba(251, 191, 36, 0.28);
-  color: #fde68a;
+  color: var(--warning-fg);
 }
 
 .suSubmitBtn {
@@ -7424,7 +8170,7 @@ a.mktTrustBadge:hover {
   border-radius: 10px;
   border: none;
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  color: #fff;
+  color: var(--on-accent);
   font: inherit;
   font-size: 0.975rem;
   font-weight: 600;
@@ -7455,14 +8201,14 @@ a.mktTrustBadge:hover {
 .suDividerLine {
   flex: 1;
   height: 1px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-06);
 }
 
 .suDividerText {
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: #5a6478;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -7480,9 +8226,9 @@ a.mktTrustBadge:hover {
   gap: 0.5rem;
   padding: 0.65rem 0.75rem;
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
-  color: #8b949e;
+  border: 1px solid var(--overlay-06);
+  background: var(--overlay-02);
+  color: var(--text-secondary);
   font: inherit;
   font-size: 0.82rem;
   font-weight: 500;
@@ -7494,19 +8240,19 @@ a.mktTrustBadge:hover {
 .suAccountRow {
   margin: 0 0 1.1rem;
   font-size: 0.875rem;
-  color: #8b949e;
+  color: var(--text-secondary);
   text-align: center;
 }
 
 .suLink {
-  color: #3b82f6;
+  color: var(--accent-blue);
   text-decoration: none;
   font-weight: 500;
   transition: color 0.15s;
 }
 
 .suLink:hover {
-  color: #60a5fa;
+  color: var(--text-accent);
   text-decoration: underline;
 }
 
@@ -7517,7 +8263,7 @@ a.mktTrustBadge:hover {
   gap: 0.4rem;
   margin: 0;
   font-size: 0.78rem;
-  color: #5a6478;
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -7723,10 +8469,10 @@ a.mktTrustBadge:hover {
   margin-top: 0.1rem;
 }
 .shActionCalloutIcon-warning {
-  color: #fbbf24;
+  color: var(--warning-fg);
 }
 .shActionCalloutIcon-danger {
-  color: #f87171;
+  color: var(--danger-fg);
 }
 .shActionCalloutTitle {
   display: block;
@@ -7735,10 +8481,10 @@ a.mktTrustBadge:hover {
   margin-bottom: 0.2rem;
 }
 .shActionCalloutTitle-warning {
-  color: #ffd280;
+  color: var(--warning-fg);
 }
 .shActionCalloutTitle-danger {
-  color: #ffb3b3;
+  color: var(--danger-fg);
 }
 .shActionCalloutBody {
   margin: 0;
@@ -7746,16 +8492,16 @@ a.mktTrustBadge:hover {
   line-height: 1.5;
 }
 .shActionCalloutBody-warning {
-  color: #ffd280;
+  color: var(--warning-fg);
 }
 .shActionCalloutBody-danger {
-  color: #ffb3b3;
+  color: var(--danger-fg);
 }
 .shContradictionList {
   margin: 0.3rem 0 0;
   padding-left: 1.15rem;
   font-size: 0.85rem;
-  color: #ffb3b3;
+  color: var(--danger-fg);
   line-height: 1.55;
 }
 
@@ -7801,7 +8547,7 @@ a.mktTrustBadge:hover {
 .shSummaryAction {
   margin: 0;
   font-size: 0.78rem;
-  color: #ffd280;
+  color: var(--warning-fg);
   padding: 0.3rem 0.6rem;
   background: rgba(251, 191, 36, 0.08);
   border-radius: 0.35rem;
@@ -7830,7 +8576,7 @@ a.mktTrustBadge:hover {
 }
 .shOpsAction {
   font-size: 0.8rem;
-  color: #ffd280;
+  color: var(--warning-fg);
   font-weight: 600;
 }
 
@@ -7841,8 +8587,8 @@ a.mktTrustBadge:hover {
 .shDiagnosisCard {
   padding: 1.15rem 1.25rem;
   border-radius: 0.85rem;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid var(--overlay-06);
+  background: var(--scrim);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -7880,7 +8626,7 @@ a.mktTrustBadge:hover {
   color: var(--text-secondary);
 }
 .shDiagnosisDetails {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--overlay-04);
   padding-top: 0.6rem;
 }
 
@@ -7894,7 +8640,7 @@ a.mktTrustBadge:hover {
   align-items: baseline;
   justify-content: space-between;
   padding: 0.55rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--overlay-03);
   gap: 1rem;
 }
 .shMetricRow:last-child {
@@ -7922,7 +8668,7 @@ a.mktTrustBadge:hover {
   display: flex;
   gap: 1rem;
   padding: 0.85rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--overlay-03);
 }
 .shTimelineItem:last-child {
   border-bottom: none;
@@ -8015,8 +8761,8 @@ a.mktTrustBadge:hover {
 .shProviderCard {
   padding: 1rem 1.15rem;
   border-radius: 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--overlay-04);
+  background: var(--overlay-01);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -8054,7 +8800,7 @@ a.mktTrustBadge:hover {
 .shProviderAction {
   margin: 0;
   font-size: 0.8rem;
-  color: #ffd280;
+  color: var(--warning-fg);
 }
 
 /* Reliability snapshot */
@@ -8067,8 +8813,8 @@ a.mktTrustBadge:hover {
 .shReliabilityCard {
   padding: 0.85rem 1rem;
   border-radius: 0.7rem;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.015);
+  border: 1px solid var(--overlay-04);
+  background: var(--overlay-01);
 }
 .shReliabilityLabel {
   margin: 0 0 0.4rem;
@@ -8187,7 +8933,7 @@ a.mktTrustBadge:hover {
 .onbField em.req { color: var(--danger-fg); font-style: normal; font-size: 0.7rem; margin-left: 0.35rem; }
 .onbField em.hint { color: var(--text-muted); font-style: normal; font-size: 0.72rem; margin-left: 0.35rem; }
 .onbField input, .onbField select, .onbField textarea {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-02);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
@@ -8215,7 +8961,7 @@ a.mktTrustBadge:hover {
   width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; z-index: 1;
   display: flex; align-items: center; justify-content: center;
   font-size: 0.7rem; font-weight: 700;
-  background: rgba(255, 255, 255, 0.05); border: 2px solid rgba(255, 255, 255, 0.16); color: var(--text-muted);
+  background: var(--overlay-03); border: 2px solid var(--overlay-10); color: var(--text-muted);
 }
 .onbDot-completed { background: var(--success-bg); border-color: var(--success-fg); color: var(--success-fg); }
 .onbDot-failed { background: var(--danger-bg); border-color: var(--danger-fg); color: var(--danger-fg); }
@@ -8234,7 +8980,7 @@ a.mktTrustBadge:hover {
 .onbStepMeta { display: flex; gap: 0.9rem; margin-top: 0.35rem; font-size: 0.72rem; color: var(--text-muted); flex-wrap: wrap; }
 .onbLinkBtn { background: none; border: none; color: var(--text-accent); cursor: pointer; font-size: 0.72rem; padding: 0; }
 .onbEvidence {
-  margin-top: 0.5rem; background: rgba(0,0,0,0.28); border: 1px solid var(--border);
+  margin-top: 0.5rem; background: var(--bg-inset); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; font-size: 0.74rem;
   color: var(--text-secondary); overflow-x: auto; max-height: 240px; white-space: pre;
 }
@@ -8243,7 +8989,7 @@ a.mktTrustBadge:hover {
 .onbSummaryGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; }
 .onbSummaryCell {
   display: flex; flex-direction: column; gap: 0.3rem; padding: 0.7rem 0.8rem;
-  background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--overlay-01); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .onbSummaryLabel { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .onbSummaryValue { font-size: 0.92rem; font-weight: 600; color: var(--text-primary); word-break: break-word; }
@@ -8261,7 +9007,7 @@ a.mktTrustBadge:hover {
 .onbApprovalGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .onbProposalStat {
   display: flex; flex-direction: column; gap: 0.25rem; padding: 0.65rem 0.8rem;
-  background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--overlay-01); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .onbProposalValue { font-size: 1.05rem; font-weight: 650; color: var(--text-primary); word-break: break-word; }
 .onbTwoCol { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; margin-bottom: 1rem; }
@@ -8289,17 +9035,17 @@ a.mktTrustBadge:hover {
 .onbAgentRow { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; font-size: 0.82rem; }
 .onbAgentRow span { color: var(--text-muted); }
 .onbAgentRow strong { color: var(--text-primary); font-weight: 600; text-align: right; word-break: break-word; }
-.onbProgressBar { height: 6px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; margin-bottom: 1rem; }
+.onbProgressBar { height: 6px; border-radius: 999px; background: var(--overlay-04); overflow: hidden; margin-bottom: 1rem; }
 .onbProgressBar span { display: block; height: 100%; background: var(--accent-blue); transition: width 0.4s ease; }
 .onbAgentActions { display: flex; flex-direction: column; gap: 0.55rem; margin-bottom: 1rem; }
 .onbAgentActions .btn { width: 100%; justify-content: center; }
 .onbAsk { display: flex; flex-direction: column; gap: 0.4rem; border-top: 1px solid var(--border); padding-top: 0.85rem; }
 .onbAsk input {
-  background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--overlay-02); border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-primary); padding: 0.5rem 0.65rem; font-size: 0.84rem; font-family: inherit;
 }
 .onbAsk input:focus { outline: none; border-color: var(--border-hover); }
-.onbAskAnswer { margin: 0; font-size: 0.8rem; color: var(--text-secondary); background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.55rem 0.7rem; }
+.onbAskAnswer { margin: 0; font-size: 0.8rem; color: var(--text-secondary); background: var(--overlay-01); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.55rem 0.7rem; }
 .onbAskHint { margin: 0; font-size: 0.74rem; color: var(--text-muted); }
 
 /* Notices + skeleton */
@@ -8310,7 +9056,7 @@ a.mktTrustBadge:hover {
 .onbErrorCode, .onbErrorRef { font-size: 0.72rem; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .onbErrorActions { margin-top: 0.15rem; gap: 0.6rem; }
 .onbSkeleton { padding: 1.25rem 1.4rem; display: flex; flex-direction: column; gap: 0.6rem; }
-.skeletonRow { height: 14px; border-radius: 6px; background: linear-gradient(90deg, rgba(255,255,255,0.05), rgba(255,255,255,0.1), rgba(255,255,255,0.05)); background-size: 200% 100%; animation: onbShimmer 1.4s ease-in-out infinite; }
+.skeletonRow { height: 14px; border-radius: 6px; background: linear-gradient(90deg, var(--overlay-03), var(--overlay-06), var(--overlay-03)); background-size: 200% 100%; animation: onbShimmer 1.4s ease-in-out infinite; }
 .skeletonRow:nth-child(2) { width: 80%; }
 .skeletonRow:nth-child(3) { width: 60%; }
 @keyframes onbShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
@@ -8368,7 +9114,7 @@ a.mktTrustBadge:hover {
 .assessorRunBtn { width: 100%; margin-top: 0.6rem; }
 .assessorRunBtn:disabled { opacity: 0.55; cursor: not-allowed; }
 .assessorWorkerNote { color: var(--text-muted); font-style: italic; }
-.assessorWorkerError { color: var(--danger-fg, #f87171); }
+.assessorWorkerError { color: var(--danger-fg, var(--danger-fg)); }
 .reserveCoverageRow { display: flex; gap: 1rem; align-items: center; }
 .reserveRing { position: relative; width: 96px; height: 96px; flex: 0 0 auto; }
 .reserveRingLabel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.15rem; color: var(--text-primary); }
@@ -8396,8 +9142,8 @@ a.mktTrustBadge:hover {
 .riskBadge-low { color: var(--success-fg); background: var(--success-bg); border-color: var(--success-bdr); }
 .riskBadge-medium { color: var(--warning-fg); background: var(--warning-bg); border-color: var(--warning-bdr); }
 .riskBadge-high { color: var(--danger-fg); background: var(--danger-bg); border-color: var(--danger-bdr); }
-.riskBadge-critical { color: #fff; background: rgba(239, 68, 68, 0.85); border-color: var(--danger-bdr); }
-.riskBadge-unassessed { color: var(--text-muted); background: rgba(255,255,255,0.03); border-color: var(--border); }
+.riskBadge-critical { color: var(--on-accent); background: rgba(239, 68, 68, 0.85); border-color: var(--danger-bdr); }
+.riskBadge-unassessed { color: var(--text-muted); background: var(--overlay-02); border-color: var(--border); }
 
 /* Clickable table rows */
 .assetRow { cursor: pointer; transition: background 120ms ease; }
@@ -8407,19 +9153,19 @@ a.mktTrustBadge:hover {
 .assetsPagination .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* Skeletons */
-.skelBlock { border-radius: 8px; background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 37%, rgba(255,255,255,0.04) 63%); background-size: 400% 100%; animation: skelShimmer 1.4s ease infinite; }
+.skelBlock { border-radius: 8px; background: linear-gradient(90deg, var(--overlay-03) 25%, var(--overlay-06) 37%, var(--overlay-03) 63%); background-size: 400% 100%; animation: skelShimmer 1.4s ease infinite; }
 @keyframes skelShimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 
 /* Modal */
 .modalOverlay {
   position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center;
-  padding: 4vh 1rem; background: rgba(3, 6, 12, 0.72); backdrop-filter: blur(2px); overflow-y: auto;
+  padding: 4vh 1rem; background: var(--scrim); backdrop-filter: blur(2px); overflow-y: auto;
 }
-.modalCard { width: 100%; max-width: 640px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+.modalCard { width: 100%; max-width: 640px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; box-shadow: var(--shadow-lg); }
 
 /* Details drawer */
-.drawerOverlay { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: rgba(3, 6, 12, 0.6); }
-.drawerCard { width: min(480px, 100%); height: 100%; overflow-y: auto; background: var(--bg-surface); border-left: 1px solid var(--border); padding: 1.5rem; box-shadow: -20px 0 60px rgba(0,0,0,0.5); }
+.drawerOverlay { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; background: var(--scrim); }
+.drawerCard { width: min(480px, 100%); height: 100%; overflow-y: auto; background: var(--bg-surface); border-left: 1px solid var(--border); padding: 1.5rem; box-shadow: var(--shadow-lg); }
 .drawerMetaGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem 1rem; margin: 1rem 0; padding: 0.9rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .drawerMetaGrid > div { display: flex; flex-direction: column; gap: 0.2rem; }
 .drawerMetaLabel { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
@@ -8520,7 +9266,7 @@ a.mktTrustBadge:hover {
   padding: 0.85rem 1rem;
   border-radius: 0.85rem;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.4);
+  background: var(--scrim);
 }
 .shRelAgentHeadline { margin: 0; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); }
 .shRelAgentSub { margin: 0.15rem 0 0; font-size: 0.78rem; color: var(--text-muted); }
@@ -8597,7 +9343,7 @@ a.mktTrustBadge:hover {
   padding: 0.75rem 0.85rem;
   border-radius: 0.7rem;
   border: 1px solid var(--border);
-  background: rgba(15, 23, 42, 0.4);
+  background: var(--scrim);
 }
 .shRelStripLabel { margin: 0 0 0.3rem; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; }
 .shRelStripValue { margin: 0; font-size: 0.95rem; font-weight: 700; color: var(--text-primary); line-height: 1.35; }
@@ -8607,7 +9353,7 @@ a.mktTrustBadge:hover {
 .shRelModalOverlay {
   position: fixed;
   inset: 0;
-  background: rgba(2, 6, 23, 0.66);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8618,11 +9364,11 @@ a.mktTrustBadge:hover {
   width: min(760px, 100%);
   max-height: 84vh;
   overflow-y: auto;
-  background: var(--surface, #0f172a);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 0.9rem;
   padding: 1.25rem 1.4rem;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
 }
 .shRelModalHeader { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.75rem; }
 .shRelModalHeader h3 { margin: 0; font-size: 1.1rem; color: var(--text-primary); }
@@ -8656,7 +9402,7 @@ a.mktTrustBadge:hover {
 }
 
 .integrityCard {
-  background: var(--surface-subtle, rgba(255, 255, 255, 0.02));
+  background: var(--surface-subtle, var(--overlay-01));
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 0.9rem 1rem;
@@ -8724,7 +9470,7 @@ a.mktTrustBadge:hover {
 .integrityResultOk       { border-color: var(--success-bdr); background: var(--success-bg); }
 /* NOT_APPLICABLE. Deliberately colourless: nothing is wrong, nothing is missing,
    and nothing is healthy — amber would invent a gap for the operator to chase. */
-.integrityResultNeutral  { border-color: var(--border); background: var(--surface-subtle, rgba(255, 255, 255, 0.02)); }
+.integrityResultNeutral  { border-color: var(--border); background: var(--surface-subtle, var(--overlay-01)); }
 
 .integrityResultGrid {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -9394,8 +10140,8 @@ a.mktTrustBadge:hover {
   padding: 0.9rem 1rem 1rem;
   border-radius: var(--radius-md, 10px);
   border: 1px solid var(--border);
-  background: var(--surface, #10141b);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
   text-align: left;
 }
 
@@ -9493,14 +10239,14 @@ a.mktTrustBadge:hover {
   grid-column: 1 / -1;
   height: 3px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-06);
   overflow: hidden;
 }
 
 .planUsageMeterFill {
   display: block;
   height: 100%;
-  background: #58a6ff;
+  background: var(--text-accent);
 }
 
 .planFeedbackTrigger {
@@ -9508,7 +10254,7 @@ a.mktTrustBadge:hover {
   background: none;
   border: none;
   padding: 0;
-  color: #8cc8ff;
+  color: var(--text-accent);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -9529,8 +10275,8 @@ a.mktTrustBadge:hover {
   width: 100%;
   padding: 0.4rem 0.5rem;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
   color: var(--text-primary);
   font-size: 0.8rem;
   font-family: inherit;
@@ -9614,7 +10360,7 @@ a.mktTrustBadge:hover {
 }
 
 .pilotFeedbackTitle:focus-visible {
-  outline: 2px solid var(--focus-ring, #58a6ff);
+  outline: 2px solid var(--focus-ring, var(--text-accent));
   outline-offset: 3px;
 }
 
@@ -9820,31 +10566,31 @@ a.mktTrustBadge:hover {
   align-items: flex-start;
   justify-content: center;
   padding: 6.5rem 1.25rem 4rem;
-  background: var(--bg, #070b14);
+  background: var(--bg, var(--bg-base));
 }
 
 .pilotRequestCard {
   width: 100%;
   max-width: 34rem;
-  background: rgba(15, 23, 42, 0.62);
+  background: var(--bg-surface);
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 14px;
   padding: 2rem 1.9rem;
-  box-shadow: 0 20px 50px rgba(2, 6, 23, 0.45);
+  box-shadow: var(--shadow-md);
 }
 
 .pilotRequestTitle {
   font-size: 1.5rem;
   line-height: 1.25;
   margin: 0.4rem 0 0.6rem;
-  color: var(--fg, #e2e8f0);
+  color: var(--text-primary);
 }
 
 .pilotRequestLede {
   margin: 0 0 1.4rem;
   font-size: 0.9rem;
   line-height: 1.55;
-  color: rgba(226, 232, 240, 0.72);
+  color: var(--text-secondary);
 }
 
 .pilotRequestTextarea {
@@ -9867,13 +10613,13 @@ a.mktTrustBadge:hover {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.85);
+  color: var(--text-muted);
 }
 
 .pilotRequestSuggestion {
   border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(30, 41, 59, 0.55);
-  color: rgba(226, 232, 240, 0.9);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
   border-radius: 999px;
   padding: 0.2rem 0.6rem;
   font-size: 0.74rem;
@@ -9882,7 +10628,7 @@ a.mktTrustBadge:hover {
 
 .pilotRequestSuggestion:hover {
   border-color: rgba(59, 130, 246, 0.5);
-  color: #fff;
+  color: var(--text-primary);
 }
 
 /* The "no secrets" instruction. Rendered as a persistent rule, not a transient
@@ -9892,14 +10638,14 @@ a.mktTrustBadge:hover {
   margin: 0.6rem 0 0;
   font-size: 0.76rem;
   line-height: 1.45;
-  color: rgba(251, 191, 36, 0.92);
+  color: var(--warning-fg);
 }
 
 .pilotRequestOptional {
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
-  color: rgba(148, 163, 184, 0.8);
+  color: var(--text-muted);
 }
 
 .pilotRequestAlert {
@@ -9907,8 +10653,8 @@ a.mktTrustBadge:hover {
   padding: 0.7rem 0.85rem;
   border-radius: 10px;
   border: 1px solid rgba(248, 113, 113, 0.35);
-  background: rgba(127, 29, 29, 0.28);
-  color: #fecaca;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
   font-size: 0.83rem;
   line-height: 1.5;
 }
@@ -9917,14 +10663,14 @@ a.mktTrustBadge:hover {
   margin: 1.1rem 0 0;
   font-size: 0.8rem;
   line-height: 1.5;
-  color: rgba(148, 163, 184, 0.85);
+  color: var(--text-muted);
 }
 
 .pilotRequestSecondary {
   display: inline-block;
   margin-top: 0.8rem;
   font-size: 0.83rem;
-  color: rgba(96, 165, 250, 0.95);
+  color: var(--text-accent);
 }
 
 .pilotRequestDetails {
@@ -9937,12 +10683,12 @@ a.mktTrustBadge:hover {
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.85);
+  color: var(--text-muted);
 }
 
 .pilotRequestDetails dd {
   margin: 0.15rem 0 0;
   font-size: 0.9rem;
-  color: var(--fg, #e2e8f0);
+  color: var(--text-primary);
   word-break: break-word;
 }

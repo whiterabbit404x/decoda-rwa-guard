@@ -15,9 +15,26 @@ function read(rel: string): string {
   return fs.readFileSync(path.join(appDir, rel), 'utf-8');
 }
 
+/**
+ * The APP_NAV_ITEMS array only.
+ *
+ * product-nav.ts also declares APP_NAV_GROUPS (presentation-only sidebar
+ * headings). Scanning the whole file for `label:` would mix group headings
+ * into the route list, so the canonical list is isolated first — the order
+ * assertions below stay about ROUTES, which is what they are guarding.
+ */
+function navItemsBlock(): string {
+  const src = read('product-nav.ts');
+  const start = src.indexOf('export const APP_NAV_ITEMS');
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = src.indexOf('] as const;', start);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
 // ── Sidebar order ────────────────────────────────────────────────
 test('sidebar nav order matches exact spec', () => {
-  const src = read('product-nav.ts');
+  const src = navItemsBlock();
 
   const labelMatches = [...src.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
   expect(labelMatches).toEqual([
@@ -37,7 +54,7 @@ test('sidebar nav order matches exact spec', () => {
 });
 
 test('sidebar nav hrefs match spec', () => {
-  const src = read('product-nav.ts');
+  const src = navItemsBlock();
 
   const hrefMatches = [...src.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1]);
   expect(hrefMatches).toEqual([

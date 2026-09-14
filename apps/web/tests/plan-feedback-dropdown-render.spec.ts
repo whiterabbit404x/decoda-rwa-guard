@@ -130,26 +130,80 @@ function over(colour: string, backdrop: number[]): number[] {
   return [0, 1, 2].map((i) => alpha * parts[i] + (1 - alpha) * backdrop[i]);
 }
 
-test.describe('the Feedback type dropdown is readable in dark mode', () => {
+/**
+ * Force a theme on the harness document the way the product does: by stamping
+ * <html data-theme>. The stylesheet re-points its semantic tokens off that one
+ * attribute, so this exercises exactly the path a real analyst's preference
+ * takes — no test-only styling is injected.
+ */
+async function applyTheme(page: Page, theme: 'light' | 'dark') {
+  await page.evaluate((value) => {
+    document.documentElement.setAttribute('data-theme', value);
+  }, theme);
+}
+
+test.describe('the Feedback type dropdown is readable in every theme', () => {
   test('no native select hands the option list to the OS', async ({ page }) => {
     await mountFeedbackForm(page);
     expect(await page.locator('.planFeedback select').count()).toBe(0);
     await expect(page.getByTestId('plan-feedback-type')).toHaveAttribute('role', 'combobox');
   });
 
-  test('the opened menu is an opaque dark surface, never a white popup', async ({ page }) => {
+  test('the opened menu is an opaque in-app surface in both themes', async ({ page }) => {
     await mountFeedbackForm(page);
+
+    // The original bug was an OS-drawn popup compositing a translucent
+    // control over white. What actually prevents it is OPACITY plus an
+    // in-app surface — not darkness. Now that the product ships a light
+    // theme as well, asserting "dark" would have locked in the one theme
+    // this bug is not about, so both are measured, and each is required to
+    // match the workspace it is painted in rather than fight it.
+    for (const theme of ['light', 'dark'] as const) {
+      await applyTheme(page, theme);
+      await page.getByTestId('plan-feedback-type').click();
+
+      const menu = page.getByRole('listbox');
+      await expect(menu).toBeVisible();
+
+      const background = await menu.evaluate((el) => getComputedStyle(el).backgroundColor);
+      const rgb = parseRgb(background);
+      // Opaque: an alpha channel would let the page behind bleed through.
+      expect(over(background, [255, 255, 255]), `${theme} menu opacity`).toEqual(rgb);
+
+      const lum = luminance(rgb);
+      if (theme === 'dark') {
+        expect(lum, 'dark menu luminance').toBeLessThan(0.05);
+      } else {
+        expect(lum, 'light menu luminance').toBeGreaterThan(0.7);
+      }
+
+      await page.keyboard.press('Escape');
+    }
+  });
+
+  test('every option label clears WCAG AA in the light theme too', async ({ page }) => {
+    await mountFeedbackForm(page);
+    await applyTheme(page, 'light');
     await page.getByTestId('plan-feedback-type').click();
 
     const menu = page.getByRole('listbox');
-    await expect(menu).toBeVisible();
+    const menuBg = parseRgb(await menu.evaluate((el) => getComputedStyle(el).backgroundColor));
 
-    const background = await menu.evaluate((el) => getComputedStyle(el).backgroundColor);
-    const rgb = parseRgb(background);
-    // Opaque (an alpha channel would let the page behind bleed through) …
-    expect(over(background, [255, 255, 255])).toEqual(rgb);
-    // … and dark: the Decoda popover surface, not the OS white the bug showed.
-    expect(luminance(rgb)).toBeLessThan(0.05);
+    const options = page.getByRole('option');
+    await expect(options).toHaveCount(12);
+
+    const readings = await options.evaluateAll((els) =>
+      els.map((el) => {
+        const style = getComputedStyle(el);
+        return { label: el.textContent ?? '', colour: style.color, rowBg: style.backgroundColor };
+      }),
+    );
+
+    for (const { label, colour, rowBg } of readings) {
+      const painted = over(rowBg, menuBg);
+      const ratio = contrast(colour, `rgb(${painted.join(',')})`);
+      expect(ratio, `${label.trim()} light contrast`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   test('every option label clears WCAG AA against the menu it is painted on', async ({ page }) => {
