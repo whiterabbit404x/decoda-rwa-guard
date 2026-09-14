@@ -32,6 +32,37 @@ function componentFiles(): { name: string; source: string }[] {
 const css = () => read(HOME_DIR, 'home.module.css');
 
 /**
+ * The brace-balanced body of the block whose header matches `header`.
+ *
+ * `\{[^}]*(\{[^}]*\}[^}]*)*\}` looks like it reads a nested block and does
+ * not: `[^}]` admits `{`, so the first `}` in the source ends the match and a
+ * six-step @keyframes comes back as its first step. Counting braces is the
+ * only way to assert anything about a whole keyframe set.
+ */
+function blockBody(source: string, header: RegExp): string {
+  const match = header.exec(source);
+  if (!match) return '';
+  const open = source.indexOf('{', match.index);
+  if (open === -1) return '';
+  let depth = 1;
+  let end = open + 1;
+  while (end < source.length && depth > 0) {
+    if (source[end] === '{') depth += 1;
+    else if (source[end] === '}') depth -= 1;
+    end += 1;
+  }
+  return source.slice(open + 1, end - 1);
+}
+
+/** Every @keyframes body in the stylesheet, whole. */
+function keyframeBodies(source: string): { name: string; body: string }[] {
+  return [...source.matchAll(/@keyframes\s+([\w-]+)/g)].map((match) => ({
+    name: match[1],
+    body: blockBody(source, new RegExp(`@keyframes\\s+${match[1]}\\b`)),
+  }));
+}
+
+/**
  * Style rules from a stylesheet, comments stripped, @keyframes dropped and
  * @media recursed into. Brace-balanced, so a one-line keyframe block cannot
  * leak its percentage steps in as if they were selectors.
@@ -124,29 +155,58 @@ test.describe('animation budget', () => {
 
   test('the workflow loop runs a slow, enterprise-paced cycle', () => {
     const source = css();
-    // ~7.4s sequence plus a settled hold, then a soft reset.
-    expect(source).toContain('animation: wfStage1 10s linear infinite');
-    expect(source).toContain('animation: wfRailAdvance 10s linear infinite');
+    // Six stages ~1s apart, a ~1.8s settled hold on the proven end state,
+    // then a soft reset — 8.4s end to end.
+    expect(source).toContain('animation: wfStage1 8.4s linear infinite');
+    expect(source).toContain('animation: wfRailAdvance 8.4s linear infinite');
+    expect(source).toContain('animation: wfGlow1 8.4s linear infinite');
+  });
+
+  test('the workflow loop has three readable states, so exactly one step is current', () => {
+    const source = css();
+    // The bug this pins: a row used to go to full opacity and STAY there, so
+    // after the first pass nothing on the panel was moving and the hero read
+    // as a static list. Each stage must fall back to a "completed" level when
+    // the next one takes over.
+    for (let stage = 1; stage <= 6; stage += 1) {
+      const block = blockBody(source, new RegExp(`@keyframes wfStage${stage}\\b`));
+      expect(block, `wfStage${stage} must exist`).not.toBe('');
+      const levels = [...block.matchAll(/opacity:\s*([\d.]+)/g)].map((m) => Number(m[1]));
+      expect(new Set(levels).size, `wfStage${stage} needs inactive/active/completed`)
+        .toBeGreaterThanOrEqual(stage === 6 ? 2 : 3);
+      expect(Math.max(...levels)).toBe(1);
+      expect(Math.min(...levels)).toBeLessThan(0.5);
+    }
+    // The completed level sits between inactive and active on every stage.
+    expect(source).toContain('opacity: 0.7;');
+    expect(source).toContain('opacity: 0.34;');
   });
 
   test('no animation or transition on the page touches a layout property', () => {
     const source = css();
-    const keyframeBlocks = source.match(/@keyframes\s+[\w-]+\s*\{[^}]*(\{[^}]*\}[^}]*)*\}/g) ?? [];
+    const keyframeBlocks = keyframeBodies(source);
     expect(keyframeBlocks.length).toBeGreaterThan(0);
-    for (const block of keyframeBlocks) {
+    for (const { name, body } of keyframeBlocks) {
+      expect(body, `@keyframes ${name} came back empty`).not.toBe('');
       for (const banned of ['width:', 'height:', 'top:', 'left:', 'margin', 'padding']) {
-        expect(block, `keyframe animates layout property "${banned}"`).not.toContain(banned);
+        expect(body, `@keyframes ${name} animates layout property "${banned}"`).not.toContain(banned);
+      }
+      // and only the two properties the compositor can animate on its own
+      for (const property of [...body.matchAll(/([a-z-]+):/g)].map((m) => m[1])) {
+        expect(property, `@keyframes ${name} animates "${property}"`).toMatch(/^(opacity|transform)$/);
       }
     }
-    // Reveal transitions may only move opacity and transform, so an entrance
-    // can never shift the layout around it.
+    // Reveal transitions may only move opacity, transform and paint-only
+    // properties, so an entrance can never shift the layout around it.
+    // (Activating a lifecycle stage recolours its ring; that repaints, it does
+    // not reflow.)
     const revealTransitions = [...source.matchAll(/transition:\s*([^;]*var\(--ease-reveal\)[^;]*);/g)]
       .map((match) => match[1]);
     expect(revealTransitions.length).toBeGreaterThan(0);
     for (const declaration of revealTransitions) {
       for (const property of declaration.split(',')) {
-        expect(property.trim(), `reveal transitions only opacity/transform: ${declaration}`)
-          .toMatch(/^(opacity|transform)\s/);
+        expect(property.trim(), `reveal transitions may not reflow: ${declaration}`)
+          .toMatch(/^(opacity|transform|color|background-color|border-color|box-shadow)\s/);
       }
     }
   });
@@ -184,9 +244,10 @@ test.describe('reduced motion', () => {
     // The static rule set is the finished state, so switching the animation off
     // is what reveals it. The rail is drawn, and the stages carry their tone.
     expect(source).toMatch(/\.wfRailFill\s*\{[^}]*transform:\s*scaleY\(1\)/s);
-    expect(source).toMatch(/@keyframes wfRailAdvance\s*\{[^}]*0%,\s*1%\s*\{\s*transform:\s*scaleY\(0\)/s);
+    expect(blockBody(source, /@keyframes wfRailAdvance\b/))
+      .toMatch(/^\s*0%,\s*5%\s*\{\s*transform:\s*scaleY\(0\)/);
     // Each stage's keyframes start dimmed and settle at full opacity.
-    expect(source).toMatch(/@keyframes wfStage1\s*\{[^}]*opacity:\s*0\.26/s);
+    expect(source).toMatch(/@keyframes wfStage1\s*\{[^}]*opacity:\s*0\.34/s);
   });
 
   test('reduced motion restores every revealed element to visible', () => {
@@ -240,34 +301,61 @@ test.describe('scroll reveal', () => {
   test('the reveal matches the specified distance, duration and easing', () => {
     const source = css();
     expect(source).toContain('--ease-reveal: cubic-bezier(0.22, 1, 0.36, 1)');
-    expect(source).toMatch(/\.reveal\[data-reveal='out'\]:not\(\.revealParts\)\s*\{[^}]*translateY\(20px\)/s);
-    // Every reveal duration sits inside the 500–650ms budget.
+    // A whole block travels 36px; staggered children (headings, card grids)
+    // travel 32px. Under 24px the entrance is not noticeable at reading size,
+    // which is what made the previous 20px reveal read as "nothing happened".
+    expect(source).toMatch(/\.reveal\[data-reveal='out'\]:not\(\.revealParts\)\s*\{[^}]*translateY\(36px\)/s);
+    expect(source).toMatch(/\.revealStagger\[data-reveal='out'\] > \*\s*\{[^}]*translateY\(32px\)/s);
+    const distances = [...source.matchAll(/transform:\s*translateY\((\d+)px\)/g)].map((m) => Number(m[1]));
+    expect(distances.length).toBeGreaterThan(0);
+    for (const distance of distances) {
+      expect(distance, `${distance}px is too small to be noticed`).toBeGreaterThanOrEqual(24);
+      expect(distance, `${distance}px is far enough to feel like a slide`).toBeLessThanOrEqual(40);
+    }
+    // Every reveal duration sits inside the 440–750ms budget.
     const durations = [...source.matchAll(/transition:\s*opacity\s+([\d.]+)s\s+var\(--ease-reveal\)/g)]
       .map((match) => Number(match[1]) * 1000);
     expect(durations.length).toBeGreaterThan(0);
     for (const duration of durations) {
-      expect(duration, `reveal duration ${duration}ms is outside 440–650ms`).toBeGreaterThanOrEqual(440);
-      expect(duration, `reveal duration ${duration}ms is outside 440–650ms`).toBeLessThanOrEqual(650);
+      expect(duration, `reveal duration ${duration}ms is outside 440–750ms`).toBeGreaterThanOrEqual(440);
+      expect(duration, `reveal duration ${duration}ms is outside 440–750ms`).toBeLessThanOrEqual(750);
     }
   });
 
-  test('the trigger is a reading position, not the first few pixels of a tall section', () => {
+  test('the trigger is measured in screen pixels, not as a percent of the element', () => {
     const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
-    // 15–20% of the element inside a viewport shortened from the bottom.
-    expect(reveal).toContain('const REVEAL_RATIO = 0.18');
-    expect(reveal).toContain('const READING_INSET = 0.15');
+    // THE regression this file exists for. A bare percent-of-the-element
+    // threshold is the right question for a 150px heading and the wrong one
+    // for an 800px section: 18–22% of a tall block is its top sliver, so the
+    // block "arrived" while two thirds of it were still below the fold and the
+    // whole sequence finished before the reader ever saw it.
+    expect(reveal).toContain('const REVEAL_RATIO = 0.22');
+    expect(reveal).toContain('const READING_INSET = 0.12');
+    expect(reveal).toContain('const MIN_READING_PX = 150');
+    expect(reveal).toContain('const MAX_READING_SHARE = 0.42');
+    // The floor is what stops a tall block triggering on its top edge, and the
+    // cap is what stops a very tall one waiting for an impossible amount of
+    // screen. Both are in pixels, both are applied in requiredVisiblePx().
+    expect(reveal).toMatch(/Math\.max\(blockHeight \* REVEAL_RATIO, MIN_READING_PX\)/);
+    expect(reveal).toMatch(/Math\.min\(wanted, blockHeight, viewport \* MAX_READING_SHARE\)/);
     expect(reveal).toContain('rootMargin: `0px 0px -${READING_INSET * 100}% 0px`');
-    expect(reveal).toContain('threshold: [0, REVEAL_RATIO]');
   });
 
-  test('the load-time check asks the same question as the scroll trigger', () => {
+  test('the load-time check and the scroll trigger share ONE predicate', () => {
     const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
-    // Otherwise a section merely peeking below the fold on a tall screen is
-    // treated as already read and never animates.
+    // Two copies of the rule is how a section ends up staged by one and
+    // written off as already-read by the other.
+    expect(reveal).toContain('function arrived(');
+    expect((reveal.match(/function arrived\(/g) ?? []).length).toBe(1);
+    // the observer path
+    expect(reveal).toMatch(/arrived\(entry\.boundingClientRect, entry\.intersectionRect\.height\)/);
+    // the load-time path
     expect(reveal).toContain('getBoundingClientRect');
-    expect(reveal).toMatch(/visible \/ rect\.height >= REVEAL_RATIO/);
-    expect(reveal).toContain('viewport * (1 - READING_INSET)');
+    expect(reveal).toMatch(/return arrived\(rect, visibleHeight\(rect\)\)/);
     expect(reveal).toContain('if (hasArrived(el))');
+    // A threshold cannot express "150px of whatever this block is", so the
+    // thresholds must only wake the callback, never decide on their own.
+    expect(reveal).toMatch(/threshold: \[0, 0\.1, 0\.25, 0\.5, 0\.75, 1\]/);
   });
 
   test('reduced motion never opts in, so no observer work happens', () => {
@@ -354,14 +442,22 @@ test.describe('section motion', () => {
         .map((match) => Number(match[1]));
       return delays.length ? Math.max(...delays) : 0;
     };
-    // Incident lifecycle: ~1.4–2s end to end (last delay + a 0.44s step).
-    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeGreaterThanOrEqual(1400);
-    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeLessThanOrEqual(2000);
-    // Human-controlled response: ~1.5–2s across all seven steps.
-    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeGreaterThanOrEqual(1500);
-    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeLessThanOrEqual(2000);
-    // The operating layer must not keep the visitor waiting.
-    expect(longest('opStage\\[data-reveal=.in.\\]')).toBeLessThanOrEqual(1000);
+    // Incident lifecycle: 1.8–2.2s end to end (last delay + a 0.44s step).
+    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeGreaterThanOrEqual(1800);
+    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeLessThanOrEqual(2200);
+    // Human-controlled response: ~2s across all seven steps.
+    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeGreaterThanOrEqual(1800);
+    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeLessThanOrEqual(2200);
+    // The operating layer's lifecycle line: 2.0–2.5s from the first node
+    // lighting to the last, and the line has to be LINEAR — the node delays
+    // below are positions along it, so an eased draw would desynchronise them.
+    expect(source).toMatch(/\.opStage\[data-reveal='in'\] \.ribbonTrackFill \{[^}]*transition: transform 1\.9s linear 800ms/s);
+    const firstNode = 800;
+    const lastNode = longest('opStage\\[data-reveal=.in.\\] \\.ribbonStep');
+    expect(lastNode - firstNode + 300).toBeGreaterThanOrEqual(2000);
+    expect(lastNode - firstNode + 300).toBeLessThanOrEqual(2500);
+    // Same rule for the lifecycle connector, for the same reason.
+    expect(source).toMatch(/\.lcFlow\[data-reveal='in'\] \.lcTrackFill \{[^}]*transition: transform 1\.75s linear/s);
   });
 
   test('the console sequence runs once and points at real preview tiles', () => {
@@ -375,16 +471,46 @@ test.describe('section motion', () => {
     }
   });
 
-  test('the pillars stagger inside the 70–100ms band', () => {
+  test('the four pillars activate one at a time, not as one block', () => {
     const source = css();
-    const delays = [...source.matchAll(/\.opStage\[data-reveal='in'\] \.pillar:nth-child\(\d\) \{ transition-delay: (\d+)ms; \}/g)]
-      .map((match) => Number(match[1]));
-    expect(delays).toEqual([320, 400, 480]);
+    const delays = [0, ...[...source.matchAll(/\.opStage\[data-reveal='in'\] \.pillar:nth-child\(\d\) \{ transition-delay: (\d+)ms; \}/g)]
+      .map((match) => Number(match[1]))];
+    expect(delays).toEqual([0, 200, 400, 600]);
+    // An 80ms gap under a 650ms transition means all four cards are in motion
+    // together and the eye reads one fade, not a sequence. The gap has to be
+    // wide enough to be read as an order.
     for (let i = 1; i < delays.length; i += 1) {
-      const step = delays[i] - delays[i - 1];
-      expect(step).toBeGreaterThanOrEqual(70);
-      expect(step).toBeLessThanOrEqual(100);
+      expect(delays[i] - delays[i - 1], 'cards must be clearly sequential').toBeGreaterThanOrEqual(180);
     }
+  });
+
+  test('the operating layer observes its head and its sequence separately', () => {
+    const source = read(HOME_DIR, 'operating-layer-section.tsx');
+    // One observer on the whole ~800px section is what fired the choreography
+    // while the pillars and the ribbon were still below the fold.
+    expect((source.match(/<ScrollReveal/g) ?? []).length).toBe(2);
+    expect(source).toContain('styles.opHead');
+    expect(source).toContain('styles.opStage');
+    // The pillars and the ribbon stay in ONE group: the ribbon explains the
+    // cards above it, so it must draw while they are still arriving.
+    const stage = source.slice(source.indexOf('styles.opStage'));
+    expect(stage).toContain('styles.pillars');
+    expect(stage).toContain('styles.ribbon');
+  });
+
+  test('the lifecycle ribbon starts muted and ends verified', () => {
+    const source = css();
+    // "All nodes inactive" is a staged state only. The resting style — what a
+    // no-JS or reduced-motion visitor sees — is the COMPLETED lifecycle, so a
+    // finished diagram is never shown as if nothing had run.
+    expect(source).toMatch(/\.opStage\[data-reveal='out'\] \.ribbonNode \{[^}]*border-color: var\(--border-strong\)/s);
+    expect(source).toMatch(/\.opStage\[data-reveal='out'\] \.ribbonLabel \{[^}]*color: var\(--text-3\)/s);
+    expect(source).toMatch(/\.ribbonNode \{[^}]*border: 2px solid var\(--brand\)/s);
+    expect(source).toMatch(/\.ribbonStep:last-child \.ribbonNode \{[^}]*var\(--healthy\)/s);
+    // The connector itself never carries green: scaleX scales its own paint,
+    // so a gradient ending green would read "proven" at OBSERVE.
+    expect(source).toMatch(/\.ribbonTrackFill \{[\s\S]*?background: linear-gradient\(90deg, #0e7490, var\(--brand\)\);/);
+    expect(source).not.toMatch(/\.ribbonTrackFill \{[\s\S]*?background: linear-gradient\([^)]*#15803d/);
   });
 });
 

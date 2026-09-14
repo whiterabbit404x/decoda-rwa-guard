@@ -720,11 +720,35 @@
   flex: none;
 }
 
-/* ── the 10s cycle: ~7.4s sequence, ~2s settled hold, soft reset ──
-   Each stage owns one keyframe set so the activation moment is
-   explicit and auditable rather than derived from negative delays. */
+/* ── the 8.4s cycle: six stages a second apart, a settled hold, soft reset ──
+
+   This is the page's ONE looping animation, and the thing it has to make
+   obvious is that an incident is moving through the lifecycle. So each row
+   carries three readable states rather than two:
+
+     inactive   0.34   — not reached yet
+     ACTIVE     1.00   — the step happening now, plus a thin ring on its icon
+     completed  0.70   — done, still legible, clearly behind the active step
+
+   Exactly one row is ever at full strength, so the eye has something to
+   follow down the list. Before, a row went to 1 and STAYED at 1, which left
+   nothing moving for most of the loop and is why the hero read as static.
+
+     0%    step 1 active        (DETECT,      critical red)
+     12%   step 2 active        (INVESTIGATE)
+     24%   step 3 active        (EVIDENCE)
+     36%   step 4 active        (RECOMMEND,   AI blue)
+     48%   step 5 active        (POLICY,      amber)
+     60%   step 6 active        (PROVE,       verified green)
+     65–86% settled hold        (~1.8s on the proven end state)
+     86–94% fade back to rest, then a short beat before the next cycle
+
+   Each stage owns one keyframe set so the activation moment is explicit and
+   auditable rather than derived from negative delays. Tones come from the
+   static rules above, so switching the animation off lands on the finished
+   workflow with every stage carrying its own colour. */
 .wfRow {
-  animation: wfStage1 10s linear infinite;
+  animation: wfStage1 8.4s linear infinite;
 }
 .wfRow:nth-child(2) { animation-name: wfStage2; }
 .wfRow:nth-child(3) { animation-name: wfStage3; }
@@ -733,53 +757,63 @@
 .wfRow:nth-child(6) { animation-name: wfStage6; }
 
 @keyframes wfStage1 {
-  0%, 1% { opacity: 0.26; }
-  5%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0% { opacity: 0.34; }
+  5%, 12% { opacity: 1; }
+  17%, 86% { opacity: 0.7; }
+  94%, 100% { opacity: 0.34; }
 }
 @keyframes wfStage2 {
-  0%, 13% { opacity: 0.26; }
-  17%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0%, 12% { opacity: 0.34; }
+  17%, 24% { opacity: 1; }
+  29%, 86% { opacity: 0.7; }
+  94%, 100% { opacity: 0.34; }
 }
 @keyframes wfStage3 {
-  0%, 25% { opacity: 0.26; }
-  29%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0%, 24% { opacity: 0.34; }
+  29%, 36% { opacity: 1; }
+  41%, 86% { opacity: 0.7; }
+  94%, 100% { opacity: 0.34; }
 }
 @keyframes wfStage4 {
-  0%, 37% { opacity: 0.26; }
-  41%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0%, 36% { opacity: 0.34; }
+  41%, 48% { opacity: 1; }
+  53%, 86% { opacity: 0.7; }
+  94%, 100% { opacity: 0.34; }
 }
 @keyframes wfStage5 {
-  0%, 49% { opacity: 0.26; }
-  53%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0%, 48% { opacity: 0.34; }
+  53%, 60% { opacity: 1; }
+  65%, 86% { opacity: 0.7; }
+  94%, 100% { opacity: 0.34; }
 }
 @keyframes wfStage6 {
-  0%, 62% { opacity: 0.26; }
-  66%, 94% { opacity: 1; }
-  100% { opacity: 0.26; }
+  0%, 60% { opacity: 0.34; }
+  65%, 86% { opacity: 1; }
+  94%, 100% { opacity: 0.34; }
 }
 
-/* The rail advances stage by stage, transform only. */
+/* The rail dwells at the stage that just activated, then visibly draws down
+   to the next one — transform only, so the connector never reflows the list.
+   It fades out before snapping back to zero, so the reset is a settle rather
+   than a line retracting up the panel. */
 .wfRailFill {
-  animation: wfRailAdvance 10s linear infinite;
+  animation: wfRailAdvance 8.4s linear infinite;
 }
 @keyframes wfRailAdvance {
-  0%, 1% { transform: scaleY(0); }
-  5%, 13% { transform: scaleY(0.12); }
-  17%, 25% { transform: scaleY(0.3); }
-  29%, 37% { transform: scaleY(0.48); }
-  41%, 49% { transform: scaleY(0.66); }
-  53%, 62% { transform: scaleY(0.84); }
-  66%, 94% { transform: scaleY(1); }
-  100% { transform: scaleY(0); }
+  0%, 5% { transform: scaleY(0); opacity: 1; }
+  12%, 17% { transform: scaleY(0.2); opacity: 1; }
+  24%, 29% { transform: scaleY(0.4); opacity: 1; }
+  36%, 41% { transform: scaleY(0.6); opacity: 1; }
+  48%, 53% { transform: scaleY(0.8); opacity: 1; }
+  60%, 86% { transform: scaleY(1); opacity: 1; }
+  92% { transform: scaleY(1); opacity: 0; }
+  92.5% { transform: scaleY(0); opacity: 0; }
+  99%, 100% { transform: scaleY(0); opacity: 1; }
 }
 
-/* The single restrained glow the design brief allows, and only here:
-   the stage that has just arrived is briefly lit, then settles. */
+/* The single restrained emphasis the design brief allows, and only here: a
+   thin ring in the stage's own tone, lit for exactly as long as that stage is
+   the current one. It is a marker that moves, not a pulse that blinks. */
 .wfIcon::after {
   content: '';
   position: absolute;
@@ -788,19 +822,19 @@
   box-shadow: 0 0 0 3px currentColor;
   opacity: 0;
 }
-.wfRow .wfIcon::after { animation: wfGlow1 10s linear infinite; }
+.wfRow .wfIcon::after { animation: wfGlow1 8.4s linear infinite; }
 .wfRow:nth-child(2) .wfIcon::after { animation-name: wfGlow2; }
 .wfRow:nth-child(3) .wfIcon::after { animation-name: wfGlow3; }
 .wfRow:nth-child(4) .wfIcon::after { animation-name: wfGlow4; }
 .wfRow:nth-child(5) .wfIcon::after { animation-name: wfGlow5; }
 .wfRow:nth-child(6) .wfIcon::after { animation-name: wfGlow6; }
 
-@keyframes wfGlow1 { 0%, 1% { opacity: 0; } 5% { opacity: 0.16; } 12%, 100% { opacity: 0; } }
-@keyframes wfGlow2 { 0%, 13% { opacity: 0; } 17% { opacity: 0.16; } 24%, 100% { opacity: 0; } }
-@keyframes wfGlow3 { 0%, 25% { opacity: 0; } 29% { opacity: 0.16; } 36%, 100% { opacity: 0; } }
-@keyframes wfGlow4 { 0%, 37% { opacity: 0; } 41% { opacity: 0.16; } 48%, 100% { opacity: 0; } }
-@keyframes wfGlow5 { 0%, 49% { opacity: 0; } 53% { opacity: 0.16; } 60%, 100% { opacity: 0; } }
-@keyframes wfGlow6 { 0%, 62% { opacity: 0; } 66% { opacity: 0.16; } 73%, 100% { opacity: 0; } }
+@keyframes wfGlow1 { 0% { opacity: 0; } 5%, 12% { opacity: 0.3; } 17%, 100% { opacity: 0; } }
+@keyframes wfGlow2 { 0%, 12% { opacity: 0; } 17%, 24% { opacity: 0.3; } 29%, 100% { opacity: 0; } }
+@keyframes wfGlow3 { 0%, 24% { opacity: 0; } 29%, 36% { opacity: 0.3; } 41%, 100% { opacity: 0; } }
+@keyframes wfGlow4 { 0%, 36% { opacity: 0; } 41%, 48% { opacity: 0.3; } 53%, 100% { opacity: 0; } }
+@keyframes wfGlow5 { 0%, 48% { opacity: 0; } 53%, 60% { opacity: 0.3; } 65%, 100% { opacity: 0; } }
+@keyframes wfGlow6 { 0%, 60% { opacity: 0; } 65%, 86% { opacity: 0.3; } 92%, 100% { opacity: 0; } }
 
 /* ============================================================
    Scroll reveal (secondary + tertiary motion)
@@ -822,35 +856,35 @@
    ============================================================ */
 .reveal[data-reveal='out']:not(.revealParts) {
   opacity: 0;
-  transform: translateY(20px);
+  transform: translateY(36px);
 }
 .reveal[data-reveal='in']:not(.revealParts) {
   opacity: 1;
   transform: none;
-  transition: opacity 0.58s var(--ease-reveal), transform 0.58s var(--ease-reveal);
+  transition: opacity 0.68s var(--ease-reveal), transform 0.68s var(--ease-reveal);
 }
 
 /* staggered children — delays as classes, never inline styles */
 .revealStagger[data-reveal='out'] > * {
   opacity: 0;
-  transform: translateY(20px);
+  transform: translateY(32px);
 }
 .revealStagger[data-reveal='in'] > * {
   opacity: 1;
   transform: none;
-  transition: opacity 0.54s var(--ease-reveal), transform 0.54s var(--ease-reveal);
+  transition: opacity 0.65s var(--ease-reveal), transform 0.65s var(--ease-reveal);
 }
-.revealStagger[data-reveal='in'] > *:nth-child(2) { transition-delay: 90ms; }
-.revealStagger[data-reveal='in'] > *:nth-child(3) { transition-delay: 180ms; }
-.revealStagger[data-reveal='in'] > *:nth-child(4) { transition-delay: 270ms; }
-.revealStagger[data-reveal='in'] > *:nth-child(5) { transition-delay: 360ms; }
-.revealStagger[data-reveal='in'] > *:nth-child(6) { transition-delay: 450ms; }
-.revealStagger[data-reveal='in'] > *:nth-child(7) { transition-delay: 540ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(2) { transition-delay: 130ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(3) { transition-delay: 260ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(4) { transition-delay: 390ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(5) { transition-delay: 520ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(6) { transition-delay: 650ms; }
+.revealStagger[data-reveal='in'] > *:nth-child(7) { transition-delay: 780ms; }
 
-/* Section headings: eyebrow, headline, lead — 0 / 80 / 160ms. */
-.revealHead[data-reveal='in'] > *:nth-child(2) { transition-delay: 80ms; }
-.revealHead[data-reveal='in'] > *:nth-child(3) { transition-delay: 160ms; }
-.revealHead[data-reveal='in'] > *:nth-child(4) { transition-delay: 240ms; }
+/* Section headings: eyebrow, headline, lead — 0 / 100 / 220 / 320ms. */
+.revealHead[data-reveal='in'] > *:nth-child(2) { transition-delay: 100ms; }
+.revealHead[data-reveal='in'] > *:nth-child(3) { transition-delay: 220ms; }
+.revealHead[data-reveal='in'] > *:nth-child(4) { transition-delay: 320ms; }
 
 /* ============================================================
    The Decoda operating layer — four outcome pillars (light)
@@ -970,7 +1004,10 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #0e7490, var(--brand), #15803d);
+  /* No green in the connector. scaleX scales the element's own paint, so a
+     gradient ending green would show "verified" at OBSERVE while the line is
+     still short. Green belongs to the PROVE node, once it is actually reached. */
+  background: linear-gradient(90deg, #0e7490, var(--brand));
   transform: scaleX(1);
   transform-origin: left center;
 }
@@ -982,70 +1019,109 @@
   gap: 10px;
   min-width: 0;
 }
+/* Resting = the state the lifecycle ENDS in: every phase reached. That is
+   also what a no-JS and a reduced-motion visitor sees, so the diagram is
+   never read as "nothing has happened yet" when in fact nothing ran. */
 .ribbonNode {
   width: 14px;
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--brand);
-  background: var(--surface);
+  background: var(--brand);
   flex: none;
+}
+/* PROVE is the verified terminal state, so it settles green rather than blue. */
+.ribbonStep:last-child .ribbonNode {
+  border-color: var(--healthy);
+  background: var(--healthy);
 }
 .ribbonLabel {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.11em;
   text-transform: uppercase;
-  color: var(--text-2);
+  color: var(--text);
   text-align: center;
 }
 
-/* ── one-time entrance, choreographed from a single trigger ──
-   eyebrow 0 · headline 80 · description 160 · pillars 240+ · ribbon 560+ */
-.opStage[data-reveal='out'] .opEyebrow,
-.opStage[data-reveal='out'] .opTitle,
-.opStage[data-reveal='out'] .opLead,
-.opStage[data-reveal='out'] .ribbonStep {
+/* ── group 1: the section head — eyebrow 0 · headline 100 · description 220 ── */
+.opHead[data-reveal='out'] .opEyebrow,
+.opHead[data-reveal='out'] .opTitle,
+.opHead[data-reveal='out'] .opLead {
   opacity: 0;
-  transform: translateY(20px);
+  transform: translateY(32px);
 }
+.opHead[data-reveal='in'] .opEyebrow,
+.opHead[data-reveal='in'] .opTitle,
+.opHead[data-reveal='in'] .opLead {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.65s var(--ease-reveal), transform 0.65s var(--ease-reveal);
+}
+.opHead[data-reveal='in'] .opTitle { transition-delay: 100ms; }
+.opHead[data-reveal='in'] .opLead { transition-delay: 220ms; }
+
+/* ── group 2: the sequence — four pillars, then the lifecycle line ──────────
+   pillars   0 / 200 / 400 / 600ms      (650ms each, so the last lands at 1.25s)
+   ribbon    fades up at 500ms
+   the line  draws 800ms -> 2700ms, linear, LEFT TO RIGHT
+   the nodes activate as the line reaches them: 800 / 1275 / 1750 / 2225 / 2700
+             — five evenly spaced nodes, five evenly spaced moments, so the
+             activation is the line arriving rather than a separate fade.
+
+   The line sequence is therefore ~2.2s end to end, and the card order rhymes
+   with it: Discover & Observe with OBSERVE, Detect & Investigate with
+   DETECT/INVESTIGATE, Respond Under Policy with RESPOND, Govern & Prove with
+   PROVE — the same order, left to right, twice. */
 .opStage[data-reveal='out'] .pillar {
   opacity: 0;
-  transform: translateY(16px) scale(0.985);
+  transform: translateY(28px) scale(0.98);
+}
+.opStage[data-reveal='out'] .ribbon {
+  opacity: 0;
+  transform: translateY(28px);
 }
 .opStage[data-reveal='out'] .ribbonTrackFill {
   transform: scaleX(0);
 }
-.opStage[data-reveal='in'] .opEyebrow,
-.opStage[data-reveal='in'] .opTitle,
-.opStage[data-reveal='in'] .opLead,
+/* the muted, nothing-has-run-yet state of the lifecycle */
+.opStage[data-reveal='out'] .ribbonNode {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+.opStage[data-reveal='out'] .ribbonLabel {
+  color: var(--text-3);
+}
 .opStage[data-reveal='in'] .pillar,
-.opStage[data-reveal='in'] .ribbonStep {
+.opStage[data-reveal='in'] .ribbon {
   opacity: 1;
   transform: none;
-  transition: opacity 0.58s var(--ease-reveal), transform 0.58s var(--ease-reveal);
+  transition: opacity 0.65s var(--ease-reveal), transform 0.65s var(--ease-reveal);
 }
-.opStage[data-reveal='in'] .opTitle { transition-delay: 80ms; }
-.opStage[data-reveal='in'] .opLead { transition-delay: 160ms; }
-.opStage[data-reveal='in'] .pillar {
-  transition-duration: 0.5s;
-  transition-delay: 240ms;
-}
-.opStage[data-reveal='in'] .pillar:nth-child(2) { transition-delay: 320ms; }
+.opStage[data-reveal='in'] .pillar:nth-child(2) { transition-delay: 200ms; }
 .opStage[data-reveal='in'] .pillar:nth-child(3) { transition-delay: 400ms; }
-.opStage[data-reveal='in'] .pillar:nth-child(4) { transition-delay: 480ms; }
+.opStage[data-reveal='in'] .pillar:nth-child(4) { transition-delay: 600ms; }
+.opStage[data-reveal='in'] .ribbon { transition-delay: 500ms; }
+/* linear, because the node timings below are positions along this line */
 .opStage[data-reveal='in'] .ribbonTrackFill {
   transform: scaleX(1);
-  transition: transform 0.72s var(--ease-reveal) 560ms;
+  transition: transform 1.9s linear 800ms;
 }
 /* the track is the ribbon's first <li>, so the steps start at child 2 */
-.opStage[data-reveal='in'] .ribbonStep {
-  transition-duration: 0.46s;
-  transition-delay: 600ms;
+.opStage[data-reveal='in'] .ribbonNode,
+.opStage[data-reveal='in'] .ribbonLabel {
+  transition: border-color 0.3s var(--ease-reveal) 800ms,
+    background-color 0.3s var(--ease-reveal) 800ms,
+    color 0.3s var(--ease-reveal) 800ms;
 }
-.opStage[data-reveal='in'] .ribbonStep:nth-child(3) { transition-delay: 670ms; }
-.opStage[data-reveal='in'] .ribbonStep:nth-child(4) { transition-delay: 740ms; }
-.opStage[data-reveal='in'] .ribbonStep:nth-child(5) { transition-delay: 810ms; }
-.opStage[data-reveal='in'] .ribbonStep:nth-child(6) { transition-delay: 880ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(3) .ribbonNode,
+.opStage[data-reveal='in'] .ribbonStep:nth-child(3) .ribbonLabel { transition-delay: 1275ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(4) .ribbonNode,
+.opStage[data-reveal='in'] .ribbonStep:nth-child(4) .ribbonLabel { transition-delay: 1750ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(5) .ribbonNode,
+.opStage[data-reveal='in'] .ribbonStep:nth-child(5) .ribbonLabel { transition-delay: 2225ms; }
+.opStage[data-reveal='in'] .ribbonStep:nth-child(6) .ribbonNode,
+.opStage[data-reveal='in'] .ribbonStep:nth-child(6) .ribbonLabel { transition-delay: 2700ms; }
 
 /* ============================================================
    Incident lifecycle — horizontal enterprise process (light)
@@ -1073,37 +1149,57 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #0e7490, #1d4ed8, #15803d);
+  /* same reason as .ribbonTrackFill: the drawn connector never reads "proven"
+     before the Cryptographic Evidence stage has actually activated */
+  background: linear-gradient(90deg, #0e7490, #1d4ed8);
   transform: scaleX(1);
   transform-origin: left center;
 }
 /* ── one-time progression: stage activates, connector draws, next stage ──
    Telemetry -> Threat Detection -> ... -> Cryptographic Evidence, about
-   1.6s end to end, then it stays put. The track advances underneath the
-   stages for the whole run, so each connector is drawn between two
-   activations rather than sweeping ahead of them. */
+   2.2s end to end, then it stays put.
+
+   Six stages sit at 0/5 .. 5/5 along the track, so the connector is drawn
+   LINEARLY over 1.75s and each stage activates exactly as the line reaches
+   it (0 / 350 / 700 / 1050 / 1400 / 1750ms). Activating is more than a fade:
+   the ring goes from neutral grey to the stage's own tone, which is what
+   makes the progression readable rather than decorative. */
 .lcFlow[data-reveal='out'] .lcTrackFill {
   transform: scaleX(0);
 }
 .lcFlow[data-reveal='out'] .lcStageWrap {
   opacity: 0;
-  transform: translateY(16px);
+  transform: translateY(24px);
+}
+.lcFlow[data-reveal='out'] .lcStageIcon {
+  border-color: var(--border-strong);
+  color: var(--text-3);
 }
 .lcFlow[data-reveal='in'] .lcTrackFill {
   transform: scaleX(1);
-  transition: transform 1.5s var(--ease-reveal);
+  transition: transform 1.75s linear;
 }
 .lcFlow[data-reveal='in'] .lcStageWrap {
   opacity: 1;
   transform: none;
   transition: opacity 0.44s var(--ease-reveal), transform 0.44s var(--ease-reveal);
 }
+.lcFlow[data-reveal='in'] .lcStageIcon {
+  border-color: var(--tone);
+  color: var(--tone);
+  transition: border-color 0.44s var(--ease-reveal), color 0.44s var(--ease-reveal);
+}
 /* the track is the flow's first <li>, so the stages start at child 2 */
-.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(3) { transition-delay: 230ms; }
-.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(4) { transition-delay: 460ms; }
-.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(5) { transition-delay: 690ms; }
-.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(6) { transition-delay: 920ms; }
-.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(7) { transition-delay: 1150ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(3),
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(3) .lcStageIcon { transition-delay: 350ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(4),
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(4) .lcStageIcon { transition-delay: 700ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(5),
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(5) .lcStageIcon { transition-delay: 1050ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(6),
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(6) .lcStageIcon { transition-delay: 1400ms; }
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(7),
+.lcFlow[data-reveal='in'] .lcStageWrap:nth-child(7) .lcStageIcon { transition-delay: 1750ms; }
 
 .lcStageWrap {
   position: relative;
@@ -1177,9 +1273,15 @@
 .consoleFrameWrap {
   margin-top: 40px;
 }
-/* the frame itself enters a little further than the page default */
-.consoleFrameWrap[data-reveal='out'] {
-  transform: translateY(22px);
+/* The frame enters a little further than the page default, and settles out of
+   a barely-there scale so it reads as landing rather than sliding.
+
+   `.reveal` is repeated deliberately: the generic staged rule is
+   `.reveal[data-reveal='out']:not(.revealParts)`, three classes' worth of
+   specificity, so a plain `.consoleFrameWrap[data-reveal='out']` is two and
+   loses. It matched the same element and quietly did nothing. */
+.reveal.consoleFrameWrap[data-reveal='out'] {
+  transform: translateY(32px) scale(0.985);
 }
 
 /* ── one short contextual sequence after the frame has landed ──
@@ -1580,19 +1682,19 @@
    sequence only fades each step in. */
 .polLanes[data-reveal='out'] .polStep {
   opacity: 0;
-  transform: translateY(16px);
+  transform: translateY(24px);
 }
 .polLanes[data-reveal='in'] .polStep {
   opacity: 1;
   transform: none;
   transition: opacity 0.52s var(--ease-reveal), transform 0.52s var(--ease-reveal);
 }
-.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(2) .polStep { transition-delay: 180ms; }
-.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(3) .polStep { transition-delay: 360ms; }
-.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(1) .polStep { transition-delay: 540ms; }
-.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(2) .polStep { transition-delay: 720ms; }
-.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(1) .polStep { transition-delay: 900ms; }
-.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(2) .polStep { transition-delay: 1080ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(2) .polStep { transition-delay: 260ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(1) .polStepWrap:nth-child(3) .polStep { transition-delay: 520ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(1) .polStep { transition-delay: 780ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(2) .polStepWrap:nth-child(2) .polStep { transition-delay: 1040ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(1) .polStep { transition-delay: 1300ms; }
+.polLanes[data-reveal='in'] .polLane:nth-child(3) .polStepWrap:nth-child(2) .polStep { transition-delay: 1560ms; }
 
 /* ============================================================
    Pricing — completely static
@@ -1808,11 +1910,11 @@
      state — nothing is left hidden, mid-progress or waiting on a delay. */
   .reveal,
   .revealStagger > *,
-  .opStage .opEyebrow,
-  .opStage .opTitle,
-  .opStage .opLead,
+  .opHead .opEyebrow,
+  .opHead .opTitle,
+  .opHead .opLead,
   .opStage .pillar,
-  .opStage .ribbonStep,
+  .opStage .ribbon,
   .lcFlow .lcStageWrap,
   .polLanes .polStep {
     opacity: 1 !important;
@@ -1820,6 +1922,24 @@
   }
   .lcFlow .lcTrackFill {
     transform: scaleX(1) !important;
+  }
+  /* the lifecycle diagrams land on "every phase reached", never on the muted
+     nothing-has-run-yet state — no data must not be shown as safe, and a
+     completed diagram must not be shown as pending either */
+  .lcFlow .lcStageIcon {
+    border-color: var(--tone) !important;
+    color: var(--tone) !important;
+  }
+  .opStage .ribbonNode {
+    border-color: var(--brand) !important;
+    background: var(--brand) !important;
+  }
+  .opStage .ribbonStep:last-child .ribbonNode {
+    border-color: var(--healthy) !important;
+    background: var(--healthy) !important;
+  }
+  .opStage .ribbonLabel {
+    color: var(--text) !important;
   }
   /* horizontal on desktop, vertical once stacked — `none` is the resting,
      fully drawn state on both axes */
