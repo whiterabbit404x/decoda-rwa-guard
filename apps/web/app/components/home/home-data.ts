@@ -99,159 +99,98 @@ export const workflowSteps: WorkflowStep[] = [
   },
 ];
 
-// ── Autonomous operating layer — 12 control planes ───────────
-export type AgentState = 'continuous' | 'on-event' | 'policy' | 'verified';
-export type AgentGroup = 'observe' | 'detect' | 'respond' | 'govern';
+// ── The Decoda operating layer — four buyer outcomes ─────────
+//
+// MARKETING HIERARCHY ONLY. These four pillars are how a buyer is
+// asked to understand the platform; they are not an architectural
+// claim and they deliberately do not enumerate application screens.
+// Product breadth is discovered further down the page, in the
+// security console preview (`consoleNav` below).
+export type PillarId = 'observe' | 'detect' | 'respond' | 'govern';
 
-export interface AgentControlPlane {
+export interface OperatingPillar {
+  id: PillarId;
+  /** Sequence marker, 01–04. Presentational only. */
   num: string;
-  screen: string;
-  agent: string;
-  description: string;
-  state: AgentState;
-  stateLabel: string;
   icon: IconName;
+  title: string;
+  /** One sentence describing the outcome the buyer gets. */
+  outcome: string;
+  /** Supporting capabilities — short noun phrases, not screen names. */
+  capabilities: string[];
 }
 
-export interface OperatingGroup {
-  id: AgentGroup;
-  header: string;
-  planes: AgentControlPlane[];
-}
-
-export const operatingGroups: OperatingGroup[] = [
+export const operatingPillars: OperatingPillar[] = [
   {
     id: 'observe',
-    header: '01 — Discover & Observe',
-    planes: [
-      {
-        num: '01',
-        screen: 'Onboarding',
-        agent: 'Infrastructure Discovery Agent',
-        description: 'Automatically discovers infrastructure and establishes monitoring coverage.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'onboarding',
-      },
-      {
-        num: '02',
-        screen: 'Dashboard',
-        agent: 'Executive Co-Pilot',
-        description: 'Summarizes telemetry and system health for decision makers.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'dashboard',
-      },
-      {
-        num: '03',
-        screen: 'Asset Risk',
-        agent: 'Asset Risk Assessor',
-        description: 'Continuously evaluates asset, reserve and ledger anomalies.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'assetRisk',
-      },
-      {
-        num: '04',
-        screen: 'Monitoring Sources',
-        agent: 'Source Optimization Agent',
-        description: 'Maintains ingestion health and optimizes provider routing.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'monitoring',
-      },
+    num: '01',
+    icon: 'observe',
+    title: 'Discover & Observe',
+    outcome: 'Know what is monitored and where security coverage may be weak.',
+    capabilities: [
+      'Asset risk',
+      'Monitoring coverage',
+      'Infrastructure discovery',
+      'Source health',
+      'System health',
     ],
   },
   {
     id: 'detect',
-    header: '02 — Detect & Investigate',
-    planes: [
-      {
-        num: '05',
-        screen: 'Threat Monitoring',
-        agent: 'Threat Detection Agent',
-        description: 'Detects complex threats and abnormal on-chain behavior.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'threat',
-      },
-      {
-        num: '06',
-        screen: 'Alerts',
-        agent: 'Alert Triage Agent',
-        description: 'Clusters, correlates and prioritizes alerts into root causes.',
-        state: 'on-event',
-        stateLabel: 'On event',
-        icon: 'alerts',
-      },
-      {
-        num: '07',
-        screen: 'Incidents',
-        agent: 'Digital Forensics Investigator',
-        description: 'Automatically opens incidents and performs evidence analysis.',
-        state: 'on-event',
-        stateLabel: 'On event',
-        icon: 'incident',
-      },
+    num: '02',
+    icon: 'threat',
+    title: 'Detect & Investigate',
+    outcome: 'Turn raw security signals into an evidence-backed investigation.',
+    capabilities: [
+      'Threat detection',
+      'Alert correlation',
+      'Incident investigation',
+      'Evidence analysis',
     ],
   },
   {
     id: 'respond',
-    header: '03 — Respond & Prove',
-    planes: [
-      {
-        num: '08',
-        screen: 'Response Actions',
-        agent: 'Playbook Execution Agent',
-        description: 'Recommends and executes safe response actions under policy.',
-        state: 'policy',
-        stateLabel: 'Policy gated',
-        icon: 'response',
-      },
-      {
-        num: '09',
-        screen: 'Evidence & Audit',
-        agent: 'Crypto-Auditing Agent',
-        description: 'Compiles evidence packages with cryptographic integrity proof.',
-        state: 'verified',
-        stateLabel: 'Verified',
-        icon: 'evidence',
-      },
+    num: '03',
+    icon: 'policy',
+    title: 'Respond Under Policy',
+    outcome: 'Move from investigation to response without bypassing organizational controls.',
+    capabilities: [
+      'Response recommendations',
+      'Policy evaluation',
+      'Approval workflow',
+      'Controlled execution',
     ],
   },
   {
     id: 'govern',
-    header: '04 — Govern & Heal',
-    planes: [
-      {
-        num: '10',
-        screen: 'Integrations',
-        agent: 'Integration Gateway Agent',
-        description: 'Monitors integrations and external service access.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'integrations',
-      },
-      {
-        num: '11',
-        screen: 'Governance',
-        agent: 'Governance Guard',
-        description: 'Logs sensitive changes and detects suspicious administrative activity.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'governance',
-      },
-      {
-        num: '12',
-        screen: 'System Health',
-        agent: 'Self-Healing Reliability Agent',
-        description: 'Detects internal health problems before monitoring gaps occur.',
-        state: 'continuous',
-        stateLabel: 'Continuous',
-        icon: 'health',
-      },
+    num: '04',
+    // `verified` draws the same shield-check as `policy` on the pillar above,
+    // so the record/audit glyph is what actually distinguishes this one.
+    icon: 'evidence',
+    title: 'Govern & Prove',
+    outcome: 'Keep every important decision connected to the evidence and policy behind it.',
+    capabilities: [
+      'Governance monitoring',
+      'Integrations',
+      'Audit history',
+      'Cryptographic evidence',
+      'Tamper-evident exports',
     ],
   },
+];
+
+/**
+ * The operating lifecycle the whole page is built around. Rendered as a thin
+ * ribbon beneath the pillars so a visitor picks up the model in seconds —
+ * deliberately the five verbs rather than a second copy of the pillar titles
+ * sitting directly under the pillars themselves.
+ */
+export const lifecycleRibbon: string[] = [
+  'Observe',
+  'Detect',
+  'Investigate',
+  'Respond',
+  'Prove',
 ];
 
 // ── Incident lifecycle ───────────────────────────────────────

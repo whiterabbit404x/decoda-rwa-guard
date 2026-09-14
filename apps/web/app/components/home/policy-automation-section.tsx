@@ -23,16 +23,16 @@ export function PolicyAutomationSection() {
   return (
     <section className={styles.section} id="policy-automation">
       <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
+        <ScrollReveal className={`${styles.sectionHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>Autonomous where safe</p>
           <h2 className={styles.sectionTitle}>Human-controlled where necessary.</h2>
           <p className={styles.sectionLead}>
             Decoda observes, investigates and recommends automatically — but high-impact actions
             pass through policy evaluation and human approval before anything executes.
           </p>
-        </div>
+        </ScrollReveal>
 
-        <ScrollReveal className={styles.polLanes}>
+        <ScrollReveal className={`${styles.polLanes} ${styles.revealParts}`}>
           {policyLanes.map((lane) => (
             <div key={lane.id} className={`${styles.polLane} ${LANE_CLASS[lane.id] ?? ''}`}>
               <div className={styles.polLaneHead}>

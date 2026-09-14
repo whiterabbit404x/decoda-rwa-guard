@@ -5,13 +5,22 @@ import path from 'node:path';
 // Source-level guardrails for the public marketing homepage. These run
 // without a web server so they stay reliable in CI. They assert the truthful
 // framing rules (illustration labelling, no fabricated live metrics) and the
-// structural completeness (all 12 control planes, the four lifecycle phases).
+// structural completeness (the four operating pillars, the console breadth).
 
 const APP_DIR = path.join(__dirname, '..', 'app');
 const HOME_DIR = path.join(APP_DIR, 'components', 'home');
 
 function read(...segments: string[]): string {
   return fs.readFileSync(path.join(...segments), 'utf-8');
+}
+
+/** Every landing component's source, concatenated. */
+function componentSources(): string {
+  return fs
+    .readdirSync(HOME_DIR)
+    .filter((file) => file.endsWith('.tsx'))
+    .map((file) => read(HOME_DIR, file))
+    .join('\n');
 }
 
 /** Concatenated homepage source, used for order-independent presence checks. */
@@ -42,7 +51,8 @@ test('homepage carries the canonical marketing copy across its sections', () => 
     'Investigate with evidence.',
     'Respond under policy.',
     'EXAMPLE INCIDENT WORKFLOW',
-    '12 security control planes',
+    'One security operating layer.',
+    'From detection to defensible evidence.',
     'From a blockchain signal',
     'AI that has to',
     'Human-controlled',
@@ -75,13 +85,70 @@ test('product console preview is labelled as a preview and not live customer dat
   expect(console).not.toContain('Live customer data');
 });
 
-test('operating layer lists all twelve control planes with their agents', () => {
+test('the operating layer sells four buyer outcomes, each with its capabilities', () => {
   const data = read(HOME_DIR, 'home-data.ts');
-  const screens = [
-    'Onboarding',
+  const pillars = [
+    'Discover & Observe',
+    'Detect & Investigate',
+    'Respond Under Policy',
+    'Govern & Prove',
+  ];
+  for (const pillar of pillars) {
+    expect(data).toContain(pillar);
+  }
+
+  // Each pillar carries the outcome sentence a buyer is meant to take away.
+  for (const outcome of [
+    'Know what is monitored and where security coverage may be weak.',
+    'Turn raw security signals into an evidence-backed investigation.',
+    'Move from investigation to response without bypassing organizational controls.',
+    'Keep every important decision connected to the evidence and policy behind it.',
+  ]) {
+    expect(data).toContain(outcome);
+  }
+
+  // Capabilities are outcome-shaped noun phrases, not a list of screens.
+  for (const capability of [
+    'Monitoring coverage',
+    'Infrastructure discovery',
+    'Alert correlation',
+    'Evidence analysis',
+    'Policy evaluation',
+    'Approval workflow',
+    'Controlled execution',
+    'Audit history',
+    'Tamper-evident exports',
+  ]) {
+    expect(data).toContain(capability);
+  }
+});
+
+test('UI/page count is never the marketing message', () => {
+  const source = componentSources() + read(HOME_DIR, 'home-data.ts');
+  for (const framing of [
+    '12 security control planes',
+    '12 control planes',
+    '12 screens',
+    '12 modules',
+    'twelve screens',
+    'twelve modules',
+    'twelve control planes',
+  ]) {
+    expect(source, `landing page must not market "${framing}"`).not.toContain(framing);
+  }
+});
+
+test('product breadth stays discoverable in the security console, not in the pitch', () => {
+  // The pillars replaced the twelve-card grid as the marketing hierarchy. The
+  // application areas themselves are still shown — one level down, in the
+  // console preview, which is where a visitor explores depth.
+  const data = read(HOME_DIR, 'home-data.ts');
+  const navStart = data.indexOf('export const consoleNav');
+  expect(navStart).toBeGreaterThan(-1);
+  const nav = data.slice(navStart, data.indexOf('export const', navStart + 1));
+  for (const area of [
     'Dashboard',
     'Asset Risk',
-    'Monitoring Sources',
     'Threat Monitoring',
     'Alerts',
     'Incidents',
@@ -90,36 +157,17 @@ test('operating layer lists all twelve control planes with their agents', () => 
     'Integrations',
     'Governance',
     'System Health',
-  ];
-  for (const screen of screens) {
-    expect(data).toContain(screen);
-  }
-
-  const agents = [
-    'Infrastructure Discovery Agent',
-    'Executive Co-Pilot',
-    'Asset Risk Assessor',
-    'Source Optimization Agent',
-    'Threat Detection Agent',
-    'Alert Triage Agent',
-    'Digital Forensics Investigator',
-    'Playbook Execution Agent',
-    'Crypto-Auditing Agent',
-    'Integration Gateway Agent',
-    'Governance Guard',
-    'Self-Healing Reliability Agent',
-  ];
-  for (const agent of agents) {
-    expect(data).toContain(agent);
+  ]) {
+    expect(nav, `console preview should still surface "${area}"`).toContain(area);
   }
 });
 
-test('operating layer is grouped into the four Decoda phases', () => {
+test('the observe -> detect -> investigate -> respond -> prove model is on the page', () => {
   const data = read(HOME_DIR, 'home-data.ts');
-  expect(data).toContain('01 — Discover & Observe');
-  expect(data).toContain('02 — Detect & Investigate');
-  expect(data).toContain('03 — Respond & Prove');
-  expect(data).toContain('04 — Govern & Heal');
+  expect(data).toContain('lifecycleRibbon');
+  for (const phase of ['Observe', 'Detect', 'Investigate', 'Respond', 'Prove']) {
+    expect(data).toContain(`'${phase}'`);
+  }
 });
 
 test('homepage links point at real existing routes only', () => {

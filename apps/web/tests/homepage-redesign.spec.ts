@@ -31,6 +31,37 @@ function componentFiles(): { name: string; source: string }[] {
 
 const css = () => read(HOME_DIR, 'home.module.css');
 
+/**
+ * Style rules from a stylesheet, comments stripped, @keyframes dropped and
+ * @media recursed into. Brace-balanced, so a one-line keyframe block cannot
+ * leak its percentage steps in as if they were selectors.
+ */
+function styleRules(source: string): { selector: string; body: string }[] {
+  const clean = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules: { selector: string; body: string }[] = [];
+  let cursor = 0;
+  while (cursor < clean.length) {
+    const open = clean.indexOf('{', cursor);
+    if (open === -1) break;
+    const selector = clean.slice(cursor, open).trim();
+    let depth = 1;
+    let end = open + 1;
+    while (end < clean.length && depth > 0) {
+      if (clean[end] === '{') depth += 1;
+      else if (clean[end] === '}') depth -= 1;
+      end += 1;
+    }
+    const body = clean.slice(open + 1, end - 1);
+    if (selector.startsWith('@media')) {
+      rules.push(...styleRules(body));
+    } else if (!selector.startsWith('@')) {
+      rules.push({ selector, body });
+    }
+    cursor = end;
+  }
+  return rules;
+}
+
 // ── 1. Dark / light zoning ────────────────────────────────────
 test.describe('landing theme zoning', () => {
   test('the navy and light-enterprise tokens are defined once, on the page root', () => {
@@ -98,13 +129,24 @@ test.describe('animation budget', () => {
     expect(source).toContain('animation: wfRailAdvance 10s linear infinite');
   });
 
-  test('the workflow animates only opacity and transform — never layout', () => {
+  test('no animation or transition on the page touches a layout property', () => {
     const source = css();
-    const keyframeBlocks = source.match(/@keyframes\s+(wfStage\d|wfRailAdvance|wfGlow\d)\s*\{[^}]*(\{[^}]*\}[^}]*)*\}/g) ?? [];
+    const keyframeBlocks = source.match(/@keyframes\s+[\w-]+\s*\{[^}]*(\{[^}]*\}[^}]*)*\}/g) ?? [];
     expect(keyframeBlocks.length).toBeGreaterThan(0);
     for (const block of keyframeBlocks) {
       for (const banned of ['width:', 'height:', 'top:', 'left:', 'margin', 'padding']) {
         expect(block, `keyframe animates layout property "${banned}"`).not.toContain(banned);
+      }
+    }
+    // Reveal transitions may only move opacity and transform, so an entrance
+    // can never shift the layout around it.
+    const revealTransitions = [...source.matchAll(/transition:\s*([^;]*var\(--ease-reveal\)[^;]*);/g)]
+      .map((match) => match[1]);
+    expect(revealTransitions.length).toBeGreaterThan(0);
+    for (const declaration of revealTransitions) {
+      for (const property of declaration.split(',')) {
+        expect(property.trim(), `reveal transitions only opacity/transform: ${declaration}`)
+          .toMatch(/^(opacity|transform)\s/);
       }
     }
   });
@@ -166,20 +208,66 @@ test.describe('reduced motion', () => {
 
 // ── 4. Scroll reveal safety ───────────────────────────────────
 test.describe('scroll reveal', () => {
-  test('content is readable without JavaScript — the hidden state is opt-in', () => {
+  test('content is readable without JavaScript — every reveal rule is keyed on data-reveal', () => {
     const source = css();
-    // The hidden start state only applies once the client sets the flag, so a
-    // visitor whose JS never runs reads the finished page.
-    const hiddenRules = source
-      .split('\n')
-      .filter((line) => line.includes('.reveal') && line.includes('{'));
-    for (const rule of hiddenRules) {
-      if (rule.includes('opacity: 0') || rule.includes('data-reveal')) {
-        expect(rule, `reveal rule must be gated on the client flag: ${rule.trim()}`)
-          .toContain("html[data-landing-reveal='on']");
-      }
+    // Nothing on the page may hide itself unconditionally: every rule that
+    // sets `opacity: 0` is either keyed on the attribute scroll-reveal.tsx
+    // sets, or is a decorative ::before/::after overlay that carries no
+    // content. So a visitor whose JS never runs reads the finished page.
+    const hidingRules = styleRules(source)
+      .filter((rule) => /opacity:\s*0\s*;/.test(rule.body))
+      .map((rule) => rule.selector);
+    expect(hidingRules.length).toBeGreaterThan(0);
+    for (const selector of hidingRules) {
+      const keyed = selector.includes('data-reveal');
+      const decorative = selector.split(',').every((part) => /::(after|before)\b/.test(part));
+      expect(keyed || decorative, `rule hides content without JavaScript: ${selector}`).toBe(true);
     }
-    expect(source).toContain(":global(html[data-landing-reveal='on']) .reveal {");
+    expect(source).toContain(".reveal[data-reveal='out']:not(.revealParts) {");
+    // The old document-wide flag is gone: it hid content after first paint and
+    // was the reason the entrance never actually played.
+    expect(source).not.toContain('data-landing-reveal');
+  });
+
+  test('the transition lives on the revealed rule, so applying the hidden state cannot animate', () => {
+    const source = css();
+    const out = source.slice(source.indexOf(".reveal[data-reveal='out']"));
+    const outRule = out.slice(0, out.indexOf('}'));
+    expect(outRule, 'the hidden rule must not declare a transition').not.toContain('transition');
+    expect(source).toMatch(/\.reveal\[data-reveal='in'\]:not\(\.revealParts\)\s*\{[^}]*transition:/s);
+  });
+
+  test('the reveal matches the specified distance, duration and easing', () => {
+    const source = css();
+    expect(source).toContain('--ease-reveal: cubic-bezier(0.22, 1, 0.36, 1)');
+    expect(source).toMatch(/\.reveal\[data-reveal='out'\]:not\(\.revealParts\)\s*\{[^}]*translateY\(20px\)/s);
+    // Every reveal duration sits inside the 500–650ms budget.
+    const durations = [...source.matchAll(/transition:\s*opacity\s+([\d.]+)s\s+var\(--ease-reveal\)/g)]
+      .map((match) => Number(match[1]) * 1000);
+    expect(durations.length).toBeGreaterThan(0);
+    for (const duration of durations) {
+      expect(duration, `reveal duration ${duration}ms is outside 440–650ms`).toBeGreaterThanOrEqual(440);
+      expect(duration, `reveal duration ${duration}ms is outside 440–650ms`).toBeLessThanOrEqual(650);
+    }
+  });
+
+  test('the trigger is a reading position, not the first few pixels of a tall section', () => {
+    const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
+    // 15–20% of the element inside a viewport shortened from the bottom.
+    expect(reveal).toContain('const REVEAL_RATIO = 0.18');
+    expect(reveal).toContain('const READING_INSET = 0.15');
+    expect(reveal).toContain('rootMargin: `0px 0px -${READING_INSET * 100}% 0px`');
+    expect(reveal).toContain('threshold: [0, REVEAL_RATIO]');
+  });
+
+  test('the load-time check asks the same question as the scroll trigger', () => {
+    const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
+    // Otherwise a section merely peeking below the fold on a tall screen is
+    // treated as already read and never animates.
+    expect(reveal).toContain('getBoundingClientRect');
+    expect(reveal).toMatch(/visible \/ rect\.height >= REVEAL_RATIO/);
+    expect(reveal).toContain('viewport * (1 - READING_INSET)');
+    expect(reveal).toContain('if (hasArrived(el))');
   });
 
   test('reduced motion never opts in, so no observer work happens', () => {
@@ -188,17 +276,115 @@ test.describe('scroll reveal', () => {
     expect(reveal).toMatch(/if\s*\(!el\s*\|\|\s*prefersReducedMotion\(\)\)/);
   });
 
-  test('the reveal observer releases each element and clears the flag on unmount', () => {
+  test('the reveal observer releases each element and tears down on unmount', () => {
     const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
     expect(reveal).toContain('unobserve');
     expect(reveal).toContain('disconnect');
-    expect(reveal).toContain('delete document.documentElement.dataset[REVEAL_FLAG]');
+  });
+
+  test('each section reveals exactly once — nothing re-hides on scroll up', () => {
+    const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
+    // The element is unobserved the moment it arrives, and no code path ever
+    // sets the attribute back to 'out'.
+    expect(reveal).toMatch(/reveal\(entry\.target\);\s*\n\s*observer\?\.unobserve\(entry\.target\);/);
+    const setsOut = [...reveal.matchAll(/setAttribute\('data-reveal', 'out'\)/g)];
+    expect(setsOut.length, 'the hidden state is set once, before observing').toBe(1);
   });
 
   test('revealing never re-renders the tree — the attribute is set on the DOM node', () => {
     const reveal = read(HOME_DIR, 'scroll-reveal.tsx');
     expect(reveal).toContain("setAttribute('data-reveal', 'in')");
     expect(reveal).not.toContain('useState');
+  });
+});
+
+// ── 4b. Which sections move, and for how long ─────────────────
+test.describe('section motion', () => {
+  const animated: [string, string][] = [
+    ['operating-layer-section.tsx', 'opStage'],
+    ['incident-lifecycle-section.tsx', 'lcFlow'],
+    ['product-console-section.tsx', 'consoleFrameWrap'],
+    ['evidence-ai-section.tsx', 'evGrid'],
+    ['rwa-security-section.tsx', 'cardGrid4'],
+    ['policy-automation-section.tsx', 'polLanes'],
+    ['teams-section.tsx', 'cardGrid3'],
+  ];
+
+  for (const [file, marker] of animated) {
+    test(`${file} reveals on scroll`, () => {
+      const source = read(HOME_DIR, file);
+      expect(source).toContain('ScrollReveal');
+      expect(source).toContain(marker);
+    });
+  }
+
+  test('every light section heading reveals, so the eye has something to follow', () => {
+    for (const [file] of animated) {
+      const source = read(HOME_DIR, file);
+      if (file === 'operating-layer-section.tsx') {
+        // This one choreographs its head by name from the section's single
+        // trigger rather than using the shared 0/80/160ms helper.
+        for (const part of ['opEyebrow', 'opTitle', 'opLead']) {
+          expect(source, `operating layer must sequence ${part}`).toContain(part);
+        }
+        continue;
+      }
+      expect(source, `${file} heading must reveal`).toContain('revealHead');
+    }
+  });
+
+  test('the hero renders immediately and is never gated on JavaScript', () => {
+    const hero = read(HOME_DIR, 'hero-section.tsx');
+    expect(hero).not.toContain('ScrollReveal');
+    expect(hero).not.toContain("'use client'");
+  });
+
+  test('pricing and the final CTA stay completely static', () => {
+    for (const file of ['pricing-section.tsx', 'final-cta.tsx']) {
+      const source = read(HOME_DIR, file);
+      expect(source, `${file} must not animate`).not.toContain('ScrollReveal');
+      expect(source, `${file} must not animate`).not.toContain('reveal');
+    }
+  });
+
+  test('the once-only sequences finish inside their budgets', () => {
+    const source = css();
+    const longest = (marker: string): number => {
+      const delays = [...source.matchAll(new RegExp(`${marker}[^\n]*transition-delay:\\s*(\\d+)ms`, 'g'))]
+        .map((match) => Number(match[1]));
+      return delays.length ? Math.max(...delays) : 0;
+    };
+    // Incident lifecycle: ~1.4–2s end to end (last delay + a 0.44s step).
+    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeGreaterThanOrEqual(1400);
+    expect(longest('lcFlow\\[data-reveal=.in.\\]') + 440).toBeLessThanOrEqual(2000);
+    // Human-controlled response: ~1.5–2s across all seven steps.
+    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeGreaterThanOrEqual(1500);
+    expect(longest('polLanes\\[data-reveal=.in.\\]') + 520).toBeLessThanOrEqual(2000);
+    // The operating layer must not keep the visitor waiting.
+    expect(longest('opStage\\[data-reveal=.in.\\]')).toBeLessThanOrEqual(1000);
+  });
+
+  test('the console sequence runs once and points at real preview tiles', () => {
+    const source = css();
+    expect(source).toContain('@keyframes conFocus');
+    const rules = [...source.matchAll(/animation:\s*conFocus[^;]*;/g)].map((match) => match[0]);
+    expect(rules.length).toBe(4);
+    for (const rule of rules) {
+      expect(rule, `console sequence must not loop: ${rule}`).not.toContain('infinite');
+      expect(rule).toContain('forwards');
+    }
+  });
+
+  test('the pillars stagger inside the 70–100ms band', () => {
+    const source = css();
+    const delays = [...source.matchAll(/\.opStage\[data-reveal='in'\] \.pillar:nth-child\(\d\) \{ transition-delay: (\d+)ms; \}/g)]
+      .map((match) => Number(match[1]));
+    expect(delays).toEqual([320, 400, 480]);
+    for (let i = 1; i < delays.length; i += 1) {
+      const step = delays[i] - delays[i - 1];
+      expect(step).toBeGreaterThanOrEqual(70);
+      expect(step).toBeLessThanOrEqual(100);
+    }
   });
 });
 

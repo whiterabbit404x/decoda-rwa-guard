@@ -1,49 +1,71 @@
-import { AgentControlCard } from './agent-control-card';
+import { HomeIcon } from './home-icons';
 import { ScrollReveal } from './scroll-reveal';
-import { operatingGroups, type AgentGroup } from './home-data';
+import { lifecycleRibbon, operatingPillars } from './home-data';
 import styles from './home.module.css';
 
-const GROUP_CLASS: Record<AgentGroup, string> = {
-  observe: styles.groupObserve,
-  detect: styles.groupDetect,
-  respond: styles.groupRespond,
-  govern: styles.groupGovern,
-};
-
+/**
+ * The Decoda operating layer, framed as four buyer outcomes rather than as a
+ * count of application screens. Product breadth belongs further down the page,
+ * in the security console preview — this section sells the operating model.
+ *
+ * The whole block is one reveal group (`revealParts`, so it sequences its own
+ * descendants instead of moving as a single slab): eyebrow, headline,
+ * description, then the four pillars, then the lifecycle ribbon. It runs once
+ * on first view and never replays.
+ */
 export function OperatingLayerSection() {
   return (
     <section className={`${styles.section} ${styles.sectionFirst}`} id="operating-layer">
-      <div className={styles.sectionInner}>
+      <ScrollReveal className={`${styles.sectionInner} ${styles.revealParts} ${styles.opStage}`}>
         <div className={styles.sectionHeadCenter}>
-          <p className={styles.eyebrow}>The Decoda operating layer</p>
-          <h2 className={styles.sectionTitle}>
-            One autonomous operational layer.
+          <p className={`${styles.eyebrow} ${styles.opEyebrow}`}>The Decoda operating layer</p>
+          <h2 className={`${styles.sectionTitle} ${styles.opTitle}`}>
+            One security operating layer.
             <br />
-            12 security control planes. One evidence chain.
+            From detection to defensible evidence.
           </h2>
-          <p className={styles.sectionLead}>
-            Decoda AI Agent continuously observes security evidence, correlates activity, forms
-            investigations, proposes responses and operates within policies controlled by your
-            organization.
+          <p className={`${styles.sectionLead} ${styles.opLead}`}>
+            Decoda continuously observes security signals, investigates suspicious activity,
+            recommends policy-controlled responses and preserves verifiable evidence across the
+            incident lifecycle.
           </p>
         </div>
 
-        <ScrollReveal className={styles.layerGroups} stagger>
-          {operatingGroups.map((group) => (
-            <div key={group.id} className={`${styles.group} ${GROUP_CLASS[group.id]}`}>
-              <div className={styles.groupHead}>
-                <span className={styles.groupTick} aria-hidden="true" />
-                <span className={styles.groupLabel}>{group.header}</span>
+        <div className={styles.pillars}>
+          {operatingPillars.map((pillar) => (
+            <article key={pillar.id} className={styles.pillar}>
+              <div className={styles.pillarHead}>
+                <span className={styles.pillarIcon} aria-hidden="true">
+                  <HomeIcon name={pillar.icon} />
+                </span>
+                <span className={styles.pillarNum} aria-hidden="true">{pillar.num}</span>
               </div>
-              <div className={styles.groupCards}>
-                {group.planes.map((plane) => (
-                  <AgentControlCard key={plane.num} plane={plane} />
+              <h3 className={styles.pillarTitle}>{pillar.title}</h3>
+              <p className={styles.pillarOutcome}>{pillar.outcome}</p>
+              <ul className={styles.pillarCaps}>
+                {pillar.capabilities.map((capability) => (
+                  <li key={capability} className={styles.pillarCap}>
+                    <span className={styles.pillarCapDot} aria-hidden="true" />
+                    {capability}
+                  </li>
                 ))}
-              </div>
-            </div>
+              </ul>
+            </article>
           ))}
-        </ScrollReveal>
-      </div>
+        </div>
+
+        <ol className={styles.ribbon} aria-label="Decoda operating lifecycle">
+          <li className={styles.ribbonTrack} aria-hidden="true">
+            <span className={styles.ribbonTrackFill} />
+          </li>
+          {lifecycleRibbon.map((phase) => (
+            <li key={phase} className={styles.ribbonStep}>
+              <span className={styles.ribbonNode} aria-hidden="true" />
+              <span className={styles.ribbonLabel}>{phase}</span>
+            </li>
+          ))}
+        </ol>
+      </ScrollReveal>
     </section>
   );
 }

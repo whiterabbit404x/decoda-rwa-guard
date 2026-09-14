@@ -14,14 +14,14 @@ export function EvidenceAISection() {
   return (
     <section className={styles.section} id="evidence-ai">
       <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
+        <ScrollReveal className={`${styles.sectionHead} ${styles.revealHead}`} stagger>
           <p className={styles.eyebrow}>Evidence-grounded AI</p>
           <h2 className={styles.sectionTitle}>AI that has to show its evidence.</h2>
           <p className={styles.sectionLead}>
             Decoda AI is an autonomous operational layer, not a black-box chatbot. Every finding,
             action and export stays traceable to the data and policy behind it.
           </p>
-        </div>
+        </ScrollReveal>
 
         <ScrollReveal className={styles.evGrid} stagger>
           {evidencePillars.map((pillar) => (
