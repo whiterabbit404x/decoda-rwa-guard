@@ -326,7 +326,7 @@ from services.api.app.db_failure import (
 from services.api.app.secret_crypto import validate_secret_encryption_key_at_startup
 from services.api.app.evidence_signing import validate_signing_secret_at_startup
 from services.api.app.structured_logging import configure_logging
-from services.api.app.observability import bind_trace, reset_trace, increment, observe, prometheus_metrics, report_error
+from services.api.app.observability import bind_trace, reset_trace, increment, observe, dashboard_timing_metrics, prometheus_metrics, report_error
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -5870,6 +5870,33 @@ def metrics() -> Response:
         f"decoda_alert_dead_letter_total {outbox_depth.get('dead_letter') or 0}",
     ]
     return Response(prometheus_metrics() + '\n'.join(supplemental) + '\n', media_type='text/plain; version=0.0.4')
+
+
+@app.get('/ops/dashboard/timing-metrics', include_in_schema=False)
+def ops_dashboard_timing_metrics() -> Response:
+    """The dashboard timing series alone, read from memory and nothing else.
+
+    Why this exists rather than reusing ``/metrics``: the dashboard capture
+    harness scrapes a metrics endpoint before and after EVERY load, and
+    ``/metrics`` calls ``alert_delivery_health()`` (above), which opens a
+    ``pg_connection()``. That added two fresh Postgres connections to every
+    measured load -- on a capture whose whole purpose is to measure per-request
+    connection cost. The observer was changing the thing observed.
+
+    This handler touches the in-process metric registry and nothing else: no
+    database, no Redis, no RPC, no filesystem. It carries no customer data --
+    the dashboard series are durations, counts and hit/miss flags, whose labels
+    are a route name, a phase name, a counter name and a small closed set of
+    flag states. No workspace, tenant, user or asset identifier is a label on
+    any of them.
+
+    ``/metrics`` is unchanged and remains the general-purpose endpoint; this is
+    a strict subset of it in the same exposition format, so one parser reads
+    both. Access matches ``/metrics`` deliberately: exposing a subset of an
+    already-open endpoint behind a new credential would add a secret to manage
+    without withholding anything ``/metrics`` does not already serve.
+    """
+    return Response(dashboard_timing_metrics(), media_type='text/plain; version=0.0.4')
 
 
 @app.get('/integrations/notifications', summary='List workspace notification destinations and policies')

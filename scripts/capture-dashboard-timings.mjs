@@ -8,12 +8,23 @@
  * (`[dashboard-perf] critical path`), but nothing ever collected them, so every
  * claim about where the seconds go was unfalsifiable.
  *
- * Measurement only. It drives the real UI and reads the API's own /metrics; it
- * changes no application behaviour and writes nothing to the product database.
+ * Measurement only. It drives the real UI and reads the API's own metric
+ * registry; it changes no application behaviour and writes nothing to the
+ * product database.
  *
- * Backend numbers come from /metrics rather than the API's stdout, so this works
- * against a deployed environment with no log access. /metrics is a process-local
- * in-memory registry, which means two things worth stating plainly:
+ * Backend numbers come from the API's own metric registry rather than its stdout,
+ * so this works against a deployed environment with no log access. They are read
+ * from /ops/dashboard/timing-metrics, NOT /metrics: /metrics calls
+ * alert_delivery_health(), which opens a Postgres connection, and this scrapes
+ * before and after every load -- two extra connections per measured load, on a
+ * capture that exists to measure per-request connection cost. The timing
+ * endpoint serves the same decoda_dashboard_* series from memory with no DB,
+ * Redis or RPC on the path. Against an API deployed before that endpoint
+ * existed, this falls back to /metrics, says so loudly, and records which
+ * endpoint it used in the artifact.
+ *
+ * The registry is process-local and in-memory, which means two things worth
+ * stating plainly:
  *
  *   - the API must be a SINGLE process (Procfile runs uvicorn with no --workers).
  *     Against several replicas behind a load balancer the deltas are wrong, not
@@ -248,19 +259,65 @@ export function parseMetrics(text) {
   return series;
 }
 
+/**
+ * Where the backend deltas are read from.
+ *
+ * `/metrics` calls `alert_delivery_health()`, which opens a Postgres connection.
+ * This scrapes before AND after every load, so reading `/metrics` added two
+ * fresh connections to each measured load -- on a capture that exists to measure
+ * per-request connection cost. `/ops/dashboard/timing-metrics` serves the same
+ * `decoda_dashboard_*` series from memory with no DB, Redis or RPC on the path,
+ * in the same exposition format, so `parseMetrics` reads either one.
+ */
+const TIMING_METRICS_PATH = '/ops/dashboard/timing-metrics';
+const FULL_METRICS_PATH = '/metrics';
+
+/** Resolved on the first scrape and recorded in the artifact's run metadata. */
+let metricsPath = TIMING_METRICS_PATH;
+let metricsFallbackAnnounced = false;
+
+async function fetchMetricsText(base, pathname) {
+  const response = await fetch(`${base}${pathname}`, { cache: 'no-store' });
+  return {
+    ok: response.ok,
+    status: response.status,
+    text: response.ok ? await response.text() : '',
+  };
+}
+
 async function scrapeMetrics(apiUrl) {
   if (!apiUrl) {
     return new Map();
   }
+  const base = apiUrl.replace(/\/$/, '');
   try {
-    const response = await fetch(`${apiUrl.replace(/\/$/, '')}/metrics`, { cache: 'no-store' });
-    if (!response.ok) {
-      console.warn(`  ! /metrics returned HTTP ${response.status}; backend columns will be blank`);
+    let result = await fetchMetricsText(base, metricsPath);
+
+    // An API deployed before the lightweight endpoint existed. Falling back
+    // beats losing the backend columns entirely, but it is never silent: it
+    // puts two extra connections into every db_connect_count below.
+    if (!result.ok && result.status === 404 && metricsPath === TIMING_METRICS_PATH) {
+      metricsPath = FULL_METRICS_PATH;
+      if (!metricsFallbackAnnounced) {
+        metricsFallbackAnnounced = true;
+        console.warn(
+          `  ! ${TIMING_METRICS_PATH} is not deployed (HTTP 404), falling back to ${FULL_METRICS_PATH}.`,
+        );
+        console.warn(
+          '    That endpoint opens a Postgres connection per scrape, so every load below carries'
+          + ' 2 extra connections. Deploy the API first for a clean db_connect_count.',
+        );
+      }
+      result = await fetchMetricsText(base, metricsPath);
+    }
+
+    if (!result.ok) {
+      console.warn(`  ! ${metricsPath} returned HTTP ${result.status}; backend columns will be blank`);
       return new Map();
     }
-    return parseMetrics(await response.text());
+    return parseMetrics(result.text);
   } catch (error) {
-    console.warn(`  ! /metrics unreachable (${error.message}); backend columns will be blank`);
+    console.warn(`  ! ${metricsPath} unreachable (${error.message}); backend columns will be blank`);
     return new Map();
   }
 }
@@ -541,6 +598,16 @@ export function renderMarkdown(rows, args) {
   lines.push(`- API URL: ${args.apiUrl || '(not scraped)'}`);
   lines.push(`- Loads: ${rows.length}`);
   lines.push(`- Gap between loads: ${args.settleMs / 1000}s`);
+  if (args.apiUrl) {
+    lines.push(`- Backend metrics read from: \`${metricsPath}\``);
+    if (metricsPath === FULL_METRICS_PATH) {
+      lines.push(
+        '  - **This endpoint opens a Postgres connection per scrape**, and it is scraped twice'
+        + ' per load, so every `db_connect_count` below includes 2 connections the capture'
+        + ' itself created.',
+      );
+    }
+  }
   lines.push('');
   lines.push('All values in milliseconds unless named otherwise. `—` means the');
   lines.push('instrumentation recorded nothing for that load, which is a fact about');
@@ -714,6 +781,10 @@ async function main() {
       settleSeconds: args.settleMs / 1000,
       timeoutSeconds: args.timeoutMs / 1000,
       usedStorageState: Boolean(args.storageState),
+      // Which endpoint the backend columns came from. `/metrics` opens a
+      // Postgres connection per scrape, so a run that fell back to it carries
+      // 2 extra connections per load in db_connect_count.
+      metricsEndpoint: args.apiUrl ? metricsPath : null,
     };
     fs.writeFileSync(
       jsonPath,
