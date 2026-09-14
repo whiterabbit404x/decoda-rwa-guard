@@ -1,4 +1,5 @@
 import { HomeIcon } from './home-icons';
+import { ScrollReveal } from './scroll-reveal';
 import { rwaCards } from './home-data';
 import styles from './home.module.css';
 
@@ -13,17 +14,17 @@ export function RWASecuritySection() {
           </h2>
         </div>
 
-        <div className={styles.cardGrid4}>
+        <ScrollReveal className={styles.cardGrid4} stagger>
           {rwaCards.map((card) => (
             <article key={card.title} className={styles.featureCard}>
-              <span className={styles.featureIcon}>
+              <span className={styles.featureIcon} aria-hidden="true">
                 <HomeIcon name={card.icon} />
               </span>
               <h3 className={styles.featureTitle}>{card.title}</h3>
               <p className={styles.featureDetail}>{card.detail}</p>
             </article>
           ))}
-        </div>
+        </ScrollReveal>
       </div>
     </section>
   );

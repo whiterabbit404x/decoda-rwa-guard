@@ -5,9 +5,15 @@ import { IncidentWorkflowDemo } from './incident-workflow-demo';
 import { StartMonitoringCta } from './start-monitoring-cta';
 import styles from './home.module.css';
 
+/**
+ * Dark-navy hero. Headline, lead and CTAs are plain server-rendered markup with
+ * no animation on them, so they paint on the first frame and never wait for
+ * JavaScript. The only motion in this section is the CSS-only incident workflow
+ * to the right.
+ */
 export function HeroSection({ sessionHint }: { sessionHint: LandingSessionHint }) {
   return (
-    <section className={styles.hero}>
+    <section className={`${styles.hero} ${styles.zoneDark}`}>
       <div className={styles.heroInner}>
         <div className={styles.heroLeft}>
           <p className={styles.heroEyebrow}>Autonomous security operations for RWA</p>
@@ -35,7 +41,7 @@ export function HeroSection({ sessionHint }: { sessionHint: LandingSessionHint }
           <ul className={styles.capRow}>
             {heroCapabilities.map((cap) => (
               <li key={cap.label} className={styles.capItem}>
-                <span className={styles.capIcon}>
+                <span className={styles.capIcon} aria-hidden="true">
                   <HomeIcon name={cap.icon} />
                 </span>
                 {cap.label}

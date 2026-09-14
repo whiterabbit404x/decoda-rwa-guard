@@ -40,6 +40,8 @@ export type WorkflowTone = 'critical' | 'complete' | 'ai' | 'policy' | 'verified
 
 export interface WorkflowStep {
   icon: IconName;
+  /** Operational phase this step belongs to (DETECT -> INVESTIGATE -> ... -> PROVE). */
+  phase: string;
   title: string;
   detail: string;
   result: string;
@@ -49,6 +51,7 @@ export interface WorkflowStep {
 export const workflowSteps: WorkflowStep[] = [
   {
     icon: 'alert',
+    phase: 'DETECT',
     title: 'Critical anomaly detected',
     detail: 'USDC / Base',
     result: '7 alerts correlated',
@@ -56,6 +59,7 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     icon: 'incident',
+    phase: 'INVESTIGATE',
     title: 'INC-2026-017 opened',
     detail: 'Digital forensics investigation',
     result: 'High severity',
@@ -63,6 +67,7 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     icon: 'evidence',
+    phase: 'EVIDENCE',
     title: 'Evidence analyzed',
     detail: '23 transactions · 4 contracts',
     result: 'Complete',
@@ -70,6 +75,7 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     icon: 'ai',
+    phase: 'RECOMMEND',
     title: 'AI response recommended',
     detail: 'Emergency pause',
     result: 'Confidence 94%',
@@ -77,6 +83,7 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     icon: 'policy',
+    phase: 'POLICY',
     title: 'Policy evaluation',
     detail: 'Approval required',
     result: 'Needs approval',
@@ -84,6 +91,7 @@ export const workflowSteps: WorkflowStep[] = [
   },
   {
     icon: 'verified',
+    phase: 'PROVE',
     title: 'Evidence integrity',
     detail: 'SHA-256 verified',
     result: 'Verified',
@@ -271,6 +279,14 @@ export interface ConsoleCallout {
   detail: string;
 }
 
+/**
+ * Caption rendered directly under the console preview frame. The figures in
+ * the preview are illustrative, so the surface says so in plain language
+ * rather than relying on the small "Product preview" chip alone.
+ */
+export const CONSOLE_PREVIEW_NOTE =
+  'Illustrative interface preview. Figures are examples, not live customer data.';
+
 export const consoleCallouts: ConsoleCallout[] = [
   { title: 'Asset Risk', detail: 'Monitor asset and reserve integrity.' },
   { title: 'Threat Monitoring', detail: 'Detect abnormal on-chain activity.' },
@@ -381,7 +397,12 @@ export const rwaCards: RwaCard[] = [
 ];
 
 // ── Autonomous vs human-controlled workflow ──────────────────
+//
+// The flow is grouped into lanes so the landing page can make the
+// difference visible: what Decoda does on its own, and where the
+// organization's policy and a human approver take control.
 export type PolicyStepTone = 'blue' | 'amber' | 'gate' | 'green';
+export type PolicyLaneId = 'autonomous' | 'control' | 'execution';
 
 export interface PolicyStep {
   icon: IconName;
@@ -390,15 +411,48 @@ export interface PolicyStep {
   tone: PolicyStepTone;
 }
 
-export const policySteps: PolicyStep[] = [
-  { icon: 'observe', title: 'Observe', detail: 'automatically', tone: 'blue' },
-  { icon: 'evidenceAi', title: 'Investigate', detail: 'automatically', tone: 'blue' },
-  { icon: 'ai', title: 'Recommend', detail: 'automatically', tone: 'blue' },
-  { icon: 'policy', title: 'Policy evaluation', detail: 'decision gate', tone: 'gate' },
-  { icon: 'human', title: 'Human approval', detail: 'when required', tone: 'amber' },
-  { icon: 'response', title: 'Execute', detail: 'actions', tone: 'blue' },
-  { icon: 'verified', title: 'Record evidence', detail: 'immutable proof', tone: 'green' },
+export interface PolicyLane {
+  id: PolicyLaneId;
+  /** Short banner shown above the lane's steps. */
+  label: string;
+  /** One-line explanation of who is in control inside this lane. */
+  caption: string;
+  steps: PolicyStep[];
+}
+
+export const policyLanes: PolicyLane[] = [
+  {
+    id: 'autonomous',
+    label: 'Autonomous',
+    caption: 'Decoda runs these continuously, without waiting for an operator.',
+    steps: [
+      { icon: 'observe', title: 'Observe', detail: 'automatically', tone: 'blue' },
+      { icon: 'evidenceAi', title: 'Investigate', detail: 'automatically', tone: 'blue' },
+      { icon: 'ai', title: 'Recommend', detail: 'automatically', tone: 'blue' },
+    ],
+  },
+  {
+    id: 'control',
+    label: 'Policy & human control',
+    caption: 'Nothing high-impact executes until policy allows it and, where required, a person approves.',
+    steps: [
+      { icon: 'policy', title: 'Policy evaluation', detail: 'decision gate', tone: 'gate' },
+      { icon: 'human', title: 'Human approval', detail: 'when required', tone: 'amber' },
+    ],
+  },
+  {
+    id: 'execution',
+    label: 'Execution & proof',
+    caption: 'Only approved actions run, and each one leaves a record behind it.',
+    steps: [
+      { icon: 'response', title: 'Execute', detail: 'actions', tone: 'blue' },
+      { icon: 'verified', title: 'Record evidence', detail: 'immutable proof', tone: 'green' },
+    ],
+  },
 ];
+
+/** Flat ordered view of the same steps, for anything that needs the sequence. */
+export const policySteps: PolicyStep[] = policyLanes.flatMap((lane) => lane.steps);
 
 // ── Buyer teams ──────────────────────────────────────────────
 export interface TeamCard {
