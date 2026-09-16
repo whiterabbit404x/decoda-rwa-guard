@@ -182,7 +182,7 @@ function CheckRow({ check }: { check: ReadinessCheck }) {
         alignItems: 'center',
         gap: '0.5rem',
         padding: '0.45rem 0',
-        borderBottom: '1px solid rgba(48,54,61,0.5)',
+        borderBottom: '1px solid var(--border)',
         fontSize: '0.82rem',
       }}
     >

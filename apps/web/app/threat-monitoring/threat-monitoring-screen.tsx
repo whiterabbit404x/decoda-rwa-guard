@@ -1011,7 +1011,7 @@ function DetectionFilterBar({
             minWidth: '180px',
             padding: '0.45rem 0.6rem',
             fontSize: '0.85rem',
-            background: 'rgba(15,23,42,0.6)',
+            background: 'var(--bg-input)',
             border: '1px solid var(--border)',
             borderRadius: '6px',
             color: 'inherit',

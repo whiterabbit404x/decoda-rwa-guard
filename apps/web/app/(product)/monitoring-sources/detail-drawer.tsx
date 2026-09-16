@@ -56,7 +56,7 @@ function Shell({ title, subtitle, onClose, children }: { title: string; subtitle
         type="button"
         aria-label="Close drawer"
         onClick={onClose}
-        style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none', cursor: 'pointer' }}
+        style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none', cursor: 'pointer' }}
       />
       <div
         style={{

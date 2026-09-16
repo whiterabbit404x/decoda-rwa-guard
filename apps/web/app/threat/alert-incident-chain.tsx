@@ -18,7 +18,7 @@ function ChainStep({ title, value, statusColor }: StepProps) {
       style={{
         flex: 1,
         padding: '1rem',
-        background: 'rgba(255,255,255,0.03)',
+        background: 'var(--overlay-02)',
         borderRadius: '0.75rem',
         border: '1px solid var(--border)',
       }}

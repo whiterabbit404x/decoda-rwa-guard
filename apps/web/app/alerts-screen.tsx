@@ -727,7 +727,7 @@ function truncate(s: string, n: number): string {
 }
 
 const overlayStyle: CSSProperties = {
-  position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.55)', zIndex: 50,
+  position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 50,
   display: 'flex', justifyContent: 'flex-end',
 };
 const drawerStyle: CSSProperties = {

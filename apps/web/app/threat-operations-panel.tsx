@@ -2974,7 +2974,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
             <p style={{ fontSize: '0.9375rem', marginBottom: '1rem' }}>
               Summary: {evidenceDrawer.summary || 'No evidence summary available.'}
             </p>
-            <pre style={{ fontSize: '0.8rem', background: 'rgba(255,255,255,0.04)', borderRadius: '8px', padding: '1rem', overflow: 'auto', maxHeight: '20rem' }}>
+            <pre style={{ fontSize: '0.8rem', background: 'var(--bg-inset)', borderRadius: '8px', padding: '1rem', overflow: 'auto', maxHeight: '20rem' }}>
               {JSON.stringify(evidenceDrawer.raw ?? { message: 'No raw evidence found.' }, null, 2)}
             </pre>
             <button

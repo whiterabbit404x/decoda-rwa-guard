@@ -235,6 +235,34 @@ test.describe('no dark-only leftovers', () => {
     }
   });
 
+  test('no near-opaque dark surface is painted outside the dark palette', () => {
+    // The bug class this closes, found twice by the rendered sweep: a panel,
+    // tab strip or card authored for a dark-only product keeps a literal
+    // near-black fill. It stays invisible in dark review and becomes a black
+    // box on a white workspace. Shadows and scrims are the legitimate users
+    // of dark literals, and they live in the palette block.
+    const body = styles.slice(styles.indexOf('\n.container {'));
+    const offenders: string[] = [];
+    for (const [literal, r, g, b, a] of body.matchAll(
+      /rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*([\d.]+)\s*\)/g,
+    )) {
+      const dark = Number(r) < 80 && Number(g) < 80 && Number(b) < 90;
+      if (dark && Number(a) >= 0.4) offenders.push(literal);
+    }
+    expect(offenders, 'use --bg-surface / --bg-inset / --scrim instead').toEqual([]);
+  });
+
+  test('no shared primitive uses a gradient or glass treatment', () => {
+    // The brief rules these out, and the card primitives had both: a dark
+    // gradient behind an 8px backdrop blur, on every SurfaceCard, MetricTile,
+    // CtaPanel, EmptyState and TableShell in the product.
+    const sharedBlock = block('.sharedSurfaceCard,');
+    expect(sharedBlock).not.toContain('gradient');
+    expect(sharedBlock).not.toContain('backdrop-filter');
+    expect(sharedBlock).toContain('var(--bg-card)');
+    expect(sharedBlock).toContain('var(--border)');
+  });
+
   test('no white wash survives where a light surface would swallow it', () => {
     const body = styles.slice(styles.indexOf('\n.container {'));
     expect(body).not.toMatch(/rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*0?\.\d+\s*\)/);

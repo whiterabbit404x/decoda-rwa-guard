@@ -781,7 +781,7 @@ export default function MonitoringSourcesPage() {
       </button>
       {mobileAgentOpen ? (
         <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
+          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
           <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1rem' }}>
             <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
             {agentPanel}

@@ -50,7 +50,7 @@ function ActionCard({ href, title, helper, disabled, disabledReason }: ActionCar
     <div
       style={{
         flex: '1 1 220px',
-        background: 'rgba(255,255,255,0.03)',
+        background: 'var(--overlay-02)',
         border: '1px solid var(--border)',
         borderRadius: '12px',
         padding: '1.25rem 1.25rem 1rem',
@@ -129,7 +129,7 @@ export default function ResponseActionPanel({
                 justifyContent: 'space-between',
                 gap: '1rem',
                 padding: '0.75rem 1rem',
-                background: 'rgba(255,255,255,0.03)',
+                background: 'var(--overlay-02)',
                 border: '1px solid var(--border)',
                 borderRadius: '8px',
               }}

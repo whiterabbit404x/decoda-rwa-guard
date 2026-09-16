@@ -47,7 +47,7 @@ export function GovernanceDialog({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(1, 4, 9, 0.72)',
+        background: 'var(--scrim)',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',

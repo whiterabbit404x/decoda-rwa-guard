@@ -34,7 +34,9 @@
   --l-border-hover: #2563eb;
   --l-text-primary: #0f172a;
   --l-text-secondary:#475569;
-  --l-text-muted:   #64748b;
+  /* #64748b measured 4.34:1 on the subtle surface; this clears AA on
+     both the white card and the tinted one. */
+  --l-text-muted:   #5a6678;
   --l-text-accent:  #1d4ed8;
   --l-accent-blue:  #2563eb;
   --l-accent-strong:#1d4ed8;
@@ -43,7 +45,7 @@
      brightening to #3b82f6, which drops white ink to 3.7:1. */
   --l-accent-solid: #2563eb;
   --l-accent-bg:    rgba(37, 99, 235, 0.08);
-  --l-success-fg:   #15803d;
+  --l-success-fg:   #166534;
   --l-success-bg:   rgba(21, 128, 61, 0.09);
   --l-success-bdr:  rgba(21, 128, 61, 0.26);
   --l-warning-fg:   #b45309;
@@ -926,7 +928,10 @@ th {
   font-weight: 600;
   letter-spacing: 0.055em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  /* --text-secondary, not --text-muted: uppercase micro-type at 0.72rem is
+     small text by WCAG, and muted on the subtle header surface measured
+     4.34:1 — a near-miss that reads fine and fails AA. */
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -1989,7 +1994,7 @@ td .tableMeta {
   margin: 1rem 0 1.1rem;
   padding: 0.9rem 1rem;
   border-color: rgba(88, 166, 255, 0.36);
-  background: linear-gradient(180deg, rgba(18, 33, 58, 0.92), rgba(12, 20, 35, 0.94));
+  background: linear-gradient(180deg, var(--bg-surface), var(--bg-surface));
 }
 
 .authBuildBadgeHeader {
@@ -2095,7 +2100,7 @@ td .tableMeta {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0.9rem;
-  background: rgba(12, 17, 25, 0.75);
+  background: var(--bg-inset);
 }
 
 .explainabilityGrid {
@@ -2168,7 +2173,7 @@ td .tableMeta {
 
 .monitoringHeaderCard {
   padding: 1.25rem;
-  background: linear-gradient(180deg, var(--bg-subtle), rgba(14, 21, 35, 0.9));
+  background: linear-gradient(180deg, var(--bg-subtle), var(--bg-surface));
   border-color: rgba(106, 169, 255, 0.3);
 }
 
@@ -2294,10 +2299,9 @@ td .tableMeta {
 .sharedCtaPanel,
 .sharedEmptyStateBlocker,
 .sharedTableShell {
-  background: linear-gradient(180deg, rgba(14, 22, 35, 0.92), rgba(10, 16, 26, 0.95));
-  border: 1px solid rgba(124, 156, 196, 0.24);
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(8px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
 }
 
 /* ── Shared Select (accessible custom listbox) ──────────────────────
@@ -2386,35 +2390,53 @@ td .tableMeta {
   border-bottom: 1px solid rgba(124, 156, 196, 0.12);
 }
 
+/* The shared TabStrip primitive painted a near-opaque navy behind every tab,
+   which the light workspace then put slate --text-secondary on: 1.8:1,
+   dark-on-dark, on every screen that uses TabStrip. A restrained segmented
+   control on the themed subtle surface instead — the same visual family as
+   .underlineTabs, so the product has two tab idioms that agree rather than
+   several that do not. */
 .sharedTabStrip {
-  gap: 10px;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
   margin-bottom: 14px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
 }
 
 .sharedTabStrip button {
-  background: rgba(18, 29, 45, 0.92);
-  border: 1px solid rgba(124, 156, 196, 0.2);
-  font-size: 0.875rem;
+  background: none;
+  border: 1px solid transparent;
+  font-size: 0.85rem;
   font-weight: 500;
-  padding: 0.55rem 1.1rem;
-  min-height: 38px;
+  padding: 0.4rem 0.9rem;
+  min-height: 32px;
   color: var(--text-secondary);
-  border-radius: var(--radius-sm);
+  border-radius: calc(var(--radius-sm) - 2px);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .sharedTabStrip button:hover {
-  background: rgba(54, 95, 145, 0.25);
+  background: var(--overlay-02);
   color: var(--text-primary);
-  border-color: rgba(147, 194, 255, 0.35);
 }
 
+/* Selected: a raised surface, a border and a weight change — not colour alone. */
 .sharedTabStrip button.activeTab {
-  border-color: rgba(147, 194, 255, 0.55);
-  background: rgba(54, 95, 145, 0.35);
+  border-color: var(--border);
+  background: var(--bg-surface);
   color: var(--text-primary);
-  font-weight: 600;
+  font-weight: 650;
+  box-shadow: var(--shadow-xs);
+}
+
+.sharedTabStrip button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
 }
 
 /* --- Top header bar ----------------------------------------------- */
@@ -4034,7 +4056,7 @@ td .tableMeta {
   padding: 1rem;
   border-radius: 0.85rem;
   border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.48);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   gap: 0.85rem;
@@ -6518,7 +6540,7 @@ td .tableMeta {
 .mktPricingCard--featured {
   border-color: rgba(59, 130, 246, 0.4);
   box-shadow: 0 0 50px rgba(59, 130, 246, 0.08);
-  background: linear-gradient(160deg, var(--bg-subtle) 0%, rgba(10, 18, 38, 0.97) 100%);
+  background: linear-gradient(160deg, var(--bg-subtle) 0%, var(--bg-surface) 100%);
 }
 
 .mktPricingBadge {
@@ -9465,7 +9487,7 @@ a.mktTrustBadge:hover {
   border: 1px solid var(--border);
   border-radius: 0.7rem;
   padding: 0.7rem 0.8rem;
-  background: rgba(15, 23, 42, 0.35);
+  background: var(--overlay-04);
   display: flex;
   flex-direction: column;
   gap: 0.4rem;

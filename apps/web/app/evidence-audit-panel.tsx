@@ -1950,7 +1950,7 @@ export default function EvidenceAuditPanel() {
                     minWidth: '180px',
                     padding: '0.35rem 0.6rem',
                     fontSize: '0.8rem',
-                    background: 'rgba(15,23,42,0.6)',
+                    background: 'var(--bg-input)',
                     border: '1px solid var(--border)',
                     borderRadius: '6px',
                     color: 'inherit',
@@ -1967,7 +1967,7 @@ export default function EvidenceAuditPanel() {
                   style={{
                     padding: '0.35rem 0.6rem',
                     fontSize: '0.8rem',
-                    background: 'rgba(15,23,42,0.6)',
+                    background: 'var(--bg-input)',
                     border: '1px solid var(--border)',
                     borderRadius: '6px',
                     color: 'inherit',
