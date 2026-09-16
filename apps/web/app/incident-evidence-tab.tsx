@@ -189,7 +189,7 @@ function DomainCard({ label, count, active, accent, surface, border, onSelect }:
       aria-pressed={active}
       className="incidentEvidenceDomainCard"
       style={{
-        background: active ? surface : 'rgba(148,163,184,0.05)',
+        background: active ? surface : 'var(--overlay-03)',
         border: `1px solid ${active ? border : 'var(--border)'}`,
         borderLeft: `3px solid ${accent}`,
       }}

@@ -221,7 +221,7 @@ function AlertsScreenInner() {
                   aria-label={`${totals[tab.countKey]} alerts`}
                   style={{
                     marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.05rem 0.4rem',
-                    borderRadius: '999px', background: 'rgba(148,163,184,0.18)',
+                    borderRadius: '999px', background: 'var(--border)',
                   }}
                 >
                   {totals[tab.countKey]}
@@ -413,9 +413,9 @@ function AlertsTableRegion({
               ) : null}
             </td>
             <td style={{ fontSize: '0.82rem' }}>
-              <span style={{ color: alert.asset_known ? undefined : 'var(--text-secondary, #94a3b8)' }}>{alert.asset_name}</span>
+              <span style={{ color: alert.asset_known ? undefined : 'var(--text-secondary)' }}>{alert.asset_name}</span>
               {alert.tx_hash ? (
-                <div style={{ fontFamily: 'monospace', fontSize: '0.7rem', color: '#94a3b8' }} title={alert.tx_hash}>
+                <div style={{ fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }} title={alert.tx_hash}>
                   {shortHash(alert.tx_hash)}
                 </div>
               ) : null}
@@ -479,7 +479,7 @@ function TriagePanel({
             <StatusPill label={triageModeLabel(triage?.mode)} variant={triageModeVariant(triage?.mode)} />
             <StatusPill label={display.statusLabel} variant={display.statusVariant} />
           </div>
-          <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary, #94a3b8)', marginBottom: '0.75rem', display: 'grid', gap: '0.2rem' }}>
+          <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', display: 'grid', gap: '0.2rem' }}>
             <div>
               Last successful triage:{' '}
               <span title={exactTime(triage?.last_success_at)}>
@@ -496,7 +496,7 @@ function TriagePanel({
               </div>
             ) : null}
             {triage?.state === 'degraded' && triage.last_run?.error_code ? (
-              <div style={{ color: '#f59e0b' }} data-testid="triage-degraded">
+              <div style={{ color: 'var(--warning-fg)' }} data-testid="triage-degraded">
                 Last run failed ({triage.last_run.error_code}); showing the previous successful result.
               </div>
             ) : null}
@@ -504,14 +504,14 @@ function TriagePanel({
 
           {/* Top recommendation. */}
           {top ? (
-            <div style={{ borderTop: '1px solid rgba(148,163,184,0.15)', paddingTop: '0.7rem', marginBottom: '0.6rem' }} data-testid="top-recommendation">
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.7rem', marginBottom: '0.6rem' }} data-testid="top-recommendation">
               <p className="sectionEyebrow" style={{ marginBottom: '0.3rem' }}>Top recommendation</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
                 <StatusPill label={severityLabel(top.derived_severity)} variant={severityVariant(top.derived_severity)} />
                 <StatusPill label={recommendationLabel(top.recommendation_category)} variant="info" />
               </div>
               <p style={{ fontSize: '0.85rem', margin: '0 0 0.25rem', fontWeight: 600 }}>{top.title}</p>
-              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary, #94a3b8)', marginBottom: '0.35rem' }}>
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
                 <div>Affected asset: {top.primary_asset_name || 'Unassigned asset'}</div>
                 <div>{top.member_count} alert{top.member_count === 1 ? '' : 's'} in this cluster</div>
                 <div>
@@ -532,13 +532,13 @@ function TriagePanel({
               {top.reason_labels && top.reason_labels.length > 0 ? (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.5rem' }} data-testid="triage-reasons">
                   {top.reason_labels.slice(0, 6).map((r) => (
-                    <span key={r} style={{ fontSize: '0.68rem', padding: '0.1rem 0.45rem', borderRadius: '999px', background: 'rgba(148,163,184,0.14)' }}>{r}</span>
+                    <span key={r} style={{ fontSize: '0.68rem', padding: '0.1rem 0.45rem', borderRadius: '999px', background: 'var(--border)' }}>{r}</span>
                   ))}
                 </div>
               ) : null}
             </div>
           ) : triage?.schema_ready ? (
-            <p className="muted" style={{ fontSize: '0.82rem', borderTop: '1px solid rgba(148,163,184,0.15)', paddingTop: '0.7rem' }} data-testid="no-clusters">
+            <p className="muted" style={{ fontSize: '0.82rem', borderTop: '1px solid var(--border)', paddingTop: '0.7rem' }} data-testid="no-clusters">
               {triage.state === 'not_run'
                 ? 'No triage has run yet. Run triage to group related alerts into clusters.'
                 : 'No related-alert clusters were found in the current active set.'}
@@ -611,7 +611,7 @@ function ClusterReviewDrawer({
               data-testid="cluster-item"
               style={{
                 textAlign: 'left', padding: '0.7rem', borderRadius: '10px', cursor: 'pointer',
-                border: `1px solid ${activeClusterId === c.id ? 'rgba(59,130,246,0.6)' : 'rgba(148,163,184,0.2)'}`,
+                border: `1px solid ${activeClusterId === c.id ? 'rgba(59,130,246,0.6)' : 'var(--border)'}`,
                 background: activeClusterId === c.id ? 'rgba(59,130,246,0.08)' : 'transparent',
               }}
             >
@@ -732,5 +732,5 @@ const overlayStyle: CSSProperties = {
 };
 const drawerStyle: CSSProperties = {
   width: 'min(440px, 100%)', height: '100%', overflowY: 'auto', padding: '1.25rem',
-  background: 'var(--surface, #0f172a)', borderLeft: '1px solid rgba(148,163,184,0.2)',
+  background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)',
 };

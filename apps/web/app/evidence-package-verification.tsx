@@ -228,20 +228,20 @@ export type VerifyPhase = 'idle' | 'verifying';
 export const VERIFIED_STATUS = 'VERIFIED';
 
 const STATUS_PRESENTATION: Record<string, { label: string; variant: PillVariant; tone: string }> = {
-  VERIFIED: { label: 'Verified', variant: 'success', tone: '#22c55e' },
-  PARTIALLY_VERIFIED: { label: 'Partially Verified', variant: 'warning', tone: '#f59e0b' },
-  VERIFICATION_FAILED: { label: 'Verification Failed', variant: 'danger', tone: '#ef4444' },
-  SIGNATURE_UNAVAILABLE: { label: 'Signature Unavailable', variant: 'warning', tone: '#f59e0b' },
-  INCOMPLETE_PACKAGE: { label: 'Incomplete Package', variant: 'warning', tone: '#f59e0b' },
-  VERIFYING: { label: 'Verifying…', variant: 'info', tone: '#60a5fa' },
+  VERIFIED: { label: 'Verified', variant: 'success', tone: 'var(--success-fg)' },
+  PARTIALLY_VERIFIED: { label: 'Partially Verified', variant: 'warning', tone: 'var(--warning-fg)' },
+  VERIFICATION_FAILED: { label: 'Verification Failed', variant: 'danger', tone: 'var(--danger-fg)' },
+  SIGNATURE_UNAVAILABLE: { label: 'Signature Unavailable', variant: 'warning', tone: 'var(--warning-fg)' },
+  INCOMPLETE_PACKAGE: { label: 'Incomplete Package', variant: 'warning', tone: 'var(--warning-fg)' },
+  VERIFYING: { label: 'Verifying…', variant: 'info', tone: 'var(--text-accent)' },
   // Lifecycle statuses the contract also returns. Each names what it is rather
   // than collapsing into a generic "Not Verified" that hides the next step.
-  NOT_VERIFIED: { label: 'Not Verified', variant: 'neutral', tone: '#94a3b8' },
-  SUPERSEDED: { label: 'Superseded', variant: 'neutral', tone: '#94a3b8' },
-  LEGACY_EXPORT: { label: 'Legacy Export', variant: 'warning', tone: '#f59e0b' },
-  MANIFEST_MISSING: { label: 'Manifest Missing', variant: 'danger', tone: '#ef4444' },
-  BUILDING: { label: 'Building', variant: 'warning', tone: '#f59e0b' },
-  PACKAGE_FAILED: { label: 'Failed', variant: 'danger', tone: '#ef4444' },
+  NOT_VERIFIED: { label: 'Not Verified', variant: 'neutral', tone: 'var(--text-muted)' },
+  SUPERSEDED: { label: 'Superseded', variant: 'neutral', tone: 'var(--text-muted)' },
+  LEGACY_EXPORT: { label: 'Legacy Export', variant: 'warning', tone: 'var(--warning-fg)' },
+  MANIFEST_MISSING: { label: 'Manifest Missing', variant: 'danger', tone: 'var(--danger-fg)' },
+  BUILDING: { label: 'Building', variant: 'warning', tone: 'var(--warning-fg)' },
+  PACKAGE_FAILED: { label: 'Failed', variant: 'danger', tone: 'var(--danger-fg)' },
 };
 
 /** Pill variants the backend badge/hash-verification axes may name. */
@@ -289,49 +289,49 @@ export function contractHashVerification(
   return { label: axis.label, variant: CONTRACT_VARIANTS[String(axis.variant)] ?? 'neutral' };
 }
 
-const NOT_VERIFIED = { label: 'Not Verified', variant: 'neutral' as PillVariant, tone: '#94a3b8' };
+const NOT_VERIFIED = { label: 'Not Verified', variant: 'neutral' as PillVariant, tone: 'var(--text-muted)' };
 
 // Canonical shield states (backend ``_shield_for``). The green shield is licensed
 // by exactly ONE of them — never by an evidence-completeness percentage.
 export const SHIELD_PRESENTATION: Record<string, { label: string; tone: string; body: string }> = {
   VERIFIED: {
     label: 'Verified',
-    tone: '#22c55e',
+    tone: 'var(--success-fg)',
     body: 'This package is cryptographically sealed and tamper-evident: every artifact hash, the Merkle root and the manifest signature were recomputed on the server and matched.',
   },
   READY_FOR_VERIFICATION: {
     label: 'Ready for Verification',
-    tone: '#60a5fa',
+    tone: 'var(--text-accent)',
     body: 'All required evidence is present and hashed, but integrity has not been verified yet. Run Verify Integrity to check this package against its stored bytes.',
   },
   INTEGRITY_CHECK_FAILED: {
     label: 'Integrity Check Failed',
-    tone: '#ef4444',
+    tone: 'var(--danger-fg)',
     body: 'One or more cryptographic checks FAILED. This package must not be presented as proof.',
   },
   NOT_FULLY_VERIFIED: {
     label: 'Not Fully Verified',
-    tone: '#f59e0b',
+    tone: 'var(--warning-fg)',
     body: 'Everything checkable passed, but at least one check could not be run. This package is not fully verified — that is not evidence of tampering.',
   },
   INCOMPLETE_PACKAGE: {
     label: 'Incomplete Package',
-    tone: '#f59e0b',
+    tone: 'var(--warning-fg)',
     body: 'Evidence this package declares is missing, so it cannot be verified in full.',
   },
   NOT_VERIFIABLE: {
     label: 'Not Verifiable',
-    tone: '#94a3b8',
+    tone: 'var(--text-muted)',
     body: 'This package has no retrievable signed manifest, so its integrity cannot be verified.',
   },
   SUPERSEDED: {
     label: 'Superseded',
-    tone: '#94a3b8',
+    tone: 'var(--text-muted)',
     body: 'A newer package supersedes this one. Its historical state is preserved as-is.',
   },
   BUILDING: {
     label: 'Building',
-    tone: '#f59e0b',
+    tone: 'var(--warning-fg)',
     body: 'This package is still being generated. There is nothing to verify yet.',
   },
 };
@@ -342,14 +342,14 @@ export function verificationStatusPresentation(status?: string | null) {
 }
 
 const CHECK_MARKS: Record<string, { glyph: string; color: string; srLabel: string }> = {
-  passed: { glyph: '✓', color: '#22c55e', srLabel: 'passed' },
-  failed: { glyph: '✕', color: '#ef4444', srLabel: 'failed' },
-  unavailable: { glyph: '?', color: '#f59e0b', srLabel: 'could not be checked' },
+  passed: { glyph: '✓', color: 'var(--success-fg)', srLabel: 'passed' },
+  failed: { glyph: '✕', color: 'var(--danger-fg)', srLabel: 'failed' },
+  unavailable: { glyph: '?', color: 'var(--warning-fg)', srLabel: 'could not be checked' },
   // A check that has never been RUN is not a failure. Rendering it as a red ✗ is
   // exactly as untruthful as rendering it as a green ✓ — it gets its own neutral
   // "○ Not verified" mark.
-  not_verified: { glyph: '○', color: '#94a3b8', srLabel: 'not verified yet' },
-  not_applicable: { glyph: '–', color: '#94a3b8', srLabel: 'not applicable to this package' },
+  not_verified: { glyph: '○', color: 'var(--text-muted)', srLabel: 'not verified yet' },
+  not_applicable: { glyph: '–', color: 'var(--text-muted)', srLabel: 'not applicable to this package' },
 };
 
 function checkMark(status: string) {
@@ -374,11 +374,11 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
         justifyContent: 'space-between',
         gap: '0.75rem',
         padding: '0.3rem 0',
-        borderBottom: '1px solid rgba(148,163,184,0.08)',
+        borderBottom: '1px solid var(--overlay-06)',
       }}
     >
       <span className="tableMeta" style={{ flex: '0 0 auto' }}>{label}</span>
-      <span style={{ fontSize: '0.8rem', color: '#e2e8f0', textAlign: 'right', wordBreak: 'break-all' }}>
+      <span style={{ fontSize: '0.8rem', color: 'var(--text-primary)', textAlign: 'right', wordBreak: 'break-all' }}>
         {children}
       </span>
     </div>
@@ -456,7 +456,7 @@ export function PackageCryptoSummary({
           ) : (
             // Never a placeholder hash: a package sealed before the Merkle
             // commitment existed says so plainly.
-            <span style={{ color: '#94a3b8' }}>
+            <span style={{ color: 'var(--text-muted)' }}>
               Not sealed in this package
               {manifestSchemaVersion ? ` (manifest ${manifestSchemaVersion})` : ''}
             </span>
@@ -466,25 +466,25 @@ export function PackageCryptoSummary({
           {manifestSha256 ? (
             <code title={manifestSha256} style={{ fontSize: '0.76rem' }}>{truncateHash(manifestSha256)}</code>
           ) : (
-            <span style={{ color: '#94a3b8' }}>No retrievable manifest</span>
+            <span style={{ color: 'var(--text-muted)' }}>No retrievable manifest</span>
           )}
         </MetaRow>
         <MetaRow label="Hash Algorithm">{hashAlgorithm || '—'}</MetaRow>
         {merkleScheme ? <MetaRow label="Merkle Scheme">{merkleScheme}</MetaRow> : null}
         <MetaRow label="Signature">
-          <span style={{ color: signed ? '#e2e8f0' : '#94a3b8' }}>{signatureLabel}</span>
+          <span style={{ color: signed ? 'var(--text-primary)' : 'var(--text-muted)' }}>{signatureLabel}</span>
           {signing?.algorithm ? (
-            <span style={{ color: '#94a3b8' }}> · {signing.algorithm}</span>
+            <span style={{ color: 'var(--text-muted)' }}> · {signing.algorithm}</span>
           ) : null}
         </MetaRow>
         <MetaRow label="Signing Key">{signing?.key_id || '—'}</MetaRow>
         <MetaRow label="Signing Provider">{signing?.provider || '—'}</MetaRow>
         <MetaRow label="Signing Authority">
           {signing?.hardware_backed ? (
-            <span style={{ color: '#4ade80' }}>HSM/KMS-backed</span>
+            <span style={{ color: 'var(--success-fg)' }}>HSM/KMS-backed</span>
           ) : (
             // The abstraction existing is not a claim that hardware custody does.
-            <span style={{ color: '#cbd5e1' }}>
+            <span style={{ color: 'var(--text-secondary)' }}>
               {signing?.assurance_label || 'Software key (not hardware-backed)'}
             </span>
           )}
@@ -494,11 +494,11 @@ export function PackageCryptoSummary({
             <>
               <span>{policySnapshot.policy_key}</span>
               {policySnapshot.policy_version != null ? (
-                <span style={{ color: '#94a3b8' }}> · Version {policySnapshot.policy_version}</span>
+                <span style={{ color: 'var(--text-muted)' }}> · Version {policySnapshot.policy_version}</span>
               ) : null}
             </>
           ) : (
-            <span style={{ color: '#94a3b8' }}>
+            <span style={{ color: 'var(--text-muted)' }}>
               {policySnapshot?.reason || 'Not sealed in this package'}
             </span>
           )}
@@ -507,13 +507,13 @@ export function PackageCryptoSummary({
           {lastVerifiedAt ? (
             new Date(lastVerifiedAt).toLocaleString()
           ) : (
-            <span style={{ color: '#94a3b8' }}>Never verified</span>
+            <span style={{ color: 'var(--text-muted)' }}>Never verified</span>
           )}
         </MetaRow>
       </div>
 
       {policySnapshot?.present && policySnapshot?.decision ? (
-        <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#94a3b8' }}>
+        <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
           Policy state preserved as it was at the time of the incident
           {policySnapshot.decision_kind === 'simulation'
             ? ' — recorded as a simulation, which predicts but authorizes nothing.'
@@ -522,7 +522,7 @@ export function PackageCryptoSummary({
       ) : null}
 
       {signing?.warning ? (
-        <p role="note" style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#fbbf24' }}>
+        <p role="note" style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--warning-fg)' }}>
           ⚠ {signing.warning}
         </p>
       ) : null}
@@ -553,8 +553,8 @@ export function PackageVerificationPanel({
       aria-busy={phase === 'verifying'}
       style={{
         padding: '0.7rem 0.75rem',
-        background: 'rgba(148,163,184,0.05)',
-        border: '1px solid rgba(148,163,184,0.14)',
+        background: 'var(--overlay-03)',
+        border: '1px solid var(--border)',
         borderRadius: '6px',
         marginBottom: '0.9rem',
       }}
@@ -573,16 +573,16 @@ export function PackageVerificationPanel({
       </div>
 
       {phase === 'verifying' ? (
-        <p role="status" aria-live="polite" style={{ margin: 0, fontSize: '0.76rem', color: '#94a3b8' }}>
+        <p role="status" aria-live="polite" style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-muted)' }}>
           Recomputing artifact hashes, rebuilding the Merkle tree and re-checking the manifest signature on the
           server…
         </p>
       ) : error ? (
-        <p role="alert" style={{ margin: 0, fontSize: '0.76rem', color: '#fbbf24' }}>
+        <p role="alert" style={{ margin: 0, fontSize: '0.76rem', color: 'var(--warning-fg)' }}>
           {error}
         </p>
       ) : !result ? (
-        <p style={{ margin: 0, fontSize: '0.76rem', color: '#94a3b8' }}>
+        <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-muted)' }}>
           This package has not been verified yet. Run Verify Integrity to check it against its stored bytes.
         </p>
       ) : (
@@ -605,7 +605,7 @@ export function PackageVerificationPanel({
                     {mark.glyph}
                   </span>
                   <span style={{ flex: 1 }}>
-                    <span style={{ color: check.status === 'passed' ? '#e2e8f0' : '#cbd5e1' }}>
+                    <span style={{ color: check.status === 'passed' ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
                       {check.label}
                     </span>
                     <span className="sr-only"> {mark.srLabel}</span>
@@ -615,7 +615,7 @@ export function PackageVerificationPanel({
                       <span
                         style={{
                           display: 'block',
-                          color: check.status === 'failed' ? '#fca5a5' : '#94a3b8',
+                          color: check.status === 'failed' ? 'var(--danger-fg)' : 'var(--text-muted)',
                           fontSize: '0.71rem',
                           marginTop: '0.1rem',
                         }}
@@ -624,7 +624,7 @@ export function PackageVerificationPanel({
                       </span>
                     ) : null}
                     {check.status === 'failed' && (check.failed_artifact_paths?.length ?? 0) > 0 ? (
-                      <span style={{ display: 'block', color: '#fca5a5', fontSize: '0.71rem' }}>
+                      <span style={{ display: 'block', color: 'var(--danger-fg)', fontSize: '0.71rem' }}>
                         Affected: {check.failed_artifact_paths!.slice(0, 5).join(', ')}
                         {check.failed_artifact_paths!.length > 5
                           ? ` +${check.failed_artifact_paths!.length - 5} more`
@@ -637,7 +637,7 @@ export function PackageVerificationPanel({
             })}
           </ul>
           {result.verified_at ? (
-            <p style={{ margin: '0.45rem 0 0', fontSize: '0.7rem', color: '#94a3b8' }}>
+            <p style={{ margin: '0.45rem 0 0', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
               Last verified {new Date(result.verified_at).toLocaleString()}
               {result.schema_version ? ` · manifest schema ${result.schema_version}` : ''}
             </p>
@@ -674,16 +674,16 @@ export function LegacyValidationRecord({
       style={{
         marginBottom: '0.75rem',
         padding: '0.55rem 0.65rem',
-        background: failed ? 'rgba(239,68,68,0.07)' : 'rgba(148,163,184,0.05)',
-        border: '1px solid rgba(148,163,184,0.14)',
-        borderLeft: `3px solid ${failed ? '#ef4444' : '#94a3b8'}`,
+        background: failed ? 'rgba(239,68,68,0.07)' : 'var(--overlay-03)',
+        border: '1px solid var(--border)',
+        borderLeft: `3px solid ${failed ? 'var(--danger-fg)' : 'var(--text-muted)'}`,
         borderRadius: '6px',
       }}
     >
       <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem' }}>
         {legacy.label || 'Legacy Validation Record'}
       </p>
-      <p style={{ margin: 0, fontSize: '0.76rem', color: failed ? '#fca5a5' : '#cbd5e1' }}>
+      <p style={{ margin: 0, fontSize: '0.76rem', color: failed ? 'var(--danger-fg)' : 'var(--text-secondary)' }}>
         {failed
           ? `${legacy.files_failed ?? 0} hash mismatch(es) recorded`
           : `${legacy.files_verified ?? 0}/${legacy.files_total ?? 0} hashes matched`}
@@ -691,7 +691,7 @@ export function LegacyValidationRecord({
         {legacy.manifest_schema_version ? ` · legacy schema ${legacy.manifest_schema_version}` : ''}
       </p>
       {legacy.detail ? (
-        <p style={{ margin: '0.3rem 0 0', fontSize: '0.71rem', color: '#94a3b8', lineHeight: 1.45 }}>
+        <p style={{ margin: '0.3rem 0 0', fontSize: '0.71rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>
           {legacy.detail}
         </p>
       ) : null}
@@ -756,8 +756,8 @@ export function VerificationShield({
         padding: '0.85rem 0.8rem',
         borderRadius: '8px',
         textAlign: 'center',
-        border: `1px solid ${isVerified ? 'rgba(34,197,94,0.35)' : 'rgba(148,163,184,0.18)'}`,
-        background: isVerified ? 'rgba(34,197,94,0.07)' : 'rgba(148,163,184,0.05)',
+        border: `1px solid ${isVerified ? 'rgba(34,197,94,0.35)' : 'var(--border)'}`,
+        background: isVerified ? 'rgba(34,197,94,0.07)' : 'var(--overlay-03)',
       }}
     >
       <svg
@@ -795,11 +795,11 @@ export function VerificationShield({
       >
         {presentation.label.toUpperCase()}
       </p>
-      <p style={{ margin: '0.35rem 0 0', fontSize: '0.71rem', color: '#94a3b8', lineHeight: 1.45 }}>{body}</p>
+      <p style={{ margin: '0.35rem 0 0', fontSize: '0.71rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>{body}</p>
       {isVerified && !hardwareBacked ? (
         // Truthfulness: a verified seal is not a hardware-custodied signature,
         // and the product never lets one read as the other.
-        <p style={{ margin: '0.35rem 0 0', fontSize: '0.68rem', color: '#94a3b8' }}>
+        <p style={{ margin: '0.35rem 0 0', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
           Sealed with a software-held key ({result?.signer?.assurance_label || 'shared-secret HMAC'}), not an
           HSM/KMS-backed signature.
         </p>
@@ -816,7 +816,7 @@ export function PackageContents({ contents }: { contents?: PackageContentEntry[]
     return (
       <section aria-label="Package contents" style={{ marginTop: '0.9rem' }}>
         <p className="sectionEyebrow" style={{ margin: '0 0 0.35rem' }}>Package Contents</p>
-        <p style={{ margin: 0, fontSize: '0.76rem', color: '#94a3b8' }}>
+        <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-muted)' }}>
           Package contents are available once this package has a retrievable manifest.
         </p>
       </section>
@@ -840,28 +840,28 @@ export function PackageContents({ contents }: { contents?: PackageContentEntry[]
               padding: '0.5rem 0.45rem',
               borderRadius: '6px',
               textAlign: 'center',
-              border: '1px solid rgba(148,163,184,0.14)',
+              border: '1px solid var(--border)',
               // An unavailable file is visibly dimmed and labelled — never
               // rendered as though it were present in the archive.
-              background: entry.available ? 'rgba(148,163,184,0.06)' : 'rgba(148,163,184,0.02)',
+              background: entry.available ? 'var(--overlay-04)' : 'var(--overlay-01)',
               opacity: entry.available ? 1 : 0.55,
             }}
           >
-            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: entry.available ? '#e2e8f0' : '#94a3b8' }}>
+            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: entry.available ? 'var(--text-primary)' : 'var(--text-muted)' }}>
               {entry.kind === 'directory' ? (entry.count ?? 0) : entry.available ? '✓' : '—'}
             </div>
-            <div style={{ fontSize: '0.72rem', color: '#cbd5e1', marginTop: '0.15rem' }}>{entry.label}</div>
-            <div style={{ fontSize: '0.64rem', color: '#94a3b8', wordBreak: 'break-all', marginTop: '0.1rem' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>{entry.label}</div>
+            <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', wordBreak: 'break-all', marginTop: '0.1rem' }}>
               {entry.path.split('/').slice(1).join('/') || entry.path}
             </div>
             {!entry.available ? (
-              <div style={{ fontSize: '0.63rem', color: '#fbbf24', marginTop: '0.2rem' }}>Unavailable</div>
+              <div style={{ fontSize: '0.63rem', color: 'var(--warning-fg)', marginTop: '0.2rem' }}>Unavailable</div>
             ) : null}
           </div>
         ))}
       </div>
       {entries.some((entry) => !entry.available) ? (
-        <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1rem', fontSize: '0.68rem', color: '#94a3b8' }}>
+        <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
           {entries
             .filter((entry) => !entry.available && entry.unavailable_reason)
             .map((entry) => (
@@ -936,11 +936,11 @@ export function VerificationChecklist({
               {mark.glyph}
             </span>
             <span style={{ flex: 1 }}>
-              <span style={{ color: item.state === 'failed' ? '#f87171' : undefined }}>
+              <span style={{ color: item.state === 'failed' ? 'var(--danger-fg)' : undefined }}>
                 {item.label}
               </span>
               {item.state === 'not_verified' ? (
-                <span style={{ color: '#94a3b8' }}> — not verified</span>
+                <span style={{ color: 'var(--text-muted)' }}> — not verified</span>
               ) : null}
               <span className="sr-only"> {mark.srLabel}</span>
             </span>

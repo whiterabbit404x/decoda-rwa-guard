@@ -74,14 +74,14 @@ function ReserveRing({ percent, variant }: { percent: number | null; variant: st
   const pct = percent === null ? 0 : Math.max(0, Math.min(200, percent));
   const dash = Math.min(100, (pct / 200) * 100);
   const color =
-    variant === 'danger' ? 'var(--danger-fg, #f87171)'
-      : variant === 'warning' ? 'var(--warning-fg, #fbbf24)'
-        : variant === 'success' ? 'var(--success-fg, #4ade80)'
-          : 'var(--text-muted, #5a6478)';
+    variant === 'danger' ? 'var(--danger-fg)'
+      : variant === 'warning' ? 'var(--warning-fg)'
+        : variant === 'success' ? 'var(--success-fg)'
+          : 'var(--text-muted)';
   return (
     <div className="reserveRing" aria-hidden="true">
       <svg viewBox="0 0 42 42" width="96" height="96">
-        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--border, #2a3444)" strokeWidth="3" />
+        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--border)" strokeWidth="3" />
         <circle
           cx="21" cy="21" r="15.9" fill="none" stroke={color} strokeWidth="3" strokeLinecap="round"
           strokeDasharray={`${dash} ${100 - dash}`} strokeDashoffset="25" transform="rotate(-90 21 21)"

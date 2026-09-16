@@ -24,8 +24,11 @@ import {
   posturePercentLabel,
   riskPillVariant,
 } from './governance-view-model';
+import ThemeToggle from './theme-toggle';
+import { useTheme } from './theme-context';
+import { THEME_OPTIONS } from './theme-preference';
 
-type TabKey = 'general' | 'team' | 'security' | 'policies' | 'billing' | 'notifications';
+type TabKey = 'general' | 'team' | 'security' | 'policies' | 'billing' | 'notifications' | 'appearance';
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'general', label: 'General' },
@@ -34,6 +37,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'policies', label: 'Policies' },
   { key: 'billing', label: 'Billing' },
   { key: 'notifications', label: 'Notifications' },
+  { key: 'appearance', label: 'Appearance' },
 ];
 
 const TEAM_MEMBER_HEADERS = ['Member', 'Email', 'Role', 'Status', 'Last Active', 'Actions'] as const;
@@ -98,14 +102,14 @@ function SectionCard({ title, children, action }: { title: string; children: Rea
 
 function FieldRow({ label, value, readOnly, note }: { label: string; value: ReactNode; readOnly?: boolean; note?: string }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '0.5rem 1rem', alignItems: 'center', padding: '0.55rem 0', borderBottom: '1px solid #21262d' }}>
-      <span style={{ color: '#8b949e', fontSize: '0.82rem', fontWeight: 600 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: '0.5rem 1rem', alignItems: 'center', padding: '0.55rem 0', borderBottom: '1px solid var(--border)' }}>
+      <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600 }}>
         {label}
-        {readOnly ? <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: '#5a6478' }}>(read-only)</span> : null}
+        {readOnly ? <span style={{ marginLeft: '0.4rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>(read-only)</span> : null}
       </span>
       <span style={{ fontSize: '0.85rem' }}>
         {value}
-        {note ? <span style={{ display: 'block', color: '#5a6478', fontSize: '0.75rem', marginTop: '0.15rem' }}>{note}</span> : null}
+        {note ? <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.15rem' }}>{note}</span> : null}
       </span>
     </div>
   );
@@ -179,6 +183,7 @@ export default function SettingsPageClient() {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('general');
+  const { preference: themePreference, resolved: resolvedTheme } = useTheme();
   const [wsName, setWsName] = useState('');
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
@@ -563,25 +568,15 @@ export default function SettingsPageClient() {
         </div>
 
         
-        <div role="tablist" aria-label="Settings tabs" style={{ display: 'flex', gap: '0.25rem', marginTop: '1.5rem', borderBottom: '1px solid #21262d', paddingBottom: 0 }}>
+        <div className="underlineTabs" role="tablist" aria-label="Settings tabs">
           {TABS.map(({ key, label }) => (
             <button
               key={key}
               type="button"
               role="tab"
+              className="underlineTab"
               aria-selected={activeTab === key}
               onClick={() => setActiveTab(key)}
-              style={{
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === key ? '2px solid #3b82f6' : '2px solid transparent',
-                color: activeTab === key ? '#93c5fd' : '#8b949e',
-                cursor: 'pointer',
-                fontWeight: activeTab === key ? 700 : 500,
-                fontSize: '0.88rem',
-                padding: '0.6rem 1rem',
-                marginBottom: '-1px',
-              }}
             >
               {label}
             </button>
@@ -593,7 +588,7 @@ export default function SettingsPageClient() {
       {activeTab === 'general' ? (
         <section className="featureSection">
           {govMessage ? (
-            <p role="status" style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: govMessage.tone === 'error' ? '#f87171' : '#4ade80' }}>{govMessage.text}</p>
+            <p role="status" style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: govMessage.tone === 'error' ? 'var(--danger-fg)' : 'var(--success-fg)' }}>{govMessage.text}</p>
           ) : null}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
 
@@ -614,17 +609,17 @@ export default function SettingsPageClient() {
                       onChange={(e) => setWsName(e.target.value)}
                       disabled={!canManageSettings}
                       aria-label="Workspace Name"
-                      style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.65rem', fontSize: '0.85rem', opacity: canManageSettings ? 1 : 0.6 }}
+                      style={{ width: '100%', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.45rem 0.65rem', fontSize: '0.85rem', opacity: canManageSettings ? 1 : 0.6 }}
                     />
                   } />
-                  <FieldRow label="Workspace ID" readOnly value={<code style={{ fontSize: '0.8rem', color: '#8b949e' }}>{resolvedWorkspace?.id ?? '-'}</code>} />
+                  <FieldRow label="Workspace ID" readOnly value={<code style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{resolvedWorkspace?.id ?? '-'}</code>} />
                   <FieldRow label="Timezone" value={
                     <select
                       value={timezone}
                       onChange={(e) => setTimezone(e.target.value)}
                       disabled={!canManageSettings}
                       aria-label="Timezone"
-                      style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
+                      style={{ background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
                     >
                       {(gov.settings?.allowed_timezones ?? ['UTC']).map((tz) => <option key={tz} value={tz}>{tz}</option>)}
                     </select>
@@ -635,7 +630,7 @@ export default function SettingsPageClient() {
                       onChange={(e) => setCurrency(e.target.value)}
                       disabled={!canManageSettings}
                       aria-label="Currency"
-                      style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
+                      style={{ background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.4rem 0.6rem', fontSize: '0.85rem', width: '100%' }}
                     >
                       {(gov.settings?.allowed_currencies ?? ['USD']).map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
@@ -655,7 +650,7 @@ export default function SettingsPageClient() {
                       {savingSettings ? 'Saving…' : 'Save Changes'}
                     </button>
                     {settingsMsg ? (
-                      <span role={settingsMsg.tone === 'success' ? 'status' : 'alert'} style={{ fontSize: '0.8rem', color: settingsMsg.tone === 'success' ? '#4ade80' : settingsMsg.tone === 'conflict' ? '#fbbf24' : '#f87171' }}>
+                      <span role={settingsMsg.tone === 'success' ? 'status' : 'alert'} style={{ fontSize: '0.8rem', color: settingsMsg.tone === 'success' ? 'var(--success-fg)' : settingsMsg.tone === 'conflict' ? 'var(--warning-fg)' : 'var(--danger-fg)' }}>
                         {settingsMsg.text}
                         {settingsMsg.tone === 'conflict' ? (
                           <button className="btn btn-ghost" type="button" style={{ marginLeft: '0.5rem', fontSize: '0.76rem', padding: '0.2rem 0.5rem' }} onClick={() => void loadGovernance()}>Refresh</button>
@@ -675,7 +670,7 @@ export default function SettingsPageClient() {
               </button>
             ) : undefined}>
               {gov.securityState === 'error' ? (
-                <p role="alert" style={{ color: '#f87171', fontSize: '0.85rem' }}>Security settings unavailable.</p>
+                <p role="alert" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>Security settings unavailable.</p>
               ) : gov.securityState === 'permission_denied' ? (
                 <p className="muted" style={{ fontSize: '0.85rem' }}>Requires security management permission.</p>
               ) : gov.securityState === 'loading' ? (
@@ -698,7 +693,7 @@ export default function SettingsPageClient() {
             {/* AI Policy Impact */}
             <SectionCard title="AI Policy Impact">
               {gov.postureState === 'error' ? (
-                <p role="alert" style={{ color: '#f87171', fontSize: '0.85rem' }}>Policy analysis unavailable.</p>
+                <p role="alert" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>Policy analysis unavailable.</p>
               ) : gov.postureState === 'permission_denied' ? (
                 <p className="muted" style={{ fontSize: '0.85rem' }}>Requires security management permission.</p>
               ) : (
@@ -715,7 +710,7 @@ export default function SettingsPageClient() {
                     </div>
                   </div>
                   {gov.posture?.evidence_status === 'insufficient' ? (
-                    <p style={{ color: '#fbbf24', fontSize: '0.78rem', margin: '0 0 0.5rem' }}>Access evidence not evaluated — run Governance Guard evaluation for a complete score.</p>
+                    <p style={{ color: 'var(--warning-fg)', fontSize: '0.78rem', margin: '0 0 0.5rem' }}>Access evidence not evaluated — run Governance Guard evaluation for a complete score.</p>
                   ) : null}
                   <button className="btn btn-secondary" type="button" onClick={() => setDialog('policy')} disabled={gov.postureState !== 'loaded'}>
                     View policy impact →
@@ -745,7 +740,7 @@ export default function SettingsPageClient() {
                       <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.8rem' }}>{safeguard.detail}</p>
                     </div>
                     {pending > 0 ? (
-                      <p style={{ margin: '0 0 0.6rem', fontSize: '0.82rem', color: '#fbbf24' }}>
+                      <p style={{ margin: '0 0 0.6rem', fontSize: '0.82rem', color: 'var(--warning-fg)' }}>
                         {pending} security change{pending === 1 ? '' : 's'} awaiting approval.{' '}
                         <button className="btn btn-ghost" type="button" style={{ fontSize: '0.78rem', padding: '0.2rem 0.5rem' }} onClick={() => void openApprovals()}>Review approvals</button>
                       </p>
@@ -807,11 +802,11 @@ export default function SettingsPageClient() {
             <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
               {['all', 'critical', 'high', 'medium', 'low', 'pending', 'completed', 'rejected'].map((f) => (
                 <button key={f} type="button" className={'btn btn-ghost'} onClick={() => setChangeLog((p) => ({ ...p, filter: f }))}
-                  style={{ fontSize: '0.76rem', padding: '0.2rem 0.55rem', borderBottom: changeLog.filter === f ? '2px solid #3b82f6' : '2px solid transparent', textTransform: 'capitalize' }}>{f}</button>
+                  style={{ fontSize: '0.76rem', padding: '0.2rem 0.55rem', borderBottom: changeLog.filter === f ? '2px solid var(--accent-blue)' : '2px solid transparent', textTransform: 'capitalize' }}>{f}</button>
               ))}
             </div>
             {changeLog.state === 'loading' ? <p className="muted">Loading change log…</p>
-              : changeLog.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Change log unavailable.</p>
+              : changeLog.state === 'error' ? <p role="alert" style={{ color: 'var(--danger-fg)' }}>Change log unavailable.</p>
               : changeLog.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
               : (
                 <div style={{ overflowX: 'auto' }}>
@@ -842,7 +837,7 @@ export default function SettingsPageClient() {
 
           <GovernanceDialog open={dialog === 'approvals'} title="Pending approvals" onClose={() => setDialog(null)} maxWidth={760}>
             {approvals.state === 'loading' ? <p className="muted">Loading approvals…</p>
-              : approvals.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Approvals unavailable.</p>
+              : approvals.state === 'error' ? <p role="alert" style={{ color: 'var(--danger-fg)' }}>Approvals unavailable.</p>
               : approvals.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
               : approvals.items.length === 0 ? <p className="muted">No change requests.</p>
               : (
@@ -868,7 +863,7 @@ export default function SettingsPageClient() {
                       ) : a.status === 'completed' ? (
                         <p className="muted" style={{ fontSize: '0.78rem', margin: '0.4rem 0 0' }}>Approved by {a.approved_by ?? 'authorized approver'} · executed {a.executed_at ? new Date(a.executed_at).toLocaleString() : ''}</p>
                       ) : a.status === 'failed' ? (
-                        <p style={{ fontSize: '0.78rem', margin: '0.4rem 0 0', color: '#f87171' }}>Execution failed: {a.failure_reason}</p>
+                        <p style={{ fontSize: '0.78rem', margin: '0.4rem 0 0', color: 'var(--danger-fg)' }}>Execution failed: {a.failure_reason}</p>
                       ) : null}
                     </article>
                   ))}
@@ -878,7 +873,7 @@ export default function SettingsPageClient() {
 
           <GovernanceDialog open={dialog === 'anomalies'} title="Access anomalies" onClose={() => setDialog(null)} maxWidth={760}>
             {anomalies.state === 'loading' ? <p className="muted">Loading findings…</p>
-              : anomalies.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Findings unavailable.</p>
+              : anomalies.state === 'error' ? <p role="alert" style={{ color: 'var(--danger-fg)' }}>Findings unavailable.</p>
               : anomalies.state === 'permission_denied' ? <p className="muted">Requires security management permission.</p>
               : anomalies.items.length === 0 ? <p className="muted">No access anomalies recorded. Run evaluation to check for new findings.</p>
               : (
@@ -948,7 +943,7 @@ export default function SettingsPageClient() {
                 <label className="label" htmlFor="mfa-enforcement">MFA enforcement</label>
                 <select id="mfa-enforcement" value={securityDraft.mfa_enforcement}
                   onChange={(e) => setSecurityDraft({ ...securityDraft, mfa_enforcement: e.target.value })}
-                  style={{ display: 'block', width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0.75rem' }}>
+                  style={{ display: 'block', width: '100%', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0.75rem' }}>
                   <option value="optional">Optional</option>
                   <option value="administrators">Administrators</option>
                   <option value="all_members">All members</option>
@@ -956,7 +951,7 @@ export default function SettingsPageClient() {
                 <label className="label" htmlFor="session-window">Session timeout</label>
                 <select id="session-window" value={securityDraft.reauthentication_minutes}
                   onChange={(e) => setSecurityDraft({ ...securityDraft, reauthentication_minutes: Number(e.target.value) })}
-                  style={{ display: 'block', width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0' }}>
+                  style={{ display: 'block', width: '100%', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.45rem 0.6rem', fontSize: '0.85rem', margin: '0.25rem 0 0' }}>
                   {(gov.security?.session_timeout_options ?? [{ value: 30, label: '30 minutes' }]).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
@@ -974,7 +969,7 @@ export default function SettingsPageClient() {
             <SectionCard title="Invite Member">
               <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <div style={{ flex: '1 1 240px' }}>
-                  <label style={{ display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: '0.3rem', fontWeight: 600 }}>Email</label>
+                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.3rem', fontWeight: 600 }}>Email</label>
                   <input
                     type="email"
                     value={inviteEmail}
@@ -983,16 +978,16 @@ export default function SettingsPageClient() {
                     placeholder="teammate@company.com"
                     aria-describedby={inviteEmailError ? 'invite-email-error' : undefined}
                     aria-invalid={!!inviteEmailError}
-                    style={{ width: '100%', background: '#0d1117', border: `1px solid ${inviteEmailError ? '#f87171' : '#30363d'}`, borderRadius: 8, color: '#e6edf3', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
+                    style={{ width: '100%', background: 'var(--bg-inset)', border: `1px solid ${inviteEmailError ? 'var(--danger-fg)' : 'var(--border)'}`, borderRadius: 8, color: 'var(--text-primary)', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
                   />
-                  {inviteEmailError ? <p id="invite-email-error" style={{ color: '#f87171', fontSize: '0.78rem', margin: '0.2rem 0 0' }} role="alert">{inviteEmailError}</p> : null}
+                  {inviteEmailError ? <p id="invite-email-error" style={{ color: 'var(--danger-fg)', fontSize: '0.78rem', margin: '0.2rem 0 0' }} role="alert">{inviteEmailError}</p> : null}
                 </div>
                 <div style={{ flex: '0 1 160px' }}>
-                  <label style={{ display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: '0.3rem', fontWeight: 600 }}>Role</label>
+                  <label style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.3rem', fontWeight: 600 }}>Role</label>
                   <select
                     value={inviteRole}
                     onChange={(e) => setInviteRole(e.target.value)}
-                    style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, color: '#e6edf3', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
+                    style={{ width: '100%', background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', padding: '0.5rem 0.7rem', fontSize: '0.85rem' }}
                   >
                     <option value="owner">Owner</option>
                     <option value="admin">Admin</option>
@@ -1005,7 +1000,7 @@ export default function SettingsPageClient() {
                   Send Invitation
                 </button>
               </div>
-              {message ? <p style={{ marginTop: '0.6rem', fontSize: '0.82rem', color: message.includes('failed') || message.includes('Unable') ? '#f87171' : '#4ade80' }}>{message}</p> : null}
+              {message ? <p style={{ marginTop: '0.6rem', fontSize: '0.82rem', color: message.includes('failed') || message.includes('Unable') ? 'var(--danger-fg)' : 'var(--success-fg)' }}>{message}</p> : null}
             </SectionCard>
 
             {/* Team Members table */}
@@ -1036,7 +1031,7 @@ export default function SettingsPageClient() {
                           <select
                             value={member.role}
                             onChange={(e) => void updateRole(member.id, e.target.value)}
-                            style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, color: '#e6edf3', padding: '0.3rem 0.5rem', fontSize: '0.78rem' }}
+                            style={{ background: 'var(--bg-inset)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-primary)', padding: '0.3rem 0.5rem', fontSize: '0.78rem' }}
                           >
                             <option value="owner">Owner</option>
                             <option value="admin">Admin</option>
@@ -1052,7 +1047,7 @@ export default function SettingsPageClient() {
                   ))}
                   {invitations.map((inv) => (
                     <tr key={inv.id}>
-                      <td><span style={{ color: '#8b949e' }}>-</span></td>
+                      <td><span style={{ color: 'var(--text-secondary)' }}>-</span></td>
                       <td><span className="muted">{inv.email}</span></td>
                       <td>
                         <span className="pill pill-info" style={{ textTransform: 'capitalize' }}>{inv.role}</span>
@@ -1121,13 +1116,13 @@ export default function SettingsPageClient() {
             {/* Audit Logging */}
             <SectionCard title="Audit Logging">
               <FieldRow label="Audit Logging Status" value={<StatusPill status={readiness?.status === 'pass' ? 'Enabled' : 'Not Configured'} />} />
-              <FieldRow label="Retention Period" value={<span style={{ color: '#8b949e' }}>90 days (default)</span>} />
-              <FieldRow label="Last Readiness Check" value={<span style={{ color: '#8b949e' }}>{readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'Not available'}</span>} />
-              <FieldRow label="Blocking Issues" value={<span style={{ color: readiness && readiness.blocking_failures?.length > 0 ? '#f87171' : '#4ade80' }}>{readiness?.blocking_failures?.length ?? 0} issues</span>} />
+              <FieldRow label="Retention Period" value={<span style={{ color: 'var(--text-secondary)' }}>90 days (default)</span>} />
+              <FieldRow label="Last Readiness Check" value={<span style={{ color: 'var(--text-secondary)' }}>{readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'Not available'}</span>} />
+              <FieldRow label="Blocking Issues" value={<span style={{ color: readiness && readiness.blocking_failures?.length > 0 ? 'var(--danger-fg)' : 'var(--success-fg)' }}>{readiness?.blocking_failures?.length ?? 0} issues</span>} />
               {readiness?.checks && readiness.checks.length > 0 ? (
                 <ul style={{ marginTop: '0.5rem', padding: 0, listStyle: 'none', fontSize: '0.82rem' }}>
                   {readiness.checks.map((check) => (
-                    <li key={check.key} style={{ color: check.pass ? '#4ade80' : '#f87171', marginBottom: '0.25rem' }}>
+                    <li key={check.key} style={{ color: check.pass ? 'var(--success-fg)' : 'var(--danger-fg)', marginBottom: '0.25rem' }}>
                       {check.label}: {check.reason ?? (check.pass ? 'OK' : 'Failed')}
                     </li>
                   ))}
@@ -1169,10 +1164,10 @@ export default function SettingsPageClient() {
             <SectionCard title="Plan">
               <FieldRow label="Plan" value={<span style={{ fontWeight: 600 }}>{subscription?.plan_key ? String(subscription.plan_key).toUpperCase() : 'Not Configured'}</span>} />
               <FieldRow label="Status" value={<StatusPill status={billingStatusDisplay} />} />
-              <FieldRow label="Billing Email" value={<span style={{ color: '#8b949e' }}>{user?.email ?? 'Not configured'}</span>} />
-              <FieldRow label="Renewal Date" value={<span style={{ color: '#8b949e' }}>{subscription?.current_period_end ? formatDate(subscription.current_period_end) : 'Not available'}</span>} />
-              {nearSeatLimit ? <p style={{ marginTop: '0.5rem', color: '#fbbf24', fontSize: '0.82rem' }}>Seat limit reached. Contact support to expand access.</p> : null}
-              {billingStatus === 'past_due' ? <p style={{ marginTop: '0.5rem', color: '#f87171', fontSize: '0.82rem' }}>Billing is past due. Update billing details to avoid disruption.</p> : null}
+              <FieldRow label="Billing Email" value={<span style={{ color: 'var(--text-secondary)' }}>{user?.email ?? 'Not configured'}</span>} />
+              <FieldRow label="Renewal Date" value={<span style={{ color: 'var(--text-secondary)' }}>{subscription?.current_period_end ? formatDate(subscription.current_period_end) : 'Not available'}</span>} />
+              {nearSeatLimit ? <p style={{ marginTop: '0.5rem', color: 'var(--warning-fg)', fontSize: '0.82rem' }}>Seat limit reached. Contact support to expand access.</p> : null}
+              {billingStatus === 'past_due' ? <p style={{ marginTop: '0.5rem', color: 'var(--danger-fg)', fontSize: '0.82rem' }}>Billing is past due. Update billing details to avoid disruption.</p> : null}
               <div style={{ marginTop: '0.85rem' }}>
                 <button
                   className="btn btn-secondary"
@@ -1192,18 +1187,18 @@ export default function SettingsPageClient() {
               <FieldRow label="Protected Assets Used" value={<span style={{ fontWeight: 600 }}>-</span>} note="Loaded from asset registry" />
               <FieldRow label="Monitored Systems Used" value={<span style={{ fontWeight: 600 }}>-</span>} note="Loaded from monitoring sources" />
               <FieldRow label="Team Seats Used" value={<span style={{ fontWeight: 600 }}>{seatSummary ? `${seatSummary.used} / ${seatSummary.limit}` : 'Loading...'}</span>} />
-              <FieldRow label="API Calls Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
-              <FieldRow label="Evidence Storage Used" value={<span style={{ color: '#8b949e' }}>Not tracked</span>} />
+              <FieldRow label="API Calls Used" value={<span style={{ color: 'var(--text-secondary)' }}>Not tracked</span>} />
+              <FieldRow label="Evidence Storage Used" value={<span style={{ color: 'var(--text-secondary)' }}>Not tracked</span>} />
             </SectionCard>
             {/* Self-serve launch gate: billing and workspace readiness block broad access until all checks pass */}
             <SectionCard title="Billing Readiness">
               <FieldRow label="Billing Enabled" value={<StatusPill status={billingAvailable ? 'Enabled' : 'Not Configured'} />} />
-              <FieldRow label="Payment Provider" value={<span style={{ color: '#8b949e' }}>{billingProviderLabel(billingRuntime)}</span>} />
-              <FieldRow label="Customer ID" value={<span style={{ color: '#8b949e' }}>{subscription?.customer_id ? maskId(subscription.customer_id) : 'Not configured'}</span>} note="Masked for security" />
+              <FieldRow label="Payment Provider" value={<span style={{ color: 'var(--text-secondary)' }}>{billingProviderLabel(billingRuntime)}</span>} />
+              <FieldRow label="Customer ID" value={<span style={{ color: 'var(--text-secondary)' }}>{subscription?.customer_id ? maskId(subscription.customer_id) : 'Not configured'}</span>} note="Masked for security" />
               <FieldRow label="Subscription Status" value={<StatusPill status={billingAvailable ? billingStatusDisplay : 'Not Configured'} />} />
               <FieldRow label="Invoice Status" value={<StatusPill status={subscription?.invoice_status ? String(subscription.invoice_status) : 'Not Configured'} />} />
               {!billingAvailable ? (
-                <p style={{ marginTop: '0.75rem', color: '#8b949e', fontSize: '0.82rem' }}>{billingDisabledMessage(billingRuntime)}</p>
+                <p style={{ marginTop: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{billingDisabledMessage(billingRuntime)}</p>
               ) : null}
               <div style={{ marginTop: '0.85rem' }}>
                 {billingAvailable && plans.length > 0 ? (
@@ -1235,7 +1230,7 @@ export default function SettingsPageClient() {
               <FieldRow label="Critical Alerts" value={<StatusPill status="Not Configured" />} />
               <FieldRow label="High Alerts" value={<StatusPill status="Not Configured" />} />
               <FieldRow label="Medium Alerts" value={<StatusPill status="Not Configured" />} />
-              <FieldRow label="Digest Frequency" value={<span style={{ color: '#8b949e' }}>Not configured</span>} />
+              <FieldRow label="Digest Frequency" value={<span style={{ color: 'var(--text-secondary)' }}>Not configured</span>} />
             </SectionCard>
             {/* Incident Notifications */}
             <SectionCard title="Incident Notifications">
@@ -1318,7 +1313,7 @@ export default function SettingsPageClient() {
             </DataTable>
             <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.8rem' }}>
               Add email, webhook, or Slack channels via{' '}
-              <Link href="/integrations" prefetch={false} style={{ color: '#6aa9ff' }}>Integrations</Link>.
+              <Link href="/integrations" prefetch={false} style={{ color: 'var(--text-accent)' }}>Integrations</Link>.
               No channels are active until configured and verified.
             </p>
           </article>
@@ -1326,9 +1321,50 @@ export default function SettingsPageClient() {
         </section>
       ) : null}
 
+      {/* ── Appearance ──────────────────────────────────────────────────
+          A display preference, not a governance control: it is visible to
+          every role, changes nothing a workspace can do, and is stored on
+          this device. It is the same preference the account menu writes —
+          one control, one value, two places to reach it. */}
+      {activeTab === 'appearance' ? (
+        <section className="featureSection">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
+            <SectionCard title="Theme">
+              <p className="muted" style={{ margin: '0 0 0.25rem', fontSize: '0.84rem' }} id="settings-appearance-label">
+                Choose how the Decoda workspace is painted on this device.
+              </p>
+              <ThemeToggle variant="settings" labelledBy="settings-appearance-label" />
+              <p className="muted" style={{ margin: '0.75rem 0 0', fontSize: '0.78rem' }}>
+                {THEME_OPTIONS.find((option) => option.value === themePreference)?.hint}
+              </p>
+              <p className="tableMeta" style={{ margin: '0.6rem 0 0' }}>
+                Currently showing the {resolvedTheme} theme. Saved for this browser only —
+                it is a display preference, so it is not part of workspace configuration
+                and does not change what this workspace monitors or who can act in it.
+              </p>
+            </SectionCard>
+
+            <SectionCard title="Density & motion">
+              <FieldRow
+                label="Interface density"
+                value={<span style={{ color: 'var(--text-secondary)' }}>Compact (fixed)</span>}
+                readOnly
+                note="Tables and cards use one enterprise density across the product."
+              />
+              <FieldRow
+                label="Reduced motion"
+                value={<span style={{ color: 'var(--text-secondary)' }}>Follows this device</span>}
+                readOnly
+                note="Decoda honours the operating system's reduced-motion setting. Status changes stay visible; only decorative movement is removed."
+              />
+            </SectionCard>
+          </div>
+        </section>
+      ) : null}
+
       {/* A deployment diagnostic ('API URL source: ...') is operator telemetry, not
           a customer-facing error. Same filter the app shell applies to this value. */}
-      {error && !containsDiagnosticEnvVars(error) ? <p style={{ marginTop: '1rem', color: '#f87171', fontSize: '0.82rem' }}>{error}</p> : null}
+      {error && !containsDiagnosticEnvVars(error) ? <p style={{ marginTop: '1rem', color: 'var(--danger-fg)', fontSize: '0.82rem' }}>{error}</p> : null}
     </main>
   );
 }

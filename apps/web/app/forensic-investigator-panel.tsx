@@ -107,8 +107,8 @@ function CopyableId({ value, label }: { value?: string | null; label: string }) 
       title={raw}
       aria-label={`Copy ${label} ${raw}`}
       style={{
-        fontFamily: 'monospace', fontSize: '0.78rem', background: 'rgba(148,163,184,0.1)',
-        border: '1px solid rgba(148,163,184,0.2)', borderRadius: '6px', padding: '0.15rem 0.45rem',
+        fontFamily: 'monospace', fontSize: '0.78rem', background: 'var(--border)',
+        border: '1px solid var(--border)', borderRadius: '6px', padding: '0.15rem 0.45rem',
         color: 'var(--text-secondary)', cursor: 'pointer', maxWidth: '100%', overflow: 'hidden',
         textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}
@@ -340,7 +340,7 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
 /* ── Loading skeleton ───────────────────────────────────────────── */
 function LoadingSkeleton() {
   const block = (h: string): ReactNode => (
-    <div style={{ background: 'rgba(148,163,184,0.08)', borderRadius: '10px', height: h, animation: 'none' }} aria-hidden="true" />
+    <div style={{ background: 'var(--overlay-06)', borderRadius: '10px', height: h, animation: 'none' }} aria-hidden="true" />
   );
   return (
     <div aria-busy="true" aria-label="Loading investigation" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -745,8 +745,8 @@ function WorkflowCard({ stages }: { stages: WorkflowStage[] }) {
                 <span aria-hidden="true" style={{
                   width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 700,
-                  background: done ? 'rgba(34,197,94,0.18)' : failed ? 'rgba(239,68,68,0.18)' : active ? 'rgba(59,130,246,0.18)' : 'rgba(148,163,184,0.12)',
-                  border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : failed ? 'rgba(239,68,68,0.5)' : active ? 'rgba(59,130,246,0.5)' : 'rgba(148,163,184,0.25)'}`,
+                  background: done ? 'rgba(34,197,94,0.18)' : failed ? 'rgba(239,68,68,0.18)' : active ? 'rgba(59,130,246,0.18)' : 'var(--border)',
+                  border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : failed ? 'rgba(239,68,68,0.5)' : active ? 'rgba(59,130,246,0.5)' : 'var(--border)'}`,
                   color: done ? 'var(--success-fg)' : failed ? 'var(--danger-fg)' : 'var(--text-secondary)',
                 }}>{done ? '✓' : failed ? '!' : i + 1}</span>
                 <span style={{ flex: 1, color: done ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{s.label}</span>
@@ -764,7 +764,7 @@ function WorkflowCard({ stages }: { stages: WorkflowStage[] }) {
 function FindingItem({ finding }: { finding: Finding }) {
   const isGap = finding.finding_type === 'evidence_gap';
   return (
-    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid rgba(148,163,184,0.1)' }}>
+    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
         <strong style={{ fontSize: '0.82rem' }}>{finding.title ?? 'Finding'}</strong>
         <StatusPill
@@ -780,7 +780,7 @@ function FindingItem({ finding }: { finding: Finding }) {
 
 function RuleMatchItem({ match }: { match: RuleMatch }) {
   return (
-    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid rgba(148,163,184,0.1)' }}>
+    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
         <strong style={{ fontSize: '0.82rem' }}>
           <span style={{ fontFamily: 'monospace', fontSize: '0.76rem', color: 'var(--text-muted)' }}>{match.rule_id}</span> {match.rule_name}
@@ -862,7 +862,7 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
           rendered twice under two different names. */}
 
       {/* Recommended next step — always a recommendation, never executed here. */}
-      <div style={{ padding: '0.65rem', background: 'rgba(148,163,184,0.06)', borderRadius: '8px', marginBottom: '0.6rem' }}>
+      <div style={{ padding: '0.65rem', background: 'var(--overlay-04)', borderRadius: '8px', marginBottom: '0.6rem' }}>
         <p className="sectionEyebrow" style={{ margin: 0 }}>Recommended next step</p>
         <p style={{ fontSize: '0.82rem', margin: '0.25rem 0 0', color: 'var(--text-secondary)' }}>
           {investigation.status === 'degraded'

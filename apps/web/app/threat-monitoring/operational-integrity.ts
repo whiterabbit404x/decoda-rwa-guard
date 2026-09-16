@@ -120,9 +120,9 @@ export function checkStatusVariant(status: string | null | undefined): PillVaria
 
 export function checkStatusColor(status: string | null | undefined): string {
   const s = String(status ?? '').toUpperCase();
-  if (s === 'PASS') return 'var(--success-fg, #22c55e)';
-  if (s === 'FAIL') return 'var(--danger-fg, #ef4444)';
-  return 'var(--warning-fg, #f59e0b)';
+  if (s === 'PASS') return 'var(--success-fg)';
+  if (s === 'FAIL') return 'var(--danger-fg)';
+  return 'var(--warning-fg)';
 }
 
 // --------------------------------------------------------------------------
@@ -150,9 +150,9 @@ export function conclusionVariant(conclusion: string | null | undefined): PillVa
 
 export function conclusionColor(conclusion: string | null | undefined): string {
   const key = String(conclusion ?? '').toUpperCase();
-  if (key === 'CRITICAL_OPERATIONAL_ANOMALY') return 'var(--danger-fg, #ef4444)';
-  if (key === 'OPERATIONALLY_AUTHORIZED') return 'var(--success-fg, #22c55e)';
-  return 'var(--warning-fg, #f59e0b)';
+  if (key === 'CRITICAL_OPERATIONAL_ANOMALY') return 'var(--danger-fg)';
+  if (key === 'OPERATIONALLY_AUTHORIZED') return 'var(--success-fg)';
+  return 'var(--warning-fg)';
 }
 
 /** Human sentence for a deterministic reason code. Never AI-written. */

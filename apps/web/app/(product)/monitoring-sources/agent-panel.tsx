@@ -137,7 +137,7 @@ export function SourceOptimizationAgentPanel({
             <p style={{ fontSize: '0.8rem', margin: '0 0 0.5rem', color: 'var(--text-secondary)' }}>
               {agent.confidence_basis || 'No routing change is required based on measured records.'}
             </p>
-            <div style={{ borderTop: '1px solid var(--border-subtle, rgba(148,163,184,0.2))', paddingTop: '0.4rem' }}>
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.4rem' }}>
               <StatRow label="Healthy providers" value={agent.healthy_providers} />
               <StatRow label="Degraded providers" value={agent.degraded_providers} />
               <StatRow label="Missing target links" value={agent.missing_target_links} />
@@ -205,8 +205,8 @@ export function SourceOptimizationAgentPanel({
             disabled={autoRoutingBusy || !settings}
             onClick={onToggleAutoRouting}
             style={{
-              border: '1px solid var(--border-subtle, rgba(148,163,184,0.3))',
-              background: autoRouting ? 'var(--success-fg, #16a34a)' : 'var(--surface-subtle, #1e293b)',
+              border: '1px solid var(--border-subtle)',
+              background: autoRouting ? 'var(--success-fg)' : 'var(--bg-subtle)',
               width: 42, height: 22, borderRadius: 999, position: 'relative', cursor: autoRoutingBusy ? 'wait' : 'pointer',
             }}
           >
@@ -250,8 +250,8 @@ export function SourceOptimizationAgentPanel({
                     type="button"
                     onClick={() => onOpenDecision(decision)}
                     style={{
-                      width: '100%', textAlign: 'left', background: 'var(--surface-subtle, rgba(148,163,184,0.06))',
-                      border: '1px solid var(--border-subtle, rgba(148,163,184,0.15))', borderRadius: 6,
+                      width: '100%', textAlign: 'left', background: 'var(--surface-subtle)',
+                      border: '1px solid var(--border-subtle)', borderRadius: 6,
                       padding: '0.4rem 0.55rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '0.2rem',
                     }}
                   >

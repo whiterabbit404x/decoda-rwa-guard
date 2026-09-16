@@ -30,7 +30,7 @@ function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
         )}
         {isRateLimited ? (
           <>
-            <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+            <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--warning-fg)' }}>
               Provider: {realtime.provider ?? 'QuickNode'} &middot; rate limited
             </span>
             {realtime.next_retry_at && (
@@ -45,7 +45,7 @@ function RealtimePathRow({ realtime }: { realtime: RealtimeIngestionPath }) {
         ) : (
           <>
             {realtime.degraded_reason && (
-              <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--color-warning, #c09020)' }}>
+              <span className="shMetricValue" style={{ fontSize: '0.7rem', color: 'var(--warning-fg)' }}>
                 {realtime.degraded_reason}
               </span>
             )}
@@ -193,7 +193,7 @@ export function LiveChainMonitoringPanel({ chainMonitoring }: Props) {
             />
           </div>
           {chainMonitoring.realtime_ingestion_path && (
-            <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border-subtle, #e5e7eb)', paddingTop: '0.5rem' }}>
+            <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border)', paddingTop: '0.5rem' }}>
               <p className="sectionEyebrow" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
                 Ingestion Paths
               </p>

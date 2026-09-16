@@ -63,10 +63,10 @@ function bannerSubtext(state: BannerState, summary: WorkspaceMonitoringTruth): s
 }
 
 function bannerColor(state: BannerState): string {
-  if (state === 'LIVE') return 'var(--success-fg, #16a34a)';
-  if (state === 'OFFLINE') return 'var(--danger-fg, #dc2626)';
-  if (state === 'SETUP_REQUIRED') return 'var(--warning-fg, #d97706)';
-  return 'var(--warning-fg, #b45309)';
+  if (state === 'LIVE') return 'var(--success-fg)';
+  if (state === 'OFFLINE') return 'var(--danger-fg)';
+  if (state === 'SETUP_REQUIRED') return 'var(--warning-fg)';
+  return 'var(--warning-fg)';
 }
 
 type CheckStep = { label: string; status: 'done' | 'missing' | 'failed'; hint?: string };
@@ -142,15 +142,15 @@ function buildChecklist(summary: WorkspaceMonitoringTruth, workerHealth: WorkerH
 }
 
 function CheckIcon({ status }: { status: CheckStep['status'] }) {
-  if (status === 'done') return <span style={{ color: 'var(--success-fg, #16a34a)', marginRight: '0.5rem' }}>✓</span>;
-  if (status === 'failed') return <span style={{ color: 'var(--danger-fg, #dc2626)', marginRight: '0.5rem' }}>✗</span>;
+  if (status === 'done') return <span style={{ color: 'var(--success-fg)', marginRight: '0.5rem' }}>✓</span>;
+  if (status === 'failed') return <span style={{ color: 'var(--danger-fg)', marginRight: '0.5rem' }}>✗</span>;
   return <span style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }}>○</span>;
 }
 
 function ChecklistRow({ step }: { step: CheckStep }) {
-  const textColor = step.status === 'done' ? 'var(--text-secondary)' : step.status === 'failed' ? 'var(--danger-fg, #dc2626)' : 'var(--text-primary)';
+  const textColor = step.status === 'done' ? 'var(--text-secondary)' : step.status === 'failed' ? 'var(--danger-fg)' : 'var(--text-primary)';
   const badge = step.status === 'done' ? null : step.status === 'failed' ? (
-    <span style={{ fontSize: '0.7rem', background: 'var(--danger-bg, #fee2e2)', color: 'var(--danger-fg, #dc2626)', borderRadius: '4px', padding: '1px 6px', marginLeft: '0.5rem' }}>Failed</span>
+    <span style={{ fontSize: '0.7rem', background: 'var(--danger-bg)', color: 'var(--danger-fg)', borderRadius: '4px', padding: '1px 6px', marginLeft: '0.5rem' }}>Failed</span>
   ) : (
     <span style={{ fontSize: '0.7rem', background: 'var(--surface-subtle)', color: 'var(--text-muted)', borderRadius: '4px', padding: '1px 6px', marginLeft: '0.5rem' }}>Pending</span>
   );
@@ -180,8 +180,8 @@ function formatAge(iso: string | null): string {
 
 function ProviderCard({ info }: { info: ProviderHealthInfo }) {
   const statusColor =
-    info.status === 'connected' ? 'var(--success-fg, #16a34a)'
-    : info.status === 'not_connected' ? 'var(--danger-fg, #dc2626)'
+    info.status === 'connected' ? 'var(--success-fg)'
+    : info.status === 'not_connected' ? 'var(--danger-fg)'
     : 'var(--text-muted)';
   const statusLabel =
     info.status === 'connected' ? 'Connected'
@@ -200,7 +200,7 @@ function ProviderCard({ info }: { info: ProviderHealthInfo }) {
         : <p style={{ margin: '0 0 0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Network: —</p>}
       <p style={{ margin: '0 0 0.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Last check: {formatAge(info.last_check)}</p>
       {info.error_message ? (
-        <p style={{ margin: '0.5rem 0 0.5rem', fontSize: '0.75rem', color: 'var(--danger-fg, #dc2626)', background: 'var(--danger-bg, #fee2e2)', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
+        <p style={{ margin: '0.5rem 0 0.5rem', fontSize: '0.75rem', color: 'var(--danger-fg)', background: 'var(--danger-bg)', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
           {info.error_message}
         </p>
       ) : null}
@@ -218,8 +218,8 @@ function ProviderCard({ info }: { info: ProviderHealthInfo }) {
 
 function WorkerCard({ info }: { info: WorkerHealthInfo }) {
   const statusColor =
-    info.status === 'running' ? 'var(--success-fg, #16a34a)'
-    : info.status === 'stopped' ? 'var(--danger-fg, #dc2626)'
+    info.status === 'running' ? 'var(--success-fg)'
+    : info.status === 'stopped' ? 'var(--danger-fg)'
     : 'var(--text-muted)';
   const statusLabel =
     info.status === 'running' ? 'Running'
@@ -239,7 +239,7 @@ function WorkerCard({ info }: { info: WorkerHealthInfo }) {
       <p style={{ margin: '0 0 0.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Last poll: {formatAge(info.last_poll)}</p>
       <p style={{ margin: '0 0 0.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Last telemetry: {formatAge(info.last_telemetry)}</p>
       {info.consecutive_failures > 0 ? (
-        <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--danger-fg, #dc2626)' }}>
+        <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--danger-fg)' }}>
           Consecutive failures: {info.consecutive_failures}
         </p>
       ) : null}
@@ -247,7 +247,7 @@ function WorkerCard({ info }: { info: WorkerHealthInfo }) {
         <p style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Next poll: {formatAge(info.next_poll)}</p>
       ) : null}
       {helpText ? (
-        <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg, #d97706)', background: 'var(--warning-bg, #fef3c7)', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
+        <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg)', background: 'var(--warning-bg)', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
           {helpText}
         </p>
       ) : null}
@@ -334,7 +334,7 @@ export default function RuntimeSummaryPanel({ compact = false }: RuntimeSummaryP
           </p>
         ) : null}
         {summary.contradiction_flags.length > 0 ? (
-          <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg, #d97706)' }}>
+          <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--warning-fg)' }}>
             Contradictions detected: {summary.contradiction_flags.join(', ')}
           </p>
         ) : null}

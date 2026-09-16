@@ -513,8 +513,8 @@ export default function SignInPageClient({
                 <header className="siLogoHeader">
                   <div className="siLogoIcon" aria-hidden="true">
                     <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
-                      <path d="M17 3L4 8.5v9c0 7.5 5.5 13 13 15 7.5-2 13-7.5 13-15v-9L17 3z" fill="rgba(59,130,246,0.18)" stroke="#3b82f6" strokeWidth="1.8" strokeLinejoin="round" />
-                      <path d="M12 17l3.5 3.5L23 13" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M17 3L4 8.5v9c0 7.5 5.5 13 13 15 7.5-2 13-7.5 13-15v-9L17 3z" fill="rgba(59,130,246,0.18)" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinejoin="round" />
+                      <path d="M12 17l3.5 3.5L23 13" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </div>
                   <div className="siLogoText">
@@ -553,8 +553,8 @@ export default function SignInPageClient({
                 <div className="siBrandDecor" aria-hidden="true" />
                 <p className="siTrustLine">
                   <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-                    <path d="M7.5 1.5L1.5 4v4.5c0 3.5 2.5 6 6 7 3.5-1 6-3.5 6-7V4L7.5 1.5z" fill="none" stroke="#4ade80" strokeWidth="1.3" strokeLinejoin="round" />
-                    <path d="M5 7.5l2 2 3-3" stroke="#4ade80" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M7.5 1.5L1.5 4v4.5c0 3.5 2.5 6 6 7 3.5-1 6-3.5 6-7V4L7.5 1.5z" fill="none" stroke="var(--success-fg)" strokeWidth="1.3" strokeLinejoin="round" />
+                    <path d="M5 7.5l2 2 3-3" stroke="var(--success-fg)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                   Secure. Reliable. Purpose-built for Real-World Assets.
                 </p>

@@ -24,11 +24,11 @@ function StatRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 const RISK_COLOR: Record<string, string> = {
-  low: 'var(--success-fg, #16a34a)',
-  medium: 'var(--warning-fg, #d97706)',
-  high: 'var(--danger-fg, #dc2626)',
-  critical: 'var(--danger-fg, #dc2626)',
-  unknown: 'var(--text-muted, #94a3b8)',
+  low: 'var(--success-fg)',
+  medium: 'var(--warning-fg)',
+  high: 'var(--danger-fg)',
+  critical: 'var(--danger-fg)',
+  unknown: 'var(--text-muted)',
 };
 
 function agentStateVariant(state: string): 'success' | 'warning' | 'danger' | 'neutral' {
@@ -57,8 +57,8 @@ function RecommendationCard({
   return (
     <li
       style={{
-        background: 'var(--surface-subtle, rgba(148,163,184,0.06))',
-        border: '1px solid var(--border-subtle, rgba(148,163,184,0.15))',
+        background: 'var(--surface-subtle)',
+        border: '1px solid var(--border-subtle)',
         borderRadius: 6, padding: '0.55rem 0.6rem', display: 'flex', flexDirection: 'column', gap: '0.3rem',
       }}
     >
@@ -175,7 +175,7 @@ export function IntegrationGatewayAgentPanel({
         {risk?.reason ? (
           <p className="muted" style={{ fontSize: '0.73rem', margin: '0.4rem 0 0' }}>{risk.reason}</p>
         ) : null}
-        <div style={{ borderTop: '1px solid var(--border-subtle, rgba(148,163,184,0.2))', marginTop: '0.5rem', paddingTop: '0.4rem' }}>
+        <div style={{ borderTop: '1px solid var(--border-subtle)', marginTop: '0.5rem', paddingTop: '0.4rem' }}>
           <StatRow
             label="Last scan"
             value={

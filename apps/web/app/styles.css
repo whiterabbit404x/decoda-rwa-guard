@@ -38,6 +38,10 @@
   --l-text-accent:  #1d4ed8;
   --l-accent-blue:  #2563eb;
   --l-accent-strong:#1d4ed8;
+  /* Filled-surface blue. White ink on it clears AA in both themes:
+     5.9:1 here, and the dark palette keeps the same value rather than
+     brightening to #3b82f6, which drops white ink to 3.7:1. */
+  --l-accent-solid: #2563eb;
   --l-accent-bg:    rgba(37, 99, 235, 0.08);
   --l-success-fg:   #15803d;
   --l-success-bg:   rgba(21, 128, 61, 0.09);
@@ -48,6 +52,7 @@
   --l-danger-fg:    #b91c1c;
   --l-danger-bg:    rgba(185, 28, 28, 0.08);
   --l-danger-bdr:   rgba(185, 28, 28, 0.24);
+  --l-danger-solid: #b91c1c;
   --l-info-fg:      #1d4ed8;
   --l-info-bg:      rgba(29, 78, 216, 0.08);
   --l-info-bdr:     rgba(29, 78, 216, 0.24);
@@ -92,6 +97,7 @@
   --d-text-accent:  #7daeff;
   --d-accent-blue:  #3b82f6;
   --d-accent-strong:#2563eb;
+  --d-accent-solid: #2563eb;
   --d-accent-bg:    rgba(59, 130, 246, 0.16);
   --d-success-fg:   #4ade80;
   --d-success-bg:   rgba(34, 197, 94, 0.14);
@@ -102,6 +108,7 @@
   --d-danger-fg:    #f87171;
   --d-danger-bg:    rgba(239, 68, 68, 0.14);
   --d-danger-bdr:   rgba(239, 68, 68, 0.34);
+  --d-danger-solid: #dc2626;
   --d-info-fg:      #93c5fd;
   --d-info-bg:      rgba(59, 130, 246, 0.14);
   --d-info-bdr:     rgba(59, 130, 246, 0.34);
@@ -152,6 +159,7 @@
 
   /* accent colours */
   --accent-blue:        var(--l-accent-blue);
+  --accent-solid:       var(--l-accent-solid);
   --accent-blue-strong: var(--l-accent-strong);
   --accent-blue-bg:     var(--l-accent-bg);
 
@@ -167,6 +175,7 @@
   --danger-fg:   var(--l-danger-fg);
   --danger-bg:   var(--l-danger-bg);
   --danger-bdr:  var(--l-danger-bdr);
+  --danger-solid: var(--l-danger-solid);
 
   --info-fg:   var(--l-info-fg);
   --info-bg:   var(--l-info-bg);
@@ -207,6 +216,7 @@
   --sidebar-text-active: #ffffff;
   --sidebar-active-bg:   rgba(37, 99, 235, 0.28);
   --sidebar-accent:      #7daeff;
+  --sidebar-danger:      #fca5a5;
   --bg-sidebar:          var(--sidebar-bg);
 
   /* radii */
@@ -225,6 +235,25 @@
   --popover-fg:  var(--text-primary);
   --ring:        var(--accent-blue);
   --on-accent:   #ffffff;
+
+  /* Legacy alias names still referenced by individual screens. Each is an
+     alias, never a second definition, so a screen that reaches for
+     --surface-subtle gets the same colour as one that reaches for
+     --bg-subtle, in both themes. */
+  --surface:          var(--bg-surface);
+  --surface-subtle:   var(--bg-subtle);
+  --surface-raised:   var(--bg-hover);
+  --surface-2:        var(--bg-subtle);
+  --panel:            var(--bg-surface);
+  --card-bg:          var(--bg-card);
+  --border-subtle:    var(--border);
+  --muted:            var(--text-muted);
+  --color-muted:      var(--text-muted);
+  --color-text-muted: var(--text-muted);
+  --fg:               var(--text-primary);
+  --accent:           var(--accent-blue);
+  --color-warning:    var(--warning-fg);
+  --font-mono:        ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 /* ═══ Explicit DARK theme ═════════════════════════════════════════
@@ -256,6 +285,7 @@
   --text-accent:    var(--d-text-accent);
 
   --accent-blue:        var(--d-accent-blue);
+  --accent-solid:       var(--d-accent-solid);
   --accent-blue-strong: var(--d-accent-strong);
   --accent-blue-bg:     var(--d-accent-bg);
 
@@ -270,6 +300,7 @@
   --danger-fg:   var(--d-danger-fg);
   --danger-bg:   var(--d-danger-bg);
   --danger-bdr:  var(--d-danger-bdr);
+  --danger-solid: var(--d-danger-solid);
 
   --info-fg:   var(--d-info-fg);
   --info-bg:   var(--d-info-bg);
@@ -333,6 +364,7 @@
     --text-accent:    var(--d-text-accent);
 
     --accent-blue:        var(--d-accent-blue);
+    --accent-solid:       var(--d-accent-solid);
     --accent-blue-strong: var(--d-accent-strong);
     --accent-blue-bg:     var(--d-accent-bg);
 
@@ -347,6 +379,7 @@
     --danger-fg:   var(--d-danger-fg);
     --danger-bg:   var(--d-danger-bg);
     --danger-bdr:  var(--d-danger-bdr);
+    --danger-solid: var(--d-danger-solid);
 
     --info-fg:   var(--d-info-fg);
     --info-bg:   var(--d-info-bg);
@@ -1416,7 +1449,7 @@ td .tableMeta {
 }
 
 .stepCircle[data-state="current"] {
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   border: 2px solid var(--accent-blue);
   color: var(--on-accent);
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
@@ -1840,7 +1873,8 @@ td .tableMeta {
 /* Sidebar error line: the sidebar never flips, so its danger tone is the
    dark-surface red rather than the workspace token. */
 .appSidebar .statusLine {
-  color: #fca5a5;
+  color: var(--sidebar-danger);
+  font-size: 0.78rem;
 }
 
 .tableWrap table thead,
@@ -1938,7 +1972,7 @@ td .tableMeta {
 
 @media (max-width: 1100px) {
   .appShellFrame {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .appSidebar {
@@ -2387,7 +2421,8 @@ td .tableMeta {
 .shellHeaderBar {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
   padding: 0.65rem 0;
   min-height: 3.25rem;
 }
@@ -2450,8 +2485,10 @@ td .tableMeta {
 
 .shellWorkspaceName {
   max-width: 160px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shellHeaderSpacer {
@@ -2461,7 +2498,9 @@ td .tableMeta {
 .shellHeaderActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .shellIconBtn {
@@ -2657,6 +2696,93 @@ td .tableMeta {
   font-size: 0.82rem;
 }
 
+/* ── Tabs ────────────────────────────────────────────────────────────
+   One restrained underline treatment for every tabbed screen (Asset
+   Risk, Incidents, Evidence, Settings), instead of a pill bar on one
+   screen and an underline on the next. The active tab is marked by
+   weight and an underline as well as colour. */
+.underlineTabs {
+  display: flex;
+  gap: 0.15rem;
+  margin-top: 1.5rem;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.underlineTabs::-webkit-scrollbar { display: none; }
+
+.underlineTab {
+  flex: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0.6rem 0.9rem;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.underlineTab:hover {
+  color: var(--text-primary);
+}
+
+.underlineTab[aria-selected="true"] {
+  color: var(--text-accent);
+  border-bottom-color: var(--accent-blue);
+  font-weight: 650;
+}
+
+.underlineTab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+
+/* ── Readiness dots + grid (was an inline <style> element, which the
+      production CSP blocks along with every other unnonced style). ─── */
+.rdDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.rdDot-pass    { background: var(--success-fg); }
+.rdDot-warn    { background: var(--warning-fg); }
+.rdDot-fail    { background: var(--danger-fg); }
+.rdDot-unavail { background: var(--neutral-fg); }
+
+.rdCategoryGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+@media (max-width: 1100px) {
+  .rdCategoryGrid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 700px) {
+  .rdCategoryGrid { grid-template-columns: 1fr; }
+}
+
+/* Agent rails collapse to a toggle on narrow screens. Also formerly an
+   inline <style>, and likewise blocked in production. */
+@media (max-width: 900px) {
+  .sourceAgentRail,
+  .integrationAgentRail { display: none; }
+
+  .sourceAgentMobileToggle,
+  .integrationAgentMobileToggle { display: inline-flex !important; }
+}
+
 .shellAvatar {
   width: 1.5rem;
   height: 1.5rem;
@@ -2669,6 +2795,53 @@ td .tableMeta {
   font-weight: 700;
   color: var(--on-accent);
   flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .shellPageTitle {
+    flex-basis: 100%;
+    order: -1;
+  }
+
+  .shellHeaderActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .shellHeaderDivider {
+    display: none;
+  }
+
+  .shellWorkspaceName {
+    max-width: 96px;
+  }
+
+  .shellUserChipEmail {
+    max-width: 86px;
+  }
+
+  .appShellPage,
+  .productShellContent {
+    padding: 1rem 0.85rem;
+  }
+
+  .appShellTop {
+    padding: 0 0.85rem;
+  }
+
+  /* The account chip can now sit anywhere along a wrapped row, so anchoring
+     the menu to the chip is no longer enough to keep it on screen. Pin it to
+     the viewport's right gutter instead: a menu that opens half off-screen is
+     the same bug as a menu that does not open. */
+  .shellUserMenu {
+    position: fixed;
+    top: auto;
+    right: 0.85rem;
+    left: auto;
+    min-width: 0;
+    width: calc(100vw - 1.7rem);
+    max-width: 20rem;
+  }
 }
 
 /* --- Runtime banner ----------------------------------------------- */
@@ -2840,13 +3013,14 @@ td .tableMeta {
 .btn:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .btn-primary {
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   border-color: transparent;
 }
 
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-blue-strong);
+  filter: brightness(1.08);
 }
 
 .btn-secondary {
@@ -2858,7 +3032,7 @@ td .tableMeta {
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-hover);
   border-color: var(--accent-blue);
-  color: var(--accent-blue-strong);
+  color: var(--text-accent);
 }
 
 .btn-ghost {
@@ -2875,9 +3049,9 @@ td .tableMeta {
 /* Destructive-confirmation: a filled red, reserved for the final step of an
    irreversible action so it never looks like the same weight as "Cancel". */
 .btn-destructive {
-  background: var(--danger-fg);
+  background: var(--danger-solid);
   color: var(--on-accent);
-  border-color: var(--danger-fg);
+  border-color: var(--danger-solid);
 }
 
 .btn-destructive:hover:not(:disabled) {
@@ -3794,7 +3968,7 @@ td .tableMeta {
 /* --- Responsive sidebar ------------------------------------------- */
 @media (max-width: 1100px) {
   .appShellFrame {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .appSidebar {
@@ -4661,7 +4835,7 @@ td .tableMeta {
 
 .rpStep--active .rpStepMarker {
   border-color: var(--accent-blue);
-  background: var(--accent-blue-strong);
+  background: var(--accent-solid);
   color: var(--on-accent);
 }
 
@@ -5098,7 +5272,7 @@ td .tableMeta {
   align-items: center;
   padding: 0.5rem 1.1rem;
   border-radius: 999px;
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.85rem;
   font-weight: 600;
@@ -5198,7 +5372,7 @@ td .tableMeta {
   align-items: center;
   padding: 0.75rem 1.5rem;
   border-radius: 999px;
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.95rem;
   font-weight: 600;
@@ -6352,7 +6526,7 @@ td .tableMeta {
   top: -0.65rem;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.68rem;
   font-weight: 700;
@@ -7005,7 +7179,7 @@ td .tableMeta {
   top: -0.65rem;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.68rem;
   font-weight: 700;
@@ -7500,7 +7674,7 @@ td .tableMeta {
   top: -56px;
   left: 1rem;
   padding: 0.55rem 1.1rem;
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.88rem;
   font-weight: 600;
@@ -7759,7 +7933,7 @@ a.mktTrustBadge:hover {
   align-items: center;
   padding: 0.45rem 1rem;
   border-radius: 999px;
-  background: var(--accent-blue);
+  background: var(--accent-solid);
   color: var(--on-accent);
   font-size: 0.82rem;
   font-weight: 600;
@@ -9142,7 +9316,7 @@ a.mktTrustBadge:hover {
 .riskBadge-low { color: var(--success-fg); background: var(--success-bg); border-color: var(--success-bdr); }
 .riskBadge-medium { color: var(--warning-fg); background: var(--warning-bg); border-color: var(--warning-bdr); }
 .riskBadge-high { color: var(--danger-fg); background: var(--danger-bg); border-color: var(--danger-bdr); }
-.riskBadge-critical { color: var(--on-accent); background: rgba(239, 68, 68, 0.85); border-color: var(--danger-bdr); }
+.riskBadge-critical { color: var(--on-accent); background: var(--danger-solid); border-color: var(--danger-solid); }
 .riskBadge-unassessed { color: var(--text-muted); background: var(--overlay-02); border-color: var(--border); }
 
 /* Clickable table rows */

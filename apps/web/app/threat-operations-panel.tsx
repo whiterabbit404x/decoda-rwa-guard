@@ -2948,7 +2948,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         <div role="dialog" aria-label="Evidence details" style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.6)',
+            background: 'var(--scrim)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -2958,7 +2958,7 @@ export default function ThreatOperationsPanel({ apiUrl }: Props) {
         >
           <div
             style={{
-              background: 'var(--card-bg, #0d1627)',
+              background: 'var(--bg-card)',
               border: '1px solid var(--border)',
               borderRadius: '12px',
               padding: '1.5rem',

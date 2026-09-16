@@ -385,11 +385,11 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
           role="dialog"
           aria-modal="true"
           aria-label="Regenerate AI analysis"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
           onClick={closeRegenerate}
         >
           <div
-            style={{ background: 'var(--card-bg, #0d1627)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
             onClick={(e) => e.stopPropagation()}
           >
             <p className="eyebrow">Regenerate analysis</p>

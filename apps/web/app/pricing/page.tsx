@@ -44,7 +44,7 @@ function CheckIcon({ filled }: { filled?: boolean }) {
     return (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <circle cx="8" cy="8" r="7.5" fill="rgba(59,130,246,0.18)" stroke="rgba(59,130,246,0.35)" />
-        <path d="M5 8l2 2 4-4" stroke="#60a5fa" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M5 8l2 2 4-4" stroke="var(--text-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     );
   }
@@ -54,7 +54,7 @@ function CheckIcon({ filled }: { filled?: boolean }) {
 function SmallShield() {
   return (
     <svg width="22" height="24" viewBox="0 0 26 28" fill="none" aria-hidden="true">
-      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="#3b82f6" />
+      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="var(--accent-blue)" />
       <path d="M9 14.5l2.5 2.5 5.5-5.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

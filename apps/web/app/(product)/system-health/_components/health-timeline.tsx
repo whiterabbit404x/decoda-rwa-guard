@@ -6,9 +6,9 @@ type Props = {
 };
 
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#f87171',
-  high: '#f87171',
-  medium: '#fbbf24',
+  critical: 'var(--danger-fg)',
+  high: 'var(--danger-fg)',
+  medium: 'var(--warning-fg)',
 };
 
 export function HealthTimeline({ events }: Props) {
@@ -28,7 +28,7 @@ export function HealthTimeline({ events }: Props) {
               <div
                 className="shTimelineDot"
                 style={{
-                  background: SEVERITY_COLORS[event.severity] ?? 'rgba(148, 163, 184, 0.4)',
+                  background: SEVERITY_COLORS[event.severity] ?? 'var(--border-strong)',
                 }}
               />
               <div className="shTimelineContent">

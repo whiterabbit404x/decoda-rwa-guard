@@ -99,7 +99,7 @@ export default function IncidentForensicTimeline({ events, load, partial, unread
                 className="incidentForensicTimelineMarker"
                 style={{
                   background: domainAccentVar(domain),
-                  boxShadow: `0 0 0 3px ${domain ? 'rgba(148,163,184,0.12)' : 'rgba(148,163,184,0.08)'}`,
+                  boxShadow: `0 0 0 3px ${domain ? 'var(--border)' : 'var(--overlay-06)'}`,
                   // Stay level with the TIME row, which a day heading pushes down.
                   top: day ? '1.4rem' : '0.42rem',
                 }}

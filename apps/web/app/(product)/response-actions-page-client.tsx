@@ -1429,7 +1429,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                             <button
                               type="button"
                               onClick={() => setSelectedHistoryId(isSelected ? null : row.id)}
-                              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent, #3b82f6)', cursor: 'pointer', fontSize: '0.75rem' }}
+                              style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent-blue)', cursor: 'pointer', fontSize: '0.75rem' }}
                             >
                               {isSelected ? 'Hide details' : 'View details'}
                             </button>
@@ -1555,10 +1555,10 @@ function HistoryEventDetails({
     <div
       style={{
         marginTop: '1rem',
-        border: '1px solid var(--border, #e5e7eb)',
+        border: '1px solid var(--border)',
         borderRadius: '0.5rem',
         padding: '1rem',
-        background: 'var(--panel, rgba(0,0,0,0.02))',
+        background: 'var(--panel)',
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -1566,7 +1566,7 @@ function HistoryEventDetails({
         <button
           type="button"
           onClick={onClose}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted, #6b7280)', fontSize: '0.85rem' }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.85rem' }}
           aria-label="Close event details"
         >
           Close
@@ -1705,7 +1705,7 @@ function RecommendedPlaybookPanel({
                     cursor: 'pointer',
                     fontSize: '0.8rem',
                     fontWeight: isSelected ? 700 : 400,
-                    color: isSelected ? 'var(--accent, #3b82f6)' : 'inherit',
+                    color: isSelected ? 'var(--accent-blue)' : 'inherit',
                   }}
                 >
                   {row.action}
@@ -1884,9 +1884,9 @@ function ExecutionLockPanel({
   const lock = executionLockPresentation(gate);
   const palette = lock.locked
     ? gate?.decision === 'DENIED'
-      ? { border: 'rgba(239, 68, 68, 0.55)', bg: 'rgba(239, 68, 68, 0.12)', fg: 'var(--danger-fg, #dc2626)' }
-      : { border: 'rgba(245, 158, 11, 0.55)', bg: 'rgba(245, 158, 11, 0.12)', fg: 'var(--warning-fg, #d97706)' }
-    : { border: 'rgba(34, 197, 94, 0.55)', bg: 'rgba(34, 197, 94, 0.12)', fg: 'var(--success-fg, #16a34a)' };
+      ? { border: 'rgba(239, 68, 68, 0.55)', bg: 'rgba(239, 68, 68, 0.12)', fg: 'var(--danger-fg)' }
+      : { border: 'rgba(245, 158, 11, 0.55)', bg: 'rgba(245, 158, 11, 0.12)', fg: 'var(--warning-fg)' }
+    : { border: 'rgba(34, 197, 94, 0.55)', bg: 'rgba(34, 197, 94, 0.12)', fg: 'var(--success-fg)' };
   return (
     <div
       role="status"
@@ -2186,7 +2186,7 @@ function ActionDetailPanel({
       onSubmit={(event) => { event.preventDefault(); void handleVerifySession(); }}
       style={{
         width: '100%',
-        border: '1px solid rgba(148, 163, 184, 0.35)',
+        border: '1px solid var(--border-strong)',
         background: 'rgba(15, 23, 42, 0.04)',
         borderRadius: '10px',
         padding: '0.75rem 0.85rem',
@@ -2212,7 +2212,7 @@ function ActionDetailPanel({
         style={{ width: '100%', maxWidth: '9rem', letterSpacing: '0.2em', fontSize: '1rem', padding: '0.4rem 0.5rem' }}
       />
       {stepUpError ? (
-        <p id={`stepup-error-${action.id}`} role="alert" style={{ color: 'var(--danger-fg, #dc2626)', fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
+        <p id={`stepup-error-${action.id}`} role="alert" style={{ color: 'var(--danger-fg)', fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
           {stepUpError}
         </p>
       ) : null}
@@ -2438,7 +2438,7 @@ function ActionDetailPanel({
   return (
     <aside
       className="dataCard sharedSurfaceCard"
-      style={{ padding: '1rem', borderLeft: '1px solid rgba(148,163,184,0.15)' }}
+      style={{ padding: '1rem', borderLeft: '1px solid var(--border)' }}
       aria-label="Action detail panel"
     >
       <p className="eyebrow" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>

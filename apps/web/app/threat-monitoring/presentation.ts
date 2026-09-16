@@ -444,9 +444,9 @@ export function trend(metric: TrendMetric, changePercent: number | null | undefi
 }
 
 export function trendColor(tone: 'good' | 'bad' | 'neutral'): string {
-  if (tone === 'good') return 'var(--success-fg, #4ade80)';
-  if (tone === 'bad') return 'var(--danger-fg, #f87171)';
-  return 'var(--text-muted, #5a6478)';
+  if (tone === 'good') return 'var(--success-fg)';
+  if (tone === 'bad') return 'var(--danger-fg)';
+  return 'var(--text-muted)';
 }
 
 // --------------------------------------------------------------------------

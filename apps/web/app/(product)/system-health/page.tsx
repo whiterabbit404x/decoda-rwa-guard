@@ -191,7 +191,7 @@ export default async function SystemHealthPage() {
         <p
           style={{
             marginBottom: '0.5rem',
-            color: 'var(--color-text-muted, #6b7280)',
+            color: 'var(--text-muted)',
             fontSize: '0.875rem',
           }}
         >
