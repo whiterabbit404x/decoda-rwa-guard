@@ -28,15 +28,22 @@
   --l-bg-header:    #ffffff;
   --l-bg-input:     #ffffff;
   --l-bg-inset:     #f8fafc;
-  --l-border:       #e2e8f0;
-  --l-border-strong:#cbd5e1;
+  /* Hairlines, measured against the white card they divide. slate-200
+     (#e2e8f0) sat at 1.23:1 — a card outline and a table rule that were
+     present in the stylesheet and absent on screen. These read as
+     structure without becoming a drawn box. */
+  --l-border:       #d6dee9;
+  --l-border-strong:#b4c2d6;
   --l-border-accent:rgba(37, 99, 235, 0.24);
   --l-border-hover: #2563eb;
   --l-text-primary: #0f172a;
   --l-text-secondary:#475569;
-  /* #64748b measured 4.34:1 on the subtle surface; this clears AA on
-     both the white card and the tinted one. */
-  --l-text-muted:   #5a6678;
+  /* #64748b measured 4.34:1 on the subtle surface and #5a6678 5.32:1 —
+     both clear AA, both read as washed-out beside the primary ink on a
+     white workspace. 5.98:1 on the tinted surface, 6.55:1 on the card,
+     still a clear step below --l-text-secondary (6.92 / 7.58) so the
+     three-level text hierarchy survives the change. */
+  --l-text-muted:   #535e71;
   --l-text-accent:  #1d4ed8;
   --l-accent-blue:  #2563eb;
   --l-accent-strong:#1d4ed8;
@@ -229,6 +236,23 @@
   --radius-md: 0.65rem;
   --radius-lg: 0.75rem;
   --radius-xl: 0.875rem;
+
+  /* ═══ Shared control metrics ════════════════════════════════════
+     ONE height for every control an analyst can put a cursor in or
+     click: search fields, native selects, the custom Select trigger,
+     and buttons. A filter bar is normally all four of those in a row,
+     and before this each carried its own height — a native input at
+     ~22px beside a 38px Select trigger beside a 34px button, on a row
+     that is supposed to read as one control group.
+
+     36px is the compact enterprise figure, not a larger one: it is the
+     height the form inputs already used, so this levels the row without
+     growing the page. --control-h-sm is for genuinely dense placements
+     (controls sitting inside a table row). */
+  --control-h:    2.25rem;
+  --control-h-sm: 1.85rem;
+  --control-px:   0.7rem;
+  --control-fs:   0.85rem;
 
   /* sidebar width */
   --sidebar-w: 240px;
@@ -767,51 +791,86 @@ p {
   color: var(--success-fg);
 }
 
-.dataCard input,
-.dataCard select,
-.dataCard textarea {
-  width: 100%;
-  margin-bottom: 0.6rem;
-  min-height: 2.25rem;
+/* --- Shared form controls -----------------------------------------
+   Everything inside the authenticated shell that takes typing or a
+   choice, given one height, one surface and one border. Before this,
+   only controls inside a .dataCard were themed; a filter bar built from
+   bare <input> and <select> — which is most of them — fell through to
+   the browser's own chrome, so a search field, a severity select and a
+   Create button on the SAME row were three different heights.
+
+   This is a BASE layer: `:where()` holds the whole selector at zero
+   specificity, so every per-screen control style that follows still
+   wins and nothing that was deliberately tuned gets flattened. It is
+   scoped rather than global so the marketing site and the auth pages
+   keep their own form treatments, and checkboxes and radios are
+   excluded — a 36px box is not a checkbox. */
+:where(.appShellFrame, .dataCard)
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  min-height: var(--control-h);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text-primary);
-  padding: 0.5rem 0.7rem;
+  padding: 0.4rem var(--control-px);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--control-fs);
+  line-height: 1.3;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
 
-.dataCard input::placeholder,
-.dataCard textarea::placeholder {
+/* A native select draws its own arrow inside the padding box, so it
+   needs room on the right that a text input does not. */
+:where(.appShellFrame, .dataCard) :where(select) {
+  padding-right: 0.4rem;
+  cursor: pointer;
+}
+
+:where(.appShellFrame, .dataCard) :where(textarea) {
+  min-height: 84px;
+  padding-block: 0.5rem;
+}
+
+:where(.appShellFrame, .dataCard) :where(input, textarea)::placeholder {
   color: var(--text-muted);
 }
 
-.dataCard input:focus,
-.dataCard select:focus,
-.dataCard textarea:focus {
+:where(.appShellFrame, .dataCard)
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus {
   outline: none;
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 3px var(--accent-blue-bg);
 }
 
-.dataCard input:disabled,
-.dataCard select:disabled,
-.dataCard textarea:disabled {
+:where(.appShellFrame, .dataCard) :where(input, select, textarea):disabled {
   background: var(--bg-subtle);
   color: var(--text-muted);
   cursor: not-allowed;
 }
 
-.dataCard input[aria-invalid="true"],
-.dataCard select[aria-invalid="true"],
-.dataCard textarea[aria-invalid="true"] {
+:where(.appShellFrame, .dataCard) :where(input, select, textarea)[aria-invalid="true"] {
   border-color: var(--danger-bdr);
 }
 
+/* The stacked form rhythm inside a card: full-width fields with a gap
+   under each. Only the metrics above are shared with the filter bars. */
+.dataCard input,
+.dataCard select,
 .dataCard textarea {
-  min-height: 84px;
+  width: 100%;
+  margin-bottom: 0.6rem;
+}
+
+/* A control group — a filter bar, a search-and-act row. Every member already
+   carries the shared height; this only drops the stacked form margin that
+   would break the row when the group sits inside a card. */
+.buttonRow > input,
+.buttonRow > select,
+.buttonRow > textarea,
+.buttonRow > .dcSelect,
+.buttonRow > div > .dcSelect,
+.buttonRow > .btn {
+  margin-bottom: 0;
 }
 
 .formField {
@@ -866,9 +925,11 @@ thead {
 
 th {
   padding: 0.6rem 0.9rem;
-  vertical-align: bottom;
+  vertical-align: middle;
   text-align: left;
-  border-bottom: 1px solid var(--border);
+  /* The one rule in the table that separates labels from data, so it is the
+     stronger hairline. Row dividers below stay at --border. */
+  border-bottom: 1px solid var(--border-strong);
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.055em;
@@ -882,7 +943,13 @@ th {
 
 td {
   padding: 0.7rem 0.9rem;
-  vertical-align: top;
+  /* Centred, not top-aligned. A pill is an inline-flex box with its own
+     padding, so top-aligning it against plain text in the next column drops
+     its label three or four pixels below that text's baseline — visible on
+     every operational row, on every screen, because severity and status are
+     almost always pills. Centring costs no height: the row is still as tall
+     as its tallest cell. */
+  vertical-align: middle;
   text-align: left;
   border-bottom: 1px solid var(--border);
   font-size: 0.84rem;
@@ -2252,12 +2319,17 @@ td .tableMeta {
 .dcSelectTrigger {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   width: 100%; text-align: left; cursor: pointer;
-  background: var(--overlay-02);
-  border: 1px solid var(--border);
+  /* The shared control surface, height and border — this trigger stands in
+     for a <select>, so it may not read as a different kind of control from
+     the search field beside it. It was the tallest thing on every filter
+     row before this. */
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  padding: 0.55rem 0.7rem;
-  font-size: 0.88rem; font-family: inherit; line-height: 1.3;
+  min-height: var(--control-h);
+  padding: 0.4rem var(--control-px);
+  font-size: var(--control-fs); font-family: inherit; line-height: 1.3;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .dcSelectTrigger:hover:not(:disabled) { border-color: var(--border-hover); }
@@ -2312,21 +2384,33 @@ td .tableMeta {
   .dcSelectArrow, .dcSelectTrigger { transition: none; }
 }
 
+/* The shared pill's own surface, worn by every StatusPill including the
+   `default` variant that carries no severity. It was a 35%-opacity navy
+   wash — invented for the dark theme, and a dark chip dropped into a white
+   table once the workspace went light. It is the neutral status surface
+   now, which is also what `default` MEANS: a state with no severity to
+   report. A severity variant still wins, since pill-* is declared later. */
 .sharedStatusPill {
-  border-color: rgba(124, 156, 196, 0.35);
-  background: rgba(41, 63, 96, 0.35);
+  border-color: var(--neutral-bdr);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
 }
 
+/* The shell's own hairlines were translucent slate-blue literals, which the
+   light workspace composited to roughly 1.1:1 — a header rule and row
+   dividers that existed in the stylesheet and not on screen. On the tokens
+   they follow the theme, and the header keeps the stronger of the two so a
+   reader can see where the column labels stop and the data starts. */
 .sharedTableShell table thead th {
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-secondary);
-  border-bottom: 1px solid rgba(124, 156, 196, 0.22);
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .sharedTableShell table tbody td {
-  border-bottom: 1px solid rgba(124, 156, 196, 0.12);
+  border-bottom: 1px solid var(--border);
 }
 
 /* The shared TabStrip primitive painted a near-opaque navy behind every tab,
@@ -2805,15 +2889,30 @@ td .tableMeta {
   }
 }
 
-/* --- Runtime banner ----------------------------------------------- */
+/* --- Monitoring status area ---------------------------------------
+   Two strips under the page title, read as one block:
+
+     1. the VERDICT strip (.globalHealthWarning) — what the runtime is,
+        why, and where to go about it. Renders only when the canonical
+        truth reports something degraded.
+     2. the EVIDENCE strip (.runtimeBanner) — the readings that verdict
+        was derived from, always present.
+
+   Both were flat runs of same-weight text separated by middots, which is
+   why the area read as a debug log rather than a status: ten fields, no
+   grouping, no indication which of them was the headline. The fix is
+   hierarchy and grouping ONLY — every field that rendered before renders
+   now, at the same density, on the same number of rows. */
+
+/* --- Runtime banner (evidence) ------------------------------------ */
 .runtimeBanner {
   position: relative;
   z-index: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0 1.25rem;
-  padding: 0.55rem 0;
+  gap: 0.15rem 1rem;
+  padding: 0.5rem 0;
   border-top: 1px solid var(--border);
   font-size: 0.78rem;
   color: var(--text-secondary);
@@ -2827,11 +2926,28 @@ td .tableMeta {
   white-space: nowrap;
 }
 
-.runtimeBannerField {
+/* One group answers one question. The rule between groups replaces the
+   per-field middots: three boundaries a reader can use instead of nine
+   that mean nothing. */
+.runtimeBannerGroup {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.2rem 0;
+  gap: 0.15rem 0.9rem;
+  min-width: 0;
+}
+
+.runtimeBannerGroup + .runtimeBannerGroup {
+  padding-left: 1rem;
+  border-left: 1px solid var(--border);
+}
+
+.runtimeBannerField {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.15rem 0;
+  min-width: 0;
 }
 
 .runtimeBannerLabel {
@@ -2839,17 +2955,70 @@ td .tableMeta {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
 }
 
+/* The value is what the analyst is actually reading, so it leads: darker
+   than its label and a step heavier. */
 .runtimeBannerValue {
   color: var(--text-primary);
+  font-weight: 600;
+  min-width: 0;
+}
+
+/* Tone on the VALUE, derived in runtime-banner.tsx from the same
+   derivation that produced the words — see runtimeFieldTone. The word
+   already states the condition ("Stale", "Limited coverage", "Offline"),
+   so the colour reinforces it and never carries it alone. An unmapped or
+   absent reading stays neutral: nothing is toned healthy that has not
+   been proven healthy. */
+.runtimeBannerField[data-tone='positive'] .runtimeBannerValue { color: var(--success-fg); }
+.runtimeBannerField[data-tone='caution']  .runtimeBannerValue { color: var(--warning-fg); }
+.runtimeBannerField[data-tone='critical'] .runtimeBannerValue { color: var(--danger-fg); }
+
+/* Only a VERDICT carries a status dot. A clock reading does not, because an
+   age is a measurement and not a state; and the operator group carries
+   sentences, where a leading dot reads as a bullet rather than a status. */
+.runtimeBannerGroup[data-group='verdict'] .runtimeBannerField[data-tone='positive'] .runtimeBannerValue::before,
+.runtimeBannerGroup[data-group='verdict'] .runtimeBannerField[data-tone='caution'] .runtimeBannerValue::before,
+.runtimeBannerGroup[data-group='verdict'] .runtimeBannerField[data-tone='critical'] .runtimeBannerValue::before {
+  content: '';
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-right: 0.35rem;
+  border-radius: 999px;
+  background: currentColor;
+  vertical-align: baseline;
+}
+
+/* The operator group carries sentences, not readings — a worker headline, a
+   limitation, a quiet-workspace note. At the reading weight they shouted; at
+   this one they sit behind the verdict where they belong, without any of them
+   being dropped or shortened. */
+.runtimeBannerGroup[data-group='operator'] .runtimeBannerValue {
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
-.runtimeBannerSep {
-  color: var(--border-strong);
-  user-select: none;
+.runtimeBannerGroup[data-group='operator']
+  .runtimeBannerField[data-tone='caution'] .runtimeBannerValue {
+  color: var(--warning-fg);
+}
+
+/* Next action is an instruction, not a reading, so it is the one field in
+   the strip that looks like something to act on. Declared after — and at the
+   same reach as — the operator-group rule above, which it has to win. */
+.runtimeBannerGroup .runtimeBannerField--action .runtimeBannerLabel,
+.runtimeBannerField--action .runtimeBannerLabel {
+  color: var(--text-accent);
+}
+
+.runtimeBannerGroup .runtimeBannerField--action .runtimeBannerValue,
+.runtimeBannerField--action .runtimeBannerValue {
+  color: var(--text-accent);
+  font-weight: 650;
 }
 
 /* runtime banner severity tones */
@@ -2857,7 +3026,16 @@ td .tableMeta {
 .runtimeBannerStale { border-top-color: var(--warning-bdr); }
 .runtimeBannerDead  { border-top-color: var(--danger-bdr);  }
 
-/* --- Compact global health warning --------------------------------------
+@media (max-width: 720px) {
+  /* Below the group rules' usefulness: the strip is already stacking, so a
+     vertical rule between wrapped groups would divide nothing. */
+  .runtimeBannerGroup + .runtimeBannerGroup {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* --- Compact global health warning (verdict) ----------------------------
  * A single, low-profile strip in the app header that only renders when the
  * canonical runtime truth reports degraded monitoring. It replaces the large
  * per-page diagnostic panels: the detail lives on /system-health, reached via
@@ -2866,10 +3044,16 @@ td .tableMeta {
 .globalHealthWarning {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
   min-height: 2.25rem;
-  padding: 0.4rem 0;
-  border-top: 1px solid var(--warning-bdr);
+  margin-bottom: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: var(--radius-sm);
+  /* Tinted by severity rather than announced by a hairline. A degraded
+     runtime should register before it is read, and a background costs no
+     height — the strip is the same single row it was. */
+  border: 1px solid var(--warning-bdr);
+  background: var(--warning-bg);
   font-size: 0.8rem;
   color: var(--text-secondary);
   overflow: hidden;
@@ -2878,31 +3062,54 @@ td .tableMeta {
 /* Critical (runtime/database unreachable) reads red; warning (limited coverage
  * or setup gap) reads amber. */
 .globalHealthWarning.isCritical {
-  border-top-color: var(--danger-bdr);
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
 }
 
+/* The state itself, as a pill: the one thing in this area that has to be
+   legible at a glance from across a desk. */
 .globalHealthWarningLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   flex: none;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid currentColor;
   font-weight: 700;
-  font-size: 0.72rem;
-  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
   white-space: nowrap;
 }
 
+/* The reason is the headline fact, so it reads at full strength. */
 .globalHealthWarningText {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
+/* The worker line is supporting detail behind the reason, and is separated
+   from it so two sentences do not run together as one. */
 .globalHealthWarningWorker {
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-weight: 400;
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--border-strong);
 }
 
 .globalHealthWarningLink {
+  display: inline-flex;
+  align-items: center;
   flex: none;
   margin-left: auto;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
   color: var(--text-accent);
   font-weight: 600;
   white-space: nowrap;
@@ -2910,7 +3117,19 @@ td .tableMeta {
 }
 
 .globalHealthWarningLink:hover {
+  border-color: var(--border-hover);
   text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+  .globalHealthWarning {
+    flex-wrap: wrap;
+  }
+
+  .globalHealthWarningWorker {
+    padding-left: 0;
+    border-left: 0;
+  }
 }
 
 /* --- Status pills (shared) --------------------------------------- */
@@ -2958,7 +3177,9 @@ td .tableMeta {
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
-  min-height: 2.1rem;
+  /* The same height as an input or a select, so a button ending a filter
+     row lines up with the fields it acts on. */
+  min-height: var(--control-h);
   padding: 0.45rem 0.9rem;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -9823,11 +10044,16 @@ a.mktTrustBadge:hover {
 
 /* --- Screen 7 · Incident queue + Case File panel ---------------------------
    The queue owns the main content area; the Case File is a compact preview
-   beside it, never the forensic workspace itself. The panel keeps a moderate
-   fixed width on desktop (inside the 320–380px band the layout budget allows)
-   and stacks beneath the table once there is no longer room for two readable
-   columns — the previous hard-coded 400px column applied at EVERY width, which
-   crushed the table on tablets and left the panel un-stacked on mobile. */
+   beside it, never the forensic workspace itself. It stacks beneath the table
+   once there is no longer room for two readable columns.
+
+   The 320–380px preview band on standard desktops is a decision the screen's
+   own spec pins (incidents-screen7-case-file-refinement), so it is unchanged.
+   What is new is the top of the range: above 1700px the panel takes a share
+   of the extra width instead of staying at one fixed size, the way the Asset
+   Registry's assessor panel already does, so case metadata — two columns of
+   label-over-value pairs, several of them full-length identifiers — gets room
+   on a wide monitor without the application itself growing anywhere else. */
 .incidentsQueueLayout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -9838,6 +10064,12 @@ a.mktTrustBadge:hover {
 @media (min-width: 1180px) {
   .incidentsQueueLayout-withCase {
     grid-template-columns: minmax(0, 1fr) 376px;
+  }
+}
+
+@media (min-width: 1700px) {
+  .incidentsQueueLayout-withCase {
+    grid-template-columns: minmax(0, 1fr) clamp(380px, 24%, 430px);
   }
 }
 
@@ -9863,9 +10095,9 @@ a.mktTrustBadge:hover {
 .caseFileHeader {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  padding: 0.8rem 1rem;
-  background: rgba(59, 130, 246, 0.06);
+  gap: 0.55rem;
+  padding: 0.9rem 1.05rem;
+  background: var(--accent-blue-bg);
   border-bottom: 1px solid var(--border);
 }
 
@@ -9892,7 +10124,9 @@ a.mktTrustBadge:hover {
 .caseFileMeta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.4rem 0.85rem;
+  /* Label-over-value pairs need a row gap bigger than the gap inside a pair,
+     or the two read as one four-line column. */
+  gap: 0.6rem 1rem;
 }
 
 .caseFileMetaField {
@@ -9904,7 +10138,7 @@ a.mktTrustBadge:hover {
 }
 
 .caseFileMetaLabel {
-  margin: 0 0 0.05rem;
+  margin: 0 0 0.12rem;
   font-size: 0.6875rem;
   letter-spacing: 0.02em;
   color: var(--text-muted);
@@ -9936,8 +10170,8 @@ a.mktTrustBadge:hover {
 .caseFileBody {
   display: flex;
   flex-direction: column;
-  gap: 0.8rem;
-  padding: 0.85rem 1rem 0.95rem;
+  gap: 0.9rem;
+  padding: 0.95rem 1.05rem 1.05rem;
 }
 
 .caseFileSection {
@@ -9969,12 +10203,12 @@ a.mktTrustBadge:hover {
   /* Wide enough for the longest domain word ("OPERATIONAL") at the 11px section
      size, so a label can never collide with the value beside it. */
   grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: 0.1rem 0.5rem;
+  gap: 0.1rem 0.6rem;
   align-items: start;
-  padding: 0.35rem 0.55rem;
+  padding: 0.4rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(148, 163, 184, 0.04);
+  background: var(--overlay-02);
   min-width: 0;
 }
 
@@ -10426,6 +10660,7 @@ a.mktTrustBadge:hover {
 .planFeedbackSelect .dcSelectTrigger {
   padding: 0.4rem 0.5rem;
   font-size: 0.8rem;
+  min-height: var(--control-h-sm);
 }
 
 .planFeedbackHint {
