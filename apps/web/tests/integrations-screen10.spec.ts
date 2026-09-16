@@ -112,5 +112,12 @@ test('empty states exist for each tab', () => {
 test('management actions are RBAC-gated (button state is not the only guard)', () => {
   // Run Health Check is disabled without the manage permission; the backend re-checks it.
   expect(src).toContain('!canManage');
-  expect(src).toContain("data?.permissions.can_manage");
+  // The permission comes from the BACKEND payload, never from a local guess —
+  // and it is optional-chained the whole way, so a response that omits
+  // `permissions` yields canManage === false rather than throwing. The old
+  // `data?.permissions.can_manage` crashed the entire screen on such a
+  // payload, which is a worse RBAC outcome than a disabled button: a customer
+  // saw no screen at all.
+  expect(src).toContain('data?.permissions?.can_manage');
+  expect(src).toMatch(/const canManage = Boolean\(data\?\.permissions\?\.can_manage\)/);
 });

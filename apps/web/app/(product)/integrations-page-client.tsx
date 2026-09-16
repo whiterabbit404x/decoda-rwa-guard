@@ -196,7 +196,7 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
   const apis = data?.apis ?? [];
   const webhooks = data?.webhooks ?? [];
   const connections = data?.connections ?? [];
-  const canManage = Boolean(data?.permissions.can_manage);
+  const canManage = Boolean(data?.permissions?.can_manage);
 
   const hasAnyIntegration = useMemo(
     () => providers.length > 0 || webhooks.length > 0 || apis.some((a) => a.credential_configured),

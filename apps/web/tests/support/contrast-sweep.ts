@@ -49,11 +49,16 @@ export async function sweepContrast(
     };
 
     /** The opaque colour actually behind an element. */
-    const paintedBehind = (start: HTMLElement): number[] => {
+    const paintedBehind = (start: HTMLElement): number[] | 'gradient' => {
       const layers: number[][] = [];
       let node: HTMLElement | null = start;
       while (node) {
-        const parsed = parse(getComputedStyle(node).backgroundColor);
+        const style = getComputedStyle(node);
+        // A gradient paints an opaque surface that no colour value describes.
+        // Report it rather than walking through to whatever is behind, which
+        // is how a white "A" on a blue avatar looked like white-on-white.
+        if (style.backgroundImage && style.backgroundImage !== 'none') return 'gradient';
+        const parsed = parse(style.backgroundColor);
         if (parsed && parsed[3] > 0) {
           layers.push(parsed);
           if (parsed[3] === 1) break;
@@ -107,9 +112,17 @@ export async function sweepContrast(
       const disabled = el.closest('[disabled], [aria-disabled="true"], fieldset[disabled]');
       if (disabled) return;
 
+      // Decorative content is exempt from WCAG 1.4.3 — but only where the
+      // author has actually marked it decorative, which also removes it from
+      // the accessibility tree.
+      if (el.closest('[aria-hidden="true"]')) return;
+
       const colour = parse(style.color);
       if (!colour) return;
       const bg = paintedBehind(el);
+      // Ink on a gradient cannot be measured from computed styles; those
+      // surfaces are covered by the shell spec's explicit assertions instead.
+      if (bg === 'gradient') return;
 
       // Composite the ink's own alpha and any inherited element opacity.
       const elementOpacity = Number(style.opacity);

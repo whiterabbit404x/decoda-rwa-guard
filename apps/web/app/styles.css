@@ -48,7 +48,9 @@
   --l-success-fg:   #166534;
   --l-success-bg:   rgba(21, 128, 61, 0.09);
   --l-success-bdr:  rgba(21, 128, 61, 0.26);
-  --l-warning-fg:   #b45309;
+  /* amber-800: #b45309 measured 4.22:1 on its own tint — the same near-miss
+     the success green had. */
+  --l-warning-fg:   #92400e;
   --l-warning-bg:   rgba(180, 83, 9, 0.09);
   --l-warning-bdr:  rgba(180, 83, 9, 0.26);
   --l-danger-fg:    #b91c1c;
@@ -1355,23 +1357,23 @@ td .tableMeta {
 }
 
 .statusBadge-live {
-  background: rgba(70, 196, 140, 0.12);
+  background: var(--success-bg);
   color: var(--success-fg);
-  border-color: rgba(70, 196, 140, 0.24);
+  border-color: var(--success-bdr);
 }
 
 .statusBadge-live_degraded,
 .statusBadge-degraded,
 .statusBadge-fallback {
-  background: rgba(255, 186, 73, 0.12);
+  background: var(--warning-bg);
   color: var(--warning-fg);
-  border-color: rgba(255, 186, 73, 0.24);
+  border-color: var(--warning-bdr);
 }
 
 .statusBadge-offline {
-  background: rgba(255, 130, 130, 0.12);
+  background: var(--danger-bg);
   color: var(--danger-fg);
-  border-color: rgba(255, 130, 130, 0.24);
+  border-color: var(--danger-bdr);
 }
 
 .statusBadge-stale,
@@ -1379,9 +1381,9 @@ td .tableMeta {
 .statusBadge-limited_coverage,
 .statusBadge-sample,
 .statusBadge-unavailable {
-  background: rgba(143, 155, 179, 0.16);
-  color: var(--info-fg);
-  border-color: rgba(143, 155, 179, 0.26);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  border-color: var(--neutral-bdr);
 }
 
 /* --- Onboarding / Getting Started ---------------------------- */
@@ -1708,7 +1710,6 @@ td .tableMeta {
   text-transform: uppercase;
   letter-spacing: 0.11em;
   color: var(--sidebar-text);
-  opacity: 0.72;
 }
 
 .appNavSection:first-child {
@@ -1812,15 +1813,10 @@ td .tableMeta {
   color: var(--sidebar-text);
 }
 
-.sidebarMetaCard .sectionEyebrow {
-  color: var(--sidebar-text);
-  opacity: 0.75;
-}
-
+.sidebarMetaCard .sectionEyebrow,
 .sidebarMetaCard .muted,
 .sidebarMetaCard .tableMeta {
   color: var(--sidebar-text);
-  opacity: 0.8;
 }
 
 .sidebarMetaCard a {
@@ -2267,16 +2263,16 @@ td .tableMeta {
 
 .statusBadge-attention,
 .statusBadge-degraded {
-  background: rgba(255, 186, 73, 0.12);
+  background: var(--warning-bg);
   color: var(--warning-fg);
-  border-color: rgba(255, 186, 73, 0.24);
+  border-color: var(--warning-bdr);
 }
 
 .statusBadge-healthy,
 .statusBadge-live {
-  background: rgba(70, 196, 140, 0.12);
+  background: var(--success-bg);
   color: var(--success-fg);
-  border-color: rgba(70, 196, 140, 0.24);
+  border-color: var(--success-bdr);
 }
 
 @media (max-width: 720px) {
@@ -2909,7 +2905,7 @@ td .tableMeta {
 }
 
 .runtimeBannerSep {
-  color: var(--border-accent);
+  color: var(--border-strong);
   user-select: none;
 }
 

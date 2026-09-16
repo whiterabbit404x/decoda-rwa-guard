@@ -188,12 +188,12 @@ function AlertsScreenInner() {
 
   const assetOptions = useMemo(() => ([
     { value: '', label: 'All assets' },
-    ...(summary?.filters.assets ?? []).map((a) => ({ value: a.value, label: a.label })),
+    ...(summary?.filters?.assets ?? []).map((a) => ({ value: a.value, label: a.label })),
   ]), [summary]);
 
   const statusOptions = useMemo(() => ([
     { value: '', label: 'All statuses' },
-    ...(summary?.filters.statuses ?? []).map((s) => ({ value: s, label: statusLabel(s) })),
+    ...(summary?.filters?.statuses ?? []).map((s) => ({ value: s, label: statusLabel(s) })),
   ]), [summary]);
 
   return (

@@ -143,7 +143,7 @@ export function IntegrationGatewayAgentPanel({
   const risk = data?.connection_risk ?? null;
   const recommendations = data?.recommendations ?? [];
   const lastScan = data?.last_scan ?? null;
-  const canManage = Boolean(data?.permissions.can_manage);
+  const canManage = Boolean(data?.permissions?.can_manage);
   const riskLevel = (risk?.level ?? 'unknown').toLowerCase();
 
   return (
