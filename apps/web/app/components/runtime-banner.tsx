@@ -22,21 +22,6 @@ function formatAge(iso: string | null): string {
   return `${Math.floor(mins / 60)}h ago`;
 }
 
-type BannerField = { label: string; value: string };
-
-function Field({ label, value }: BannerField) {
-  return (
-    <span className="runtimeBannerField">
-      <span className="runtimeBannerLabel">{label}</span>
-      <span className="runtimeBannerValue">{value}</span>
-    </span>
-  );
-}
-
-function Sep() {
-  return <span className="runtimeBannerSep" aria-hidden="true">·</span>;
-}
-
 function deriveMonitoringLabel(summary: WorkspaceMonitoringTruth, healthProvable: boolean): string {
   if (healthProvable) return 'Live';
   const runtimeApiMissing = summary.status_reason === 'summary_unavailable';
@@ -80,6 +65,72 @@ function deriveConfidenceLabel(summary: WorkspaceMonitoringTruth, healthProvable
   if (summary.confidence === 'high') return 'Verified';
   if (summary.confidence === 'medium') return 'Partial';
   return 'Unavailable';
+}
+
+/**
+ * How a runtime VALUE reads, not what it says.
+ *
+ * `neutral` is the default and the fail-closed one: a field with nothing to
+ * report, an age that has never happened, a state this mapping does not
+ * recognise. Absence of data is never toned as healthy, so an unmapped
+ * reading can only ever come out grey — it can never borrow the colour of a
+ * runtime that is proven live.
+ */
+type FieldTone = 'positive' | 'caution' | 'critical' | 'neutral';
+
+/**
+ * The tone for a value one of the three derivations above produced.
+ *
+ * It maps the LABELS those functions return rather than the raw backend
+ * fields, so the colour and the words cannot disagree: both come from the
+ * same derivation, one step apart. Nothing here decides a runtime state —
+ * healthProvable and the derivations above already did that.
+ *
+ * Everything else is neutral, and that is the fail-closed half: the clock
+ * readings, the worker headline, a quiet-workspace note, and every
+ * "Waiting for telemetry" / "Unknown" / "Pending evidence" / "Unavailable"
+ * verdict. An absence is never toned as a confirmation.
+ */
+export function runtimeFieldTone(label: string): FieldTone {
+  switch (label) {
+    // canonical healthy verdicts
+    case 'Live':
+    case 'Fresh':
+    case 'Live coverage current':
+    case 'Verified':
+      return 'positive';
+    // canonical degraded verdicts — a reported condition, not an absence
+    case 'Limited coverage':
+    case 'Setup required':
+    case 'Stale':
+    case 'Partial':
+      return 'caution';
+    case 'Offline':
+      return 'critical';
+    default:
+      return 'neutral';
+  }
+}
+
+/**
+ * One label/value pair in the strip.
+ *
+ * The tone follows the VALUE by default, so a field cannot be given a colour
+ * its own words do not support, and a label added to a derivation without
+ * being added to the tone map renders grey rather than green.
+ */
+type BannerField = { label: string; value: string; tone?: FieldTone; action?: boolean };
+
+function Field({ label, value, tone, action }: BannerField) {
+  return (
+    <span
+      className={`runtimeBannerField${action ? ' runtimeBannerField--action' : ''}`}
+      data-tone={tone ?? runtimeFieldTone(value)}
+    >
+      <span className="runtimeBannerLabel">{label}</span>
+      <span className="runtimeBannerValue">{value}</span>
+    </span>
+  );
 }
 
 const NEXT_ACTION_LABELS: Record<string, string> = {
@@ -219,40 +270,41 @@ export default function RuntimeBanner() {
       aria-label="Monitoring runtime status"
       aria-live="polite"
     >
-      <Field label="Monitoring" value={monitoringValue} />
-      <Sep />
-      <Field label="Freshness" value={freshnessValue} />
-      <Sep />
-      <Field label="Confidence" value={confidenceValue} />
-      <Sep />
-      <Field label="Telemetry" value={formatAge(summary.last_telemetry_at)} />
-      <Sep />
-      <Field label="Heartbeat" value={formatAge(summary.last_heartbeat_at)} />
-      <Sep />
-      <Field label="Poll" value={formatAge(summary.last_poll_at)} />
-      {nextActionDisplay ? (
-        <>
-          <Sep />
-          <Field label="Next action" value={nextActionDisplay} />
-        </>
-      ) : null}
-      {workerLine ? (
-        <>
-          <Sep />
-          <Field label="Workers" value={workerLine} />
-        </>
-      ) : null}
-      {reasonCopy ? (
-        <>
-          <Sep />
-          <Field label="Limitation" value={reasonCopy} />
-        </>
-      ) : null}
-      {quietNote ? (
-        <>
-          <Sep />
-          <Field label="Activity" value={quietNote} />
-        </>
+      {/* Three groups, not ten equal readings. An analyst scanning this strip
+          is answering three different questions — what does the runtime say,
+          when was each lane last seen, and is anything mine to do — and the
+          fields were previously one undifferentiated middot-separated run, which
+          is what made it read as a log line rather than a status. Every field
+          that rendered before still renders, in the same order. */}
+      <div className="runtimeBannerGroup" data-group="verdict">
+        <Field label="Monitoring" value={monitoringValue} />
+        <Field label="Freshness" value={freshnessValue} />
+        <Field label="Confidence" value={confidenceValue} />
+      </div>
+      {/* Three separate proofs, never collapsed into one: heartbeat proves the
+          worker is alive, poll proves the monitoring loop ran, telemetry proves
+          monitored data actually arrived. They are ages, not verdicts, so they
+          stay neutral — an age is never evidence that the runtime is healthy. */}
+      <div className="runtimeBannerGroup" data-group="evidence">
+        <Field label="Telemetry" value={formatAge(summary.last_telemetry_at)} />
+        <Field label="Heartbeat" value={formatAge(summary.last_heartbeat_at)} />
+        <Field label="Poll" value={formatAge(summary.last_poll_at)} />
+      </div>
+      {nextActionDisplay || workerLine || reasonCopy || quietNote ? (
+        <div className="runtimeBannerGroup" data-group="operator">
+          {nextActionDisplay ? (
+            <Field label="Next action" value={nextActionDisplay} action />
+          ) : null}
+          {workerLine ? (
+            <Field label="Workers" value={workerLine} />
+          ) : null}
+          {reasonCopy ? (
+            <Field label="Limitation" value={reasonCopy} tone="caution" />
+          ) : null}
+          {quietNote ? (
+            <Field label="Activity" value={quietNote} />
+          ) : null}
+        </div>
       ) : null}
     </section>
   );
