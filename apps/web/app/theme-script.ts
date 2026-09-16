@@ -3,6 +3,16 @@ import { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY } from './theme-preference'
 /**
  * The pre-paint theme script.
  *
+ * The rule, in full:
+ *
+ *   explicit 'light'  -> light
+ *   explicit 'dark'   -> dark
+ *   explicit 'system' -> the OS preference
+ *   nothing stored    -> DEFAULT_THEME_PREFERENCE (light)
+ *
+ * The last line is the one that matters: an unread or absent preference is
+ * NOT 'system'. The OS is consulted only for an analyst who chose System.
+ *
  * Runs synchronously in <head>, BEFORE the browser paints the first frame, so
  * a dark-theme session never flashes a white page and a light-theme session
  * never flashes navy. It only writes attributes on <html> — the same

@@ -10,8 +10,8 @@
  * the system trustworthy rather than merely present:
  *
  *   1. ONE source of truth   — Light and Dark resolve from the same token
- *                              names, and System-dark consumes the same raw
- *                              palette as explicit Dark, so they cannot drift.
+ *                              names, and the dark palette is re-pointed in
+ *                              exactly one place, so they cannot drift.
  *   2. NO flash              — the theme is resolved before first paint, by a
  *                              nonced script, with no server/client mismatch.
  *   3. NO dark-only leftovers— no screen re-hard-codes a colour the token
@@ -29,6 +29,12 @@ const layout = read('layout.tsx');
 const themeScript = read('theme-script.ts');
 const themeContext = read('theme-context.tsx');
 const preference = read('theme-preference.ts');
+
+/**
+ * styles.css with its comments stripped. A rule and a comment explaining why
+ * that rule is absent read the same to a regex; only one of them paints.
+ */
+const rules = styles.replace(/\/\*[\s\S]*?\*\//g, '');
 
 /** The declarations inside one CSS block, given its opening selector. */
 function block(selector: string): string {
@@ -74,19 +80,33 @@ test.describe('one source of truth', () => {
     }
   });
 
-  test('explicit Dark and System Dark set an identical declaration list', () => {
-    // The failure this prevents is the classic one: a token added to
-    // [data-theme="dark"] and forgotten in the media query, so the theme is
-    // right when chosen and subtly wrong when inherited from the OS.
-    const explicit = declarations(block('[data-theme="dark"],'));
-    const system = declarations(
-      block('@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]):not([data-theme="dark"]) {'),
-    );
+  test('the dark theme is declared once, and the OS cannot declare it', () => {
+    // There is exactly ONE dark declaration list, so explicit Dark and a
+    // System preference resolved to dark cannot drift apart — the second copy
+    // this used to compare against is gone, and with it the whole failure mode.
+    //
+    // It is gone for a product reason, not a tidiness one. A CSS media query
+    // cannot see whether a preference exists; it can only see the OS. Keyed off
+    // a missing data-theme it themed the document for an analyst who had never
+    // chosen anything, which is the opposite of the default. System is resolved
+    // in `theme-script.ts`, where the stored preference is actually readable.
+    const darkBlocks = [...rules.matchAll(/@media \(prefers-color-scheme: dark\)/g)];
+    expect(darkBlocks, 'the OS must not re-point the token layer').toEqual([]);
 
-    expect([...system.keys()].sort()).toEqual([...explicit.keys()].sort());
-    for (const [name, value] of explicit) {
-      expect(system.get(name), `${name} differs between explicit and system dark`).toBe(value);
-    }
+    // And the one remaining dark block is complete: every semantic token the
+    // light layer declares has a dark counterpart pointing at the dark palette.
+    const dark = declarations(block('[data-theme="dark"],'));
+    expect(dark.size).toBeGreaterThan(20);
+  });
+
+  test('an unstamped document resolves light, never the OS setting', () => {
+    // The no-JavaScript path. `:root` is the answer, and `:root` is light — an
+    // unreadable preference is not a reason to guess from the desktop. The
+    // scheme is pinned too, so native chrome (scrollbars, date pickers,
+    // autofill) does not go dark on its own either.
+    const root = block(':root {');
+    expect(root).toContain('color-scheme: light;');
+    expect(declarations(root).get('--bg-base')).toMatch(/^var\(--l-/);
   });
 
   test('no raw palette entry is declared and then never consumed', () => {

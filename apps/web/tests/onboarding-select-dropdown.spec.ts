@@ -181,13 +181,14 @@ test.describe('color-scheme fallback for remaining native controls', () => {
     expect(stylesSrc).toMatch(/\[data-theme="light"\],\s*\.light\s*{\s*color-scheme: light;/);
   });
 
-  test('System theme falls through to the OS preference in CSS alone', () => {
-    // The no-JavaScript path. If the pre-paint script never runs, no
-    // data-theme is stamped and this media query is the only thing standing
-    // between a dark-OS visitor and a flash of white.
-    expect(stylesSrc).toMatch(
-      /@media \(prefers-color-scheme: dark\)\s*{\s*:root:not\(\[data-theme="light"\]\):not\(\[data-theme="dark"\]\)\s*{\s*color-scheme: dark;/,
-    );
+  test('an unstamped document keeps the light scheme, OS setting included', () => {
+    // The no-JavaScript path. Without a script there is no way to read the
+    // stored preference, so the honest answer is the product default — not the
+    // desktop setting. A media query keyed off a missing data-theme would hand
+    // a dark-OS analyst who never chose Dark a dark product, and native chrome
+    // to match it.
+    // Comments stripped: prose explaining why the rule is absent is not the rule.
+    expect(stylesSrc.replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(/@media \(prefers-color-scheme: dark\)/);
   });
 
   test('the document theme is resolved before first paint, not pinned in markup', () => {
