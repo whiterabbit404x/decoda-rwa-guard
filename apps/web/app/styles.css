@@ -10284,7 +10284,7 @@ a.mktTrustBadge:hover {
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(148, 163, 184, 0.04);
+  background: var(--overlay-02);
 }
 
 .aiAuthorityNotice dt {

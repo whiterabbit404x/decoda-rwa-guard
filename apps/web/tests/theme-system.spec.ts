@@ -294,3 +294,72 @@ test.describe('the preference is offered in both places, and they agree', () => 
     expect(toggle).toContain("'ArrowRight'");
   });
 });
+
+/* ── Security messaging survives the redesign ───────────────────────────── */
+test.describe('the redesign did not soften what the product says about authority', () => {
+  const responseActions = read('(product)/response-actions-page-client.tsx');
+
+  test('the AI layer is still stated to be recommend-only', () => {
+    // A visual refactor must not quietly drop the sentence that separates what
+    // the AI may propose from what the policy engine may execute.
+    expect(responseActions).toContain('Recommendations only');
+    expect(responseActions).toMatch(/deterministic policy engine/i);
+    expect(responseActions).toContain('never by this advisor');
+  });
+
+  test('selecting an action still says plainly that it executes nothing', () => {
+    expect(responseActions).toContain('It does not execute anything.');
+  });
+
+  test('high-impact actions are not styled as casual one-click controls', () => {
+    // The destructive-confirmation variant exists and is visually separate
+    // from the ordinary danger tint, so a freeze never looks like a filter.
+    expect(styles).toContain('.btn-destructive');
+    const destructive = block('.btn-destructive {');
+    expect(destructive).toContain('var(--danger-solid)');
+    expect(destructive).toContain('var(--on-accent)');
+
+    const danger = block('.btn-danger {');
+    expect(danger).toContain('var(--danger-bg)');
+    expect(danger).not.toContain('var(--danger-solid)');
+  });
+
+  test('UNKNOWN and DISABLED never borrow a colour that reads as working', () => {
+    // pill-neutral and statusBadge-unavailable both mean "not reporting" and
+    // both resolve to the grey family — not to --info-fg, which this product
+    // uses for INVESTIGATING.
+    const neutralPill = block('.pill-neutral {');
+    expect(neutralPill).toContain('var(--neutral-fg)');
+
+    const unavailable = block('.statusBadge-stale,');
+    expect(unavailable).toContain('var(--neutral-fg)');
+    expect(unavailable).not.toContain('var(--info-fg)');
+    expect(unavailable).not.toContain('var(--success-fg)');
+  });
+});
+
+/* ── Motion stays functional ────────────────────────────────────────────── */
+test.describe('motion inside the product is functional only', () => {
+  test('every animation is a loading, spinner or active-state indicator', () => {
+    const names = [...styles.matchAll(/@keyframes\s+([A-Za-z0-9_-]+)/g)].map((m) => m[1]);
+    // mkt* belongs to the public marketing surface, which is out of scope here.
+    const product = names.filter((n) => !n.startsWith('mkt'));
+    const allowed = /(spin|pulse|shimmer|skel|fade|loading)/i;
+    for (const name of product) {
+      expect(name, `@keyframes ${name} must be a functional indicator`).toMatch(allowed);
+    }
+  });
+
+  test('reduced motion is honoured globally without removing state feedback', () => {
+    const at = styles.indexOf('@media (prefers-reduced-motion: reduce)');
+    expect(at).toBeGreaterThanOrEqual(0);
+    // Just the global block, not everything after it.
+    const reduced = styles.slice(at, styles.indexOf('\n}\n', styles.indexOf('scroll-behavior', at)));
+    // Durations collapse; colour, border and opacity changes still land, so a
+    // status change is still announced — it just arrives at once.
+    expect(reduced).toContain('animation-duration: 0.001ms !important');
+    expect(reduced).toContain('transition-duration: 0.001ms !important');
+    expect(reduced).not.toContain('display: none');
+    expect(reduced).not.toContain('visibility: hidden');
+  });
+});
