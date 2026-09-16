@@ -263,8 +263,15 @@ export type Harness = {
  * `bootstrap` is module source evaluated in the browser after React is on
  * `window`; it imports from `/app/...` and mounts whatever the spec is
  * asserting on.
+ *
+ * `head` is raw HTML injected into <head> BEFORE the stylesheet, which is
+ * where the real document puts the pre-paint theme script. A spec asserting
+ * what is resolved before first paint needs that ordering, not an init script
+ * Playwright injects out of band.
  */
-export async function startRenderHarness(options: { bootstrap: string; css?: boolean } = { bootstrap: '' }): Promise<Harness> {
+export async function startRenderHarness(
+  options: { bootstrap: string; css?: boolean; head?: string } = { bootstrap: '' },
+): Promise<Harness> {
   // styles.css starts with a UTF-8 BOM. The real build strips it, but inlined
   // verbatim into <style> it becomes part of the FIRST selector — `\ufeff:root`
   // never matches, so the whole design-token block would silently not apply and
@@ -276,7 +283,7 @@ export async function startRenderHarness(options: { bootstrap: string; css?: boo
   const reactDomUmd = fs.readFileSync(path.join(NODE_MODULES, 'react-dom', 'umd', 'react-dom.development.js'), 'utf-8');
 
   const page = `<!doctype html>
-<html><head><meta charset="utf-8"><title>render harness</title><style>${appCss}</style></head>
+<html><head><meta charset="utf-8"><title>render harness</title>${options.head ?? ''}<style>${appCss}</style></head>
 <body><div id="root"></div>
 <script>
 // The real Next.js build INLINES process.env.NODE_ENV and every NEXT_PUBLIC_*

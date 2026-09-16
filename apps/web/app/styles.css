@@ -339,77 +339,20 @@
 }
 
 /* ═══ System theme ════════════════════════════════════════════════
-   Only reached when no explicit choice is stamped on <html>. The
-   pre-paint script normally stamps a resolved theme, so this is the
-   no-JavaScript path — and the reason a JS-disabled visitor on a dark
-   OS still gets the dark product rather than a flash of white. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not([data-theme="dark"]) {
-    color-scheme: dark;
+   System is resolved in JavaScript, never in CSS.
 
-    --bg-base:    var(--d-bg-base);
-    --bg-surface: var(--d-bg-surface);
-    --bg-card:    var(--d-bg-card);
-    --bg-subtle:  var(--d-bg-subtle);
-    --bg-hover:   var(--d-bg-hover);
-    --bg-header:  var(--d-bg-header);
-    --bg-input:   var(--d-bg-input);
-    --bg-inset:   var(--d-bg-inset);
-    --code-bg:    var(--d-code-bg);
+   There is deliberately no `@media (prefers-color-scheme: dark)` block
+   keyed off a missing `data-theme`. A missing attribute means "we have
+   not read a preference yet", NOT "follow the OS" — and the product
+   default is Light. A dark OS must not be able to theme the document
+   on its own, because a dark-desktop analyst who never chose Dark
+   would open a dark product and the Appearance control would still
+   read Light.
 
-    --border:        var(--d-border);
-    --border-strong: var(--d-border-strong);
-    --border-accent: var(--d-border-accent);
-    --border-hover:  var(--d-border-hover);
-
-    --text-primary:   var(--d-text-primary);
-    --text-secondary: var(--d-text-secondary);
-    --text-muted:     var(--d-text-muted);
-    --text-accent:    var(--d-text-accent);
-
-    --accent-blue:        var(--d-accent-blue);
-    --accent-solid:       var(--d-accent-solid);
-    --accent-blue-strong: var(--d-accent-strong);
-    --accent-blue-bg:     var(--d-accent-bg);
-
-    --success-fg:  var(--d-success-fg);
-    --success-bg:  var(--d-success-bg);
-    --success-bdr: var(--d-success-bdr);
-
-    --warning-fg:  var(--d-warning-fg);
-    --warning-bg:  var(--d-warning-bg);
-    --warning-bdr: var(--d-warning-bdr);
-
-    --danger-fg:   var(--d-danger-fg);
-    --danger-bg:   var(--d-danger-bg);
-    --danger-bdr:  var(--d-danger-bdr);
-    --danger-solid: var(--d-danger-solid);
-
-    --info-fg:   var(--d-info-fg);
-    --info-bg:   var(--d-info-bg);
-    --info-bdr:  var(--d-info-bdr);
-
-    --violet-fg:  var(--d-violet-fg);
-    --violet-bg:  var(--d-violet-bg);
-    --violet-bdr: var(--d-violet-bdr);
-
-    --neutral-fg:  var(--d-neutral-fg);
-    --neutral-bg:  var(--d-neutral-bg);
-    --neutral-bdr: var(--d-neutral-bdr);
-
-    --overlay-01: var(--d-overlay-01);
-    --overlay-02: var(--d-overlay-02);
-    --overlay-03: var(--d-overlay-03);
-    --overlay-04: var(--d-overlay-04);
-    --overlay-06: var(--d-overlay-06);
-    --overlay-10: var(--d-overlay-10);
-    --shadow-xs:  var(--d-shadow-xs);
-    --shadow-sm:  var(--d-shadow-sm);
-    --shadow-md:  var(--d-shadow-md);
-    --shadow-lg:  var(--d-shadow-lg);
-    --scrim:      var(--d-scrim);
-  }
-}
+   `app/theme-script.ts` stamps the resolved theme on <html> before
+   first paint, so the only path this block ever covered was the
+   no-JavaScript one — where the stored preference is unreadable and
+   the honest answer is the default. `:root` is already light. */
 
 * {
   box-sizing: border-box;
