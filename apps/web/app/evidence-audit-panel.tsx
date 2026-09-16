@@ -1837,7 +1837,7 @@ export default function EvidenceAuditPanel() {
               aria-live="polite"
               style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}
             >
-              <span style={{ color: '#fbbf24' }}>Permission could not be verified.</span>
+              <span style={{ color: 'var(--warning-fg)' }}>Permission could not be verified.</span>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -1898,10 +1898,10 @@ export default function EvidenceAuditPanel() {
       ) : null}
       {diagnostics ? (
         <details style={{ marginBottom: '1rem' }}>
-          <summary style={{ cursor: 'pointer', fontSize: '0.72rem', color: '#94a3b8' }}>
+          <summary style={{ cursor: 'pointer', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
             Technical details
           </summary>
-          <code style={{ fontSize: '0.72rem', color: '#94a3b8' }}>{diagnostics}</code>
+          <code style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{diagnostics}</code>
         </details>
       ) : null}
 
@@ -1950,8 +1950,8 @@ export default function EvidenceAuditPanel() {
                     minWidth: '180px',
                     padding: '0.35rem 0.6rem',
                     fontSize: '0.8rem',
-                    background: 'rgba(15,23,42,0.6)',
-                    border: '1px solid rgba(148,163,184,0.2)',
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border)',
                     borderRadius: '6px',
                     color: 'inherit',
                   }}
@@ -1967,8 +1967,8 @@ export default function EvidenceAuditPanel() {
                   style={{
                     padding: '0.35rem 0.6rem',
                     fontSize: '0.8rem',
-                    background: 'rgba(15,23,42,0.6)',
-                    border: '1px solid rgba(148,163,184,0.2)',
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border)',
                     borderRadius: '6px',
                     color: 'inherit',
                   }}
@@ -2003,7 +2003,7 @@ export default function EvidenceAuditPanel() {
                       colSpan={PKG_TABLE_HEADERS.length}
                       style={{
                         textAlign: 'center',
-                        color: 'var(--color-muted, #94a3b8)',
+                        color: 'var(--text-muted)',
                         padding: '2rem',
                       }}
                     >
@@ -2031,7 +2031,7 @@ export default function EvidenceAuditPanel() {
                         style={{
                           cursor: 'pointer',
                           background: isSelected ? 'rgba(59,130,246,0.12)' : undefined,
-                          boxShadow: isSelected ? 'inset 3px 0 0 #3b82f6' : undefined,
+                          boxShadow: isSelected ? 'inset 3px 0 0 var(--accent-blue)' : undefined,
                         }}
                       >
                         {/* Package ID — human-readable number; UUID stays in the tooltip */}
@@ -2112,8 +2112,8 @@ export default function EvidenceAuditPanel() {
                     gap: '0.75rem',
                     flexWrap: 'wrap',
                     padding: '0.55rem 0.7rem',
-                    background: 'rgba(148,163,184,0.05)',
-                    border: '1px solid rgba(148,163,184,0.14)',
+                    background: 'var(--overlay-03)',
+                    border: '1px solid var(--border)',
                     borderRadius: '6px',
                   }}
                 >
@@ -2172,7 +2172,7 @@ export default function EvidenceAuditPanel() {
                     colSpan={AUDIT_TABLE_HEADERS.length}
                     style={{
                       textAlign: 'center',
-                      color: 'var(--color-muted, #94a3b8)',
+                      color: 'var(--text-muted)',
                       padding: '2rem',
                     }}
                   >
@@ -2337,7 +2337,7 @@ export default function EvidenceAuditPanel() {
                   gap: '0.75rem',
                   marginTop: '0.6rem',
                   fontSize: '0.75rem',
-                  color: '#94a3b8',
+                  color: 'var(--text-muted)',
                 }}
               >
                 <span>
@@ -2432,7 +2432,7 @@ export default function EvidenceAuditPanel() {
                 border: 'none',
                 padding: 0,
                 marginBottom: '0.6rem',
-                color: '#60a5fa',
+                color: 'var(--text-accent)',
                 fontSize: '0.75rem',
                 cursor: 'pointer',
               }}
@@ -2790,7 +2790,7 @@ function EvidencePackageCreateModal({
                   This package will include all currently available evidence associated with the
                   selected incident.
                 </p>
-                <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', color: 'var(--color-muted, #94a3b8)' }}>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                   {PROOF_BUNDLE_EVIDENCE_CATEGORIES.map((category) => (
                     <li key={category}>{category}</li>
                   ))}
@@ -3012,10 +3012,11 @@ function RowActionMenu({
               right: 0,
               zIndex: 41,
               minWidth: '180px',
-              background: '#0f172a',
-              border: '1px solid rgba(148,163,184,0.25)',
+              background: 'var(--popover)',
+              color: 'var(--popover-fg)',
+              border: '1px solid var(--border)',
               borderRadius: '8px',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              boxShadow: 'var(--shadow-lg)',
               padding: '0.25rem',
             }}
           >
@@ -3041,7 +3042,7 @@ function RowActionMenu({
                   background: 'transparent',
                   border: 'none',
                   borderRadius: '5px',
-                  color: item.disabled ? '#64748b' : '#e2e8f0',
+                  color: item.disabled ? 'var(--text-muted)' : 'var(--text-primary)',
                   cursor: item.disabled ? 'not-allowed' : 'pointer',
                 }}
               >
@@ -3295,7 +3296,7 @@ function PackageDetailPanel({
   return (
     <aside
       className="dataCard sharedSurfaceCard"
-      style={{ padding: '1rem', borderLeft: '1px solid rgba(148,163,184,0.15)' }}
+      style={{ padding: '1rem', borderLeft: '1px solid var(--border)' }}
       aria-label="Package detail"
     >
       <p className="eyebrow" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>
@@ -3367,9 +3368,9 @@ function PackageDetailPanel({
           gridTemplateColumns: '1fr',
           gap: '0.5rem',
           padding: '0.6rem 0.7rem',
-          background: 'rgba(148,163,184,0.05)',
+          background: 'var(--overlay-03)',
           borderRadius: '6px',
-          border: '1px solid rgba(148,163,184,0.12)',
+          border: '1px solid var(--border)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
@@ -3413,9 +3414,9 @@ function PackageDetailPanel({
             padding: '0.5rem 0.6rem',
             background: 'rgba(239,68,68,0.08)',
             borderRadius: '4px',
-            borderLeft: '3px solid #ef4444',
+            borderLeft: '3px solid var(--danger-fg)',
             fontSize: '0.75rem',
-            color: '#fca5a5',
+            color: 'var(--danger-fg)',
           }}
         >
           &#9888; Integrity Failed — this package content changed after generation. It is not verified and must not be presented as proof.
@@ -3451,11 +3452,11 @@ function PackageDetailPanel({
           style={{
             marginBottom: '0.75rem',
             padding: '0.6rem 0.7rem',
-            background: 'rgba(148,163,184,0.06)',
+            background: 'var(--overlay-04)',
             borderRadius: '6px',
-            border: '1px solid rgba(148,163,184,0.15)',
+            border: '1px solid var(--border)',
             fontSize: '0.75rem',
-            color: '#94a3b8',
+            color: 'var(--text-muted)',
           }}
         >
           Loading recovery options…
@@ -3471,7 +3472,7 @@ function PackageDetailPanel({
             borderRadius: '6px',
             border: '1px solid rgba(251,191,36,0.25)',
             fontSize: '0.75rem',
-            color: '#fbbf24',
+            color: 'var(--warning-fg)',
           }}
         >
           Couldn’t load recovery options. Retry to see the recovery status for this package.
@@ -3494,14 +3495,14 @@ function PackageDetailPanel({
             padding: '0.65rem 0.7rem',
             background: 'rgba(239,68,68,0.07)',
             borderRadius: '6px',
-            borderLeft: '3px solid #ef4444',
+            borderLeft: '3px solid var(--danger-fg)',
           }}
         >
-          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: '#fca5a5' }}>
+          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: 'var(--danger-fg)' }}>
             Recovery required
           </p>
           {/* The backend's customer-safe recovery_blocked_reason verbatim — never raw JSON. */}
-          <p style={{ margin: '0.25rem 0 0.6rem', fontSize: '0.75rem', color: '#e2e8f0' }}>
+          <p style={{ margin: '0.25rem 0 0.6rem', fontSize: '0.75rem', color: 'var(--text-primary)' }}>
             {recoveryBlockedReason ??
               (recoveryState === 'permission_required'
                 ? 'You do not have permission to recover this package. Ask a workspace administrator for evidence export access.'
@@ -3514,7 +3515,7 @@ function PackageDetailPanel({
               are NEVER presented as something to collect by hand. */}
           {recoveryRequirements.source.length > 0 ? (
             <div style={{ marginBottom: '0.5rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: '#fca5a5' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: 'var(--danger-fg)' }}>
                 Source evidence required
               </p>
               {recoveryRequirements.source.map((req) => (
@@ -3522,8 +3523,8 @@ function PackageDetailPanel({
                   key={req.code}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.74rem' }}
                 >
-                  <span aria-hidden="true" style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
-                  <span style={{ color: '#f87171' }}>{req.label}</span>
+                  <span aria-hidden="true" style={{ color: 'var(--danger-fg)', fontWeight: 700 }}>✗</span>
+                  <span style={{ color: 'var(--danger-fg)' }}>{req.label}</span>
                   <span className="sr-only">missing</span>
                 </div>
               ))}
@@ -3532,7 +3533,7 @@ function PackageDetailPanel({
 
           {recoveryRequirements.derived.length > 0 ? (
             <div style={{ marginBottom: '0.6rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: '#94a3b8' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', color: 'var(--text-muted)' }}>
                 Generated after recovery
               </p>
               {recoveryRequirements.derived.map((req) => (
@@ -3540,12 +3541,12 @@ function PackageDetailPanel({
                   key={req.code}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.74rem' }}
                 >
-                  <span aria-hidden="true" style={{ color: '#94a3b8', fontWeight: 700 }}>⟳</span>
-                  <span style={{ color: '#cbd5e1' }}>{req.label}</span>
+                  <span aria-hidden="true" style={{ color: 'var(--text-muted)', fontWeight: 700 }}>⟳</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{req.label}</span>
                   <span className="sr-only">generated automatically after recovery</span>
                 </div>
               ))}
-              <p style={{ margin: '0.15rem 0 0', fontSize: '0.68rem', color: '#94a3b8' }}>
+              <p style={{ margin: '0.15rem 0 0', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
                 Produced automatically once enough source evidence exists to regenerate the package.
               </p>
             </div>
@@ -3577,13 +3578,13 @@ function PackageDetailPanel({
             padding: '0.65rem 0.7rem',
             background: 'rgba(239,68,68,0.07)',
             borderRadius: '6px',
-            borderLeft: '3px solid #ef4444',
+            borderLeft: '3px solid var(--danger-fg)',
           }}
         >
-          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: '#fca5a5' }}>
+          <p style={{ margin: 0, fontSize: '0.82rem', fontWeight: 700, color: 'var(--danger-fg)' }}>
             Manifest required
           </p>
-          <p style={{ margin: '0.25rem 0 0.5rem', fontSize: '0.75rem', color: '#e2e8f0' }}>
+          <p style={{ margin: '0.25rem 0 0.5rem', fontSize: '0.75rem', color: 'var(--text-primary)' }}>
             This package was generated without a retrievable integrity manifest. Generate a
             manifest before verifying its contents. Your original package is preserved — only
             the integrity manifest is added.
@@ -3592,11 +3593,11 @@ function PackageDetailPanel({
               only annotate that a refresh is happening, or that the last refresh
               failed and the shown status is the retained last-known one. */}
           {detailError ? (
-            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: '#fbbf24' }}>
+            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: 'var(--warning-fg)' }}>
               Couldn’t refresh package status — showing last known state.
             </p>
           ) : detailRefreshing ? (
-            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: '#94a3b8' }}>
+            <p role="status" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
               Refreshing package status…
             </p>
           ) : null}
@@ -3636,21 +3637,21 @@ function PackageDetailPanel({
               </button>
             ) : null}
           </div>
-          <p style={{ margin: '0.4rem 0 0', fontSize: '0.7rem', color: '#94a3b8' }}>
+          <p style={{ margin: '0.4rem 0 0', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
             If a manifest can’t be generated from the stored artifact, Regenerate Package
             creates a new superseding package for this incident and preserves this one as
             historical evidence.
           </p>
           {generating ? (
-            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#cbd5e1' }} aria-live="polite">
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--text-secondary)' }} aria-live="polite">
               Generating manifest…
             </p>
           ) : regenerating ? (
-            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#cbd5e1' }} aria-live="polite">
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--text-secondary)' }} aria-live="polite">
               Regenerating package…
             </p>
           ) : recovery?.phase === 'error' ? (
-            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: '#fca5a5' }} role="alert">
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem', color: 'var(--danger-fg)' }} role="alert">
               Manifest could not be generated. You can Regenerate Package to create a superseding package instead.
             </p>
           ) : null}
@@ -3664,9 +3665,9 @@ function PackageDetailPanel({
             padding: '0.5rem 0.6rem',
             background: 'rgba(34,197,94,0.08)',
             borderRadius: '4px',
-            borderLeft: '3px solid #22c55e',
+            borderLeft: '3px solid var(--success-fg)',
             fontSize: '0.75rem',
-            color: '#86efac',
+            color: 'var(--success-fg)',
           }}
           aria-live="polite"
         >
@@ -3697,7 +3698,7 @@ function PackageDetailPanel({
 
       {detail?.storage_available === false && (
         <div
-          style={{ marginBottom: '0.75rem', fontSize: '0.75rem', color: '#f59e0b' }}
+          style={{ marginBottom: '0.75rem', fontSize: '0.75rem', color: 'var(--warning-fg)' }}
           role="alert"
         >
           &#9888; Evidence storage is unavailable. Package metadata remains available, but downloads are disabled until storage recovers.
@@ -3734,7 +3735,7 @@ function PackageDetailPanel({
                   aria-hidden="true"
                   style={{
                     color:
-                      c.status === 'present' ? '#22c55e' : c.status === 'unverifiable' ? '#f59e0b' : '#ef4444',
+                      c.status === 'present' ? 'var(--success-fg)' : c.status === 'unverifiable' ? 'var(--warning-fg)' : 'var(--danger-fg)',
                     fontWeight: 700,
                   }}
                 >
@@ -3758,13 +3759,13 @@ function PackageDetailPanel({
           {files.map((f) => (
             <div
               key={f.logical_path}
-              style={{ marginBottom: '0.35rem', fontSize: '0.72rem', borderBottom: '1px solid rgba(148,163,184,0.1)', paddingBottom: '0.25rem' }}
+              style={{ marginBottom: '0.35rem', fontSize: '0.72rem', borderBottom: '1px solid var(--border)', paddingBottom: '0.25rem' }}
             >
               <div style={{ fontFamily: 'monospace', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
                 <span>{f.logical_path}</span>
                 <span className="muted">{fmtSize(f.size_bytes)}</span>
               </div>
-              <div style={{ fontFamily: 'monospace', color: '#94a3b8', wordBreak: 'break-all' }} title={f.sha256 ?? ''}>
+              <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', wordBreak: 'break-all' }} title={f.sha256 ?? ''}>
                 {truncHash(f.sha256)}
                 <span className="sr-only">SHA-256 {f.sha256}</span>
               </div>
@@ -3797,7 +3798,7 @@ function PackageDetailPanel({
             Agent Findings
           </p>
           {agentFindings.map((f, i) => (
-            <div key={i} style={{ fontSize: '0.72rem', marginBottom: '0.25rem', color: '#cbd5e1' }}>
+            <div key={i} style={{ fontSize: '0.72rem', marginBottom: '0.25rem', color: 'var(--text-secondary)' }}>
               • {f.message}
             </div>
           ))}
@@ -3807,7 +3808,7 @@ function PackageDetailPanel({
       {!chainComplete && (
         <div
           className="statusLine"
-          style={{ marginBottom: '0.75rem', fontSize: '0.78rem', color: '#f59e0b' }}
+          style={{ marginBottom: '0.75rem', fontSize: '0.78rem', color: 'var(--warning-fg)' }}
         >
           &#9888; Evidence chain incomplete
         </div>
@@ -3820,14 +3821,14 @@ function PackageDetailPanel({
             padding: '0.5rem 0.6rem',
             background: 'rgba(245,158,11,0.07)',
             borderRadius: '4px',
-            borderLeft: '3px solid #f59e0b',
+            borderLeft: '3px solid var(--warning-fg)',
           }}
         >
-          <p className="tableMeta" style={{ marginBottom: '0.25rem', color: '#f59e0b' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.25rem', color: 'var(--warning-fg)' }}>
             Warnings
           </p>
           {pkg.warnings?.map((w, i) => (
-            <p key={i} style={{ fontSize: '0.74rem', margin: '0.1rem 0', color: '#fcd34d' }}>
+            <p key={i} style={{ fontSize: '0.74rem', margin: '0.1rem 0', color: 'var(--warning-fg)' }}>
               {w}
             </p>
           ))}
@@ -3974,7 +3975,7 @@ function PackageDetailPanel({
 
           {includedArtifacts.available.length > 0 ? (
             <div style={{ marginBottom: '0.5rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#4ade80' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: 'var(--success-fg)' }}>
                 Available
               </p>
               {includedArtifacts.available.map((a) => (
@@ -3982,7 +3983,7 @@ function PackageDetailPanel({
                   key={a.code}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
                 >
-                  <span aria-hidden="true" style={{ color: '#22c55e', fontWeight: 700 }}>✓</span>
+                  <span aria-hidden="true" style={{ color: 'var(--success-fg)', fontWeight: 700 }}>✓</span>
                   <span>{a.label}</span>
                   <span className="sr-only">available</span>
                 </div>
@@ -3992,7 +3993,7 @@ function PackageDetailPanel({
 
           {includedArtifacts.missing.length > 0 ? (
             <div style={{ marginBottom: '0.5rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#fca5a5' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: 'var(--danger-fg)' }}>
                 Missing
               </p>
               {includedArtifacts.missing.map((a) => (
@@ -4000,8 +4001,8 @@ function PackageDetailPanel({
                   key={a.code}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
                 >
-                  <span aria-hidden="true" style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
-                  <span style={{ color: '#f87171' }}>{a.label}</span>
+                  <span aria-hidden="true" style={{ color: 'var(--danger-fg)', fontWeight: 700 }}>✗</span>
+                  <span style={{ color: 'var(--danger-fg)' }}>{a.label}</span>
                   <span className="sr-only">missing</span>
                 </div>
               ))}
@@ -4010,7 +4011,7 @@ function PackageDetailPanel({
 
           {includedArtifacts.derived.length > 0 ? (
             <div style={{ marginBottom: '0.25rem' }}>
-              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: '#94a3b8' }}>
+              <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem', fontSize: '0.66rem', color: 'var(--text-muted)' }}>
                 Generated integrity artifacts — not yet available
               </p>
               {includedArtifacts.derived.map((a) => (
@@ -4018,8 +4019,8 @@ function PackageDetailPanel({
                   key={a.code}
                   style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.28rem', fontSize: '0.78rem' }}
                 >
-                  <span aria-hidden="true" style={{ color: '#94a3b8', fontWeight: 700 }}>⟳</span>
-                  <span style={{ color: '#cbd5e1' }}>{a.label}</span>
+                  <span aria-hidden="true" style={{ color: 'var(--text-muted)', fontWeight: 700 }}>⟳</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{a.label}</span>
                   <span className="sr-only">generated automatically after recovery</span>
                 </div>
               ))}
@@ -4059,8 +4060,8 @@ function PackageDetailPanel({
               key={section}
               style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.75rem' }}
             >
-              <span style={{ color: '#ef4444', fontWeight: 700 }}>✗</span>
-              <span style={{ color: '#f87171' }}>{section}</span>
+              <span style={{ color: 'var(--danger-fg)', fontWeight: 700 }}>✗</span>
+              <span style={{ color: 'var(--danger-fg)' }}>{section}</span>
             </div>
           ))}
         </div>
@@ -4077,25 +4078,25 @@ function PackageDetailPanel({
               key={section}
               style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem', fontSize: '0.75rem' }}
             >
-              <span style={{ color: '#f59e0b', fontWeight: 700 }}>!</span>
-              <span style={{ color: '#fcd34d' }}>{section}</span>
+              <span style={{ color: 'var(--warning-fg)', fontWeight: 700 }}>!</span>
+              <span style={{ color: 'var(--warning-fg)' }}>{section}</span>
             </div>
           ))}
         </div>
       )}
       {pkg.package_status && (
         <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem' }}>
-          <span style={{ color: '#94a3b8' }}>Package status: </span>
+          <span style={{ color: 'var(--text-muted)' }}>Package status: </span>
           <span style={{
             fontWeight: 600,
-            color: pkg.package_status === 'complete' ? '#4ade80' : pkg.package_status === 'partial' ? '#fbbf24' : '#f87171',
+            color: pkg.package_status === 'complete' ? 'var(--success-fg)' : pkg.package_status === 'partial' ? 'var(--warning-fg)' : 'var(--danger-fg)',
           }}>
             {pkg.package_status.toUpperCase()}
           </span>
         </div>
       )}
       {(pkg.package_status === 'partial' || pkg.package_status === 'blocked') && (
-        <div style={{ marginBottom: '0.5rem', fontSize: '0.74rem', color: pkg.package_status === 'blocked' ? '#f87171' : '#fbbf24' }}>
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.74rem', color: pkg.package_status === 'blocked' ? 'var(--danger-fg)' : 'var(--warning-fg)' }}>
           &#9888;{' '}
           {pkg.package_status === 'blocked'
             ? 'No usable evidence — this package cannot be used as verification proof.'
@@ -4103,12 +4104,12 @@ function PackageDetailPanel({
         </div>
       )}
       {pkg.source_truthfulness_status && pkg.source_truthfulness_status !== 'verified_live' && (
-        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#fbbf24' }}>
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: 'var(--warning-fg)' }}>
           Source truthfulness: {pkg.source_truthfulness_status.replace(/_/g, ' ')}
         </div>
       )}
       {pkg.redactions_applied && (
-        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: '#94a3b8' }}>
+        <div style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
           Some fields were redacted for safe export.
         </div>
       )}
@@ -4146,7 +4147,7 @@ function PackageDetailPanel({
         {actionsPending ? (
           <span
             role="status"
-            style={{ alignSelf: 'center', fontSize: '0.75rem', color: '#94a3b8' }}
+            style={{ alignSelf: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}
           >
             Loading package actions…
           </span>
@@ -4260,10 +4261,10 @@ function CompletenessRing({ score }: { score: number | null | undefined }) {
   const radius = 34;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference * (1 - pct / 100);
-  const color = pct >= 95 ? '#22c55e' : pct >= 80 ? '#4ade80' : pct >= 60 ? '#f59e0b' : '#ef4444';
+  const color = pct >= 95 ? 'var(--success-fg)' : pct >= 80 ? 'var(--success-fg)' : pct >= 60 ? 'var(--warning-fg)' : 'var(--danger-fg)';
   return (
     <svg width="88" height="88" viewBox="0 0 88 88" role="img" aria-label={`Evidence completeness ${typeof score === 'number' ? `${pct}%` : 'unknown'}`}>
-      <circle cx="44" cy="44" r={radius} fill="none" stroke="rgba(148,163,184,0.2)" strokeWidth="8" />
+      <circle cx="44" cy="44" r={radius} fill="none" stroke="var(--border)" strokeWidth="8" />
       <circle
         cx="44"
         cy="44"
@@ -4388,9 +4389,9 @@ function CryptoAuditingClerkPanel({
             padding: '0.55rem 0.65rem',
             background: 'rgba(239,68,68,0.07)',
             borderRadius: '6px',
-            borderLeft: '3px solid #ef4444',
+            borderLeft: '3px solid var(--danger-fg)',
             fontSize: '0.74rem',
-            color: '#e2e8f0',
+            color: 'var(--text-primary)',
           }}
         >
           {missingSourceCount} required source-evidence{' '}
@@ -4489,7 +4490,7 @@ function ClerkMetric({ label, value, danger }: { label: string; value: string | 
       <p className="tableMeta" style={{ margin: 0, fontSize: '0.66rem' }}>
         {label}
       </p>
-      <p style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: danger ? '#f87171' : undefined }}>
+      <p style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, color: danger ? 'var(--danger-fg)' : undefined }}>
         {value}
       </p>
     </div>
@@ -4511,7 +4512,7 @@ function AuditDetailPanel({
   return (
     <aside
       className="dataCard sharedSurfaceCard"
-      style={{ padding: '1rem', borderLeft: '1px solid rgba(148,163,184,0.15)' }}
+      style={{ padding: '1rem', borderLeft: '1px solid var(--border)' }}
       aria-label="Audit event detail"
     >
       <p className="eyebrow" style={{ marginBottom: '0.25rem', fontSize: '0.7rem' }}>

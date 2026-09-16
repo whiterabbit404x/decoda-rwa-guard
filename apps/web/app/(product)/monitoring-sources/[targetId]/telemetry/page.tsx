@@ -353,7 +353,7 @@ function TelemetryDetailModal({
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
-        background: 'rgba(0, 0, 0, 0.72)',
+        background: 'var(--scrim)',
         padding: '2rem 1rem',
         overflowY: 'auto',
       }}
@@ -1128,7 +1128,7 @@ export default function TargetTelemetryPage() {
   const TONE_COLOR: Record<string, string> = {
     success: 'var(--success-fg)',
     info: 'var(--info-fg)',
-    warning: 'var(--warning-fg, #d97706)',
+    warning: 'var(--warning-fg)',
     danger: 'var(--danger-fg)',
     muted: 'var(--text-muted)',
   };
@@ -1249,7 +1249,7 @@ export default function TargetTelemetryPage() {
                   color: telemetryStreamConnected
                     ? 'var(--success-fg)'
                     : streamStatus === 'reconnecting' || streamStatus === 'connecting'
-                      ? 'var(--warning-fg, #d97706)'
+                      ? 'var(--warning-fg)'
                       : 'var(--text-muted)',
                 }}
               >
@@ -1331,7 +1331,7 @@ export default function TargetTelemetryPage() {
                   fontWeight: 600,
                   color: stablePollingActive
                     ? 'var(--info-fg)'
-                    : 'var(--warning-fg, #d97706)',
+                    : 'var(--warning-fg)',
                 }}
               >
                 {stablePollingActive
@@ -1377,7 +1377,7 @@ export default function TargetTelemetryPage() {
                     realtimeState === 'active'
                       ? 'var(--success-fg)'
                       : realtimeState === 'degraded'
-                        ? 'var(--warning-fg, #d97706)'
+                        ? 'var(--warning-fg)'
                         : realtimeEnabled
                           ? 'var(--success-fg)'
                           : 'var(--text-muted)',
@@ -1667,7 +1667,7 @@ export default function TargetTelemetryPage() {
                             ? 'var(--info-fg)'
                             : detectedByIsRealtime
                               ? 'var(--success-fg)'
-                              : 'var(--warning-fg, #d97706)',
+                              : 'var(--warning-fg)',
                           display: 'inline-block',
                           fontSize: '0.72rem',
                           fontWeight: 600,

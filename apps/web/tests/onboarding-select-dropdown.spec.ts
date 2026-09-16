@@ -170,13 +170,35 @@ test.describe('opened menu is themed (no white popup) via semantic tokens', () =
 });
 
 test.describe('color-scheme fallback for remaining native controls', () => {
-  test(':root advertises both schemes and theme attributes pin one', () => {
-    expect(stylesSrc).toContain('color-scheme: light dark');
+  test(':root resolves light, and each theme attribute pins its own scheme', () => {
+    // Light is the default institutional workspace, so :root declares it
+    // outright rather than deferring to the OS with `light dark`. Native
+    // chrome (scrollbars, date pickers, autofill) follows whichever theme is
+    // pinned, which is what keeps an un-migrated native control from painting
+    // itself the opposite way round.
+    expect(stylesSrc).toMatch(/:root\s*{[\s\S]*?color-scheme: light;/);
     expect(stylesSrc).toMatch(/\[data-theme="dark"\],\s*\.dark\s*{\s*color-scheme: dark;/);
     expect(stylesSrc).toMatch(/\[data-theme="light"\],\s*\.light\s*{\s*color-scheme: light;/);
   });
 
-  test('the document is pinned to the dark theme by default', () => {
-    expect(layoutSrc).toContain('data-theme="dark"');
+  test('System theme falls through to the OS preference in CSS alone', () => {
+    // The no-JavaScript path. If the pre-paint script never runs, no
+    // data-theme is stamped and this media query is the only thing standing
+    // between a dark-OS visitor and a flash of white.
+    expect(stylesSrc).toMatch(
+      /@media \(prefers-color-scheme: dark\)\s*{\s*:root:not\(\[data-theme="light"\]\):not\(\[data-theme="dark"\]\)\s*{\s*color-scheme: dark;/,
+    );
+  });
+
+  test('the document theme is resolved before first paint, not pinned in markup', () => {
+    // The old shell hard-coded <html data-theme="dark">, which made Light and
+    // System unreachable. The theme is now stamped by a nonced pre-paint
+    // script, so there is no flash in either direction — and because the
+    // server emits no data-theme, React has nothing to reconcile.
+    expect(layoutSrc).not.toContain('data-theme="dark"');
+    expect(layoutSrc).toContain('THEME_INIT_SCRIPT');
+    expect(layoutSrc).toContain('nonce={nonce}');
+    expect(layoutSrc).toContain("requestHeaders.get('x-nonce')");
+    expect(layoutSrc).toContain('suppressHydrationWarning');
   });
 });

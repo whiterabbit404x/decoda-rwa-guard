@@ -832,7 +832,7 @@ export default function AssetsManager({ apiUrl }: Props) {
               className="filterChip"
               role="status"
               aria-label={`Active filter: Monitoring gap ${monitoringGapFilterLabel(filters.monitoring_gap)}`}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'var(--surface-2, rgba(127,127,127,0.12))', border: '1px solid var(--border, rgba(127,127,127,0.25))', fontSize: '0.82rem', color: 'var(--text-primary)' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.25rem 0.6rem', borderRadius: '999px', background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: '0.82rem', color: 'var(--text-primary)' }}
             >
               Monitoring gap: {monitoringGapFilterLabel(filters.monitoring_gap)}
               <button

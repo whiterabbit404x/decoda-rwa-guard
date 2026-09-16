@@ -133,11 +133,11 @@ function valueColor(check: ReadinessCheck): string {
     typeof check.evidence?.evidence_source === 'string'
       ? (check.evidence.evidence_source as string)
       : '';
-  if (src === 'simulator') return '#ffd280'; // warn/amber for simulator
-  if (check.status === 'pass') return '#7ff0b4';
-  if (check.status === 'warn' || check.status === 'partial') return '#ffd280';
-  if (check.status === 'fail') return '#ffb3b3';
-  return '#dbe5ff';
+  if (src === 'simulator') return 'var(--warning-fg)'; // warn/amber for simulator
+  if (check.status === 'pass') return 'var(--success-fg)';
+  if (check.status === 'warn' || check.status === 'partial') return 'var(--warning-fg)';
+  if (check.status === 'fail') return 'var(--danger-fg)';
+  return 'var(--info-fg)';
 }
 
 // Count helper across all categories
@@ -182,14 +182,14 @@ function CheckRow({ check }: { check: ReadinessCheck }) {
         alignItems: 'center',
         gap: '0.5rem',
         padding: '0.45rem 0',
-        borderBottom: '1px solid rgba(48,54,61,0.5)',
+        borderBottom: '1px solid var(--border)',
         fontSize: '0.82rem',
       }}
     >
       <span className={dotClass(check.status)} aria-hidden="true" />
-      <span style={{ flex: 1, color: '#c9d1d9' }}>{check.label}</span>
+      <span style={{ flex: 1, color: 'var(--text-primary)' }}>{check.label}</span>
       {check.last_seen_at && (
-        <span style={{ color: '#5a6478', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
           {formatRelative(check.last_seen_at)}
         </span>
       )}
@@ -248,8 +248,8 @@ function BlockerList({
   items: string[];
   variant: 'blocker' | 'warning';
 }) {
-  const accentColor = variant === 'blocker' ? '#ffb3b3' : '#ffd280';
-  const iconColor = variant === 'blocker' ? '#ff6b6b' : '#ffd280';
+  const accentColor = variant === 'blocker' ? 'var(--danger-fg)' : 'var(--warning-fg)';
+  const iconColor = variant === 'blocker' ? 'var(--danger-fg)' : 'var(--warning-fg)';
   const dotLabel = variant === 'blocker' ? '●' : '▲';
   return (
     <article className="dataCard" style={{ flex: 1, minWidth: 0 }}>
@@ -257,7 +257,7 @@ function BlockerList({
         <span style={{ color: iconColor }}>{dotLabel}</span> {title} ({items.length})
       </p>
       {items.length === 0 ? (
-        <p style={{ color: '#5a6478', fontSize: '0.82rem' }}>None</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>None</p>
       ) : (
         <ul style={{ margin: 0, paddingLeft: '1.1rem', listStyle: 'disc' }}>
           {items.slice(0, 6).map((r) => (
@@ -266,7 +266,7 @@ function BlockerList({
             </li>
           ))}
           {items.length > 6 && (
-            <li style={{ color: '#5a6478', fontSize: '0.78rem' }}>+{items.length - 6} more</li>
+            <li style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>+{items.length - 6} more</li>
           )}
         </ul>
       )}
@@ -294,22 +294,22 @@ function ReadinessCriteria() {
   return (
     <article className="dataCard" style={{ gridColumn: 'span 1' }}>
       <p className="sectionEyebrow" style={{ marginBottom: '0.75rem' }}>Readiness Gate Criteria</p>
-      <p style={{ fontSize: '0.8rem', color: '#8b949e', marginBottom: '0.5rem', fontWeight: 600 }}>
+      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 600 }}>
         Pilot launch requires:
       </p>
       <ul style={{ margin: '0 0 1rem', paddingLeft: '1.1rem', listStyle: 'disc' }}>
         {pilotCriteria.map((c) => (
-          <li key={c} style={{ color: '#c9d1d9', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
+          <li key={c} style={{ color: 'var(--text-primary)', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
             {c}
           </li>
         ))}
       </ul>
-      <p style={{ fontSize: '0.8rem', color: '#8b949e', marginBottom: '0.5rem', fontWeight: 600 }}>
+      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 600 }}>
         Paid public launch requires pilot readiness plus:
       </p>
       <ul style={{ margin: 0, paddingLeft: '1.1rem', listStyle: 'disc' }}>
         {paidCriteria.map((c) => (
-          <li key={c} style={{ color: '#c9d1d9', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
+          <li key={c} style={{ color: 'var(--text-primary)', fontSize: '0.78rem', marginBottom: '0.25rem' }}>
             {c}
           </li>
         ))}
@@ -388,9 +388,9 @@ export default function ProductionReadinessPage() {
     : '—';
   const overallColor = report
     ? report.ready_for_pilot
-      ? '#7ff0b4'
-      : '#ffb3b3'
-    : '#8b949e';
+      ? 'var(--success-fg)'
+      : 'var(--danger-fg)'
+    : 'var(--text-secondary)';
   const overallSubLabel = report
     ? report.ready_for_paid_public_launch
       ? 'Ready for paid public launch'
@@ -399,43 +399,21 @@ export default function ProductionReadinessPage() {
 
   return (
     <main className="productPage">
-      {/* Inline styles for readiness-specific classes */}
-      <style>{`
-        .rdDot {
-          display: inline-block;
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-          flex-shrink: 0;
-        }
-        .rdDot-pass   { background: #46c48c; }
-        .rdDot-warn   { background: #f2cc60; }
-        .rdDot-fail   { background: #f85149; }
-        .rdDot-unavail { background: #5a6478; }
-        .rdCategoryGrid {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 1rem;
-        }
-        @media (max-width: 1100px) {
-          .rdCategoryGrid { grid-template-columns: repeat(2, 1fr); }
-        }
-        @media (max-width: 700px) {
-          .rdCategoryGrid { grid-template-columns: 1fr; }
-        }
-      `}</style>
+      {/* .rdDot / .rdCategoryGrid live in styles.css: an inline <style>
+          element is refused by the production CSP (style-src 'self'
+          'nonce-…'), so these rules never reached a customer's browser. */}
 
       {/* ── Breadcrumb + Header ─────────────────────────────────────── */}
       <section className="hero compactHero" style={{ paddingBottom: '1rem' }}>
         <div style={{ flex: 1 }}>
-          <nav aria-label="Breadcrumb" style={{ fontSize: '0.78rem', color: '#5a6478', marginBottom: '0.5rem' }}>
+          <nav aria-label="Breadcrumb" style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
             <span>Admin</span>
             <span style={{ margin: '0 0.3rem' }}>/</span>
-            <Link href="/system-health" style={{ color: '#58a6ff', textDecoration: 'none' }}>
+            <Link href="/system-health" style={{ color: 'var(--text-accent)', textDecoration: 'none' }}>
               System Health
             </Link>
             <span style={{ margin: '0 0.3rem' }}>/</span>
-            <span style={{ color: '#c9d1d9' }}>Production Readiness</span>
+            <span style={{ color: 'var(--text-primary)' }}>Production Readiness</span>
           </nav>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <h1 style={{ margin: 0 }}>Production Readiness</h1>
@@ -444,7 +422,7 @@ export default function ProductionReadinessPage() {
                 fontSize: '0.7rem',
                 fontWeight: 700,
                 background: 'rgba(88,166,255,0.12)',
-                color: '#58a6ff',
+                color: 'var(--text-accent)',
                 border: '1px solid rgba(88,166,255,0.25)',
                 borderRadius: '4px',
                 padding: '0.15rem 0.4rem',
@@ -466,7 +444,7 @@ export default function ProductionReadinessPage() {
             gap: '0.5rem',
           }}
         >
-          <p style={{ margin: 0, fontSize: '0.78rem', color: '#5a6478' }}>
+          <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-muted)' }}>
             Last updated:{' '}
             {lastUpdated
               ? lastUpdated.toLocaleString(undefined, {
@@ -557,44 +535,44 @@ export default function ProductionReadinessPage() {
                   >
                     {overallLabel}
                   </p>
-                  <p style={{ margin: 0, fontSize: '0.72rem', color: '#8b949e' }}>
+                  <p style={{ margin: 0, fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                     {overallSubLabel}
                   </p>
                 </div>
               </div>
 
               {/* Pilot */}
-              <div style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
+              <div style={{ borderLeft: '1px solid var(--border)', paddingLeft: '1rem' }}>
                 <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>Pilot Readiness</p>
                 <p
                   style={{
                     margin: 0,
                     fontWeight: 800,
                     fontSize: '1.4rem',
-                    color: report.ready_for_pilot ? '#7ff0b4' : '#ffb3b3',
+                    color: report.ready_for_pilot ? 'var(--success-fg)' : 'var(--danger-fg)',
                   }}
                 >
                   {report.ready_for_pilot ? 'YES' : 'NO'}
                 </p>
-                <p style={{ margin: 0, fontSize: '0.72rem', color: '#5a6478' }}>
+                <p style={{ margin: 0, fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                   {report.ready_for_pilot ? 'Updated just now' : `${report.blocking_reasons.length} blocker${report.blocking_reasons.length !== 1 ? 's' : ''}`}
                 </p>
               </div>
 
               {/* Paid launch */}
-              <div style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
+              <div style={{ borderLeft: '1px solid var(--border)', paddingLeft: '1rem' }}>
                 <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>Paid Public Launch</p>
                 <p
                   style={{
                     margin: 0,
                     fontWeight: 800,
                     fontSize: '1.4rem',
-                    color: report.ready_for_paid_public_launch ? '#7ff0b4' : '#ffb3b3',
+                    color: report.ready_for_paid_public_launch ? 'var(--success-fg)' : 'var(--danger-fg)',
                   }}
                 >
                   {report.ready_for_paid_public_launch ? 'YES' : 'NO'}
                 </p>
-                <p style={{ margin: 0, fontSize: '0.72rem', color: '#5a6478' }}>
+                <p style={{ margin: 0, fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                   {report.ready_for_paid_public_launch
                     ? 'Ready for paid customers'
                     : report.blocking_reasons.length > 0
@@ -606,14 +584,14 @@ export default function ProductionReadinessPage() {
               {/* Metric tiles */}
               {(
                 [
-                  ['Total Checks', totalChecks, '#c9d1d9'],
-                  ['Passed', passedChecks, '#7ff0b4'],
-                  ['Warnings', warnChecks, '#ffd280'],
-                  ['Failed', failChecks, '#ffb3b3'],
-                  ['Unavailable', unavailChecks, '#dbe5ff'],
+                  ['Total Checks', totalChecks, 'var(--text-primary)'],
+                  ['Passed', passedChecks, 'var(--success-fg)'],
+                  ['Warnings', warnChecks, 'var(--warning-fg)'],
+                  ['Failed', failChecks, 'var(--danger-fg)'],
+                  ['Unavailable', unavailChecks, 'var(--info-fg)'],
                 ] as const
               ).map(([label, val, color]) => (
-                <div key={label} style={{ borderLeft: '1px solid #30363d', paddingLeft: '1rem' }}>
+                <div key={label} style={{ borderLeft: '1px solid var(--border)', paddingLeft: '1rem' }}>
                   <p className="sectionEyebrow" style={{ margin: '0 0 0.25rem' }}>{label}</p>
                   <p style={{ margin: 0, fontWeight: 800, fontSize: '1.4rem', color }}>{val}</p>
                 </div>
@@ -703,8 +681,8 @@ export default function ProductionReadinessPage() {
               marginBottom: '1rem',
             }}
           >
-            <span style={{ fontSize: '0.9rem', color: '#58a6ff' }}>ℹ</span>
-            <p style={{ margin: 0, fontSize: '0.82rem', color: '#8b949e' }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--text-accent)' }}>ℹ</span>
+            <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
               Readiness data is collected from live systems and databases. No demo or mock data is
               used.
             </p>

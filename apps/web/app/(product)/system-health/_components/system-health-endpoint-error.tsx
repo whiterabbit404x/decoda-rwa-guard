@@ -12,7 +12,7 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="shMetricRow">
       <span className="shMetricLabel">{label}</span>
-      <span className="shMetricValue" style={{ fontFamily: 'var(--font-mono, monospace)' }}>
+      <span className="shMetricValue" style={{ fontFamily: 'var(--font-mono)' }}>
         {value}
       </span>
     </div>

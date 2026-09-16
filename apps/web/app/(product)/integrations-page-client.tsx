@@ -61,8 +61,8 @@ function ProviderDetailDrawer({ provider, onClose }: { provider: ProviderRow; on
       aria-label={`${provider.provider} details`}
       style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}
     >
-      <button type="button" aria-label="Close" onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
-      <div style={{ position: 'relative', width: 'min(420px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1.25rem', display: 'grid', gap: '0.85rem', alignContent: 'start' }}>
+      <button type="button" aria-label="Close" onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
+      <div style={{ position: 'relative', width: 'min(420px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1.25rem', display: 'grid', gap: '0.85rem', alignContent: 'start' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0 }}>{provider.provider}</h3>
           <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={onClose}>Close</button>
@@ -196,7 +196,7 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
   const apis = data?.apis ?? [];
   const webhooks = data?.webhooks ?? [];
   const connections = data?.connections ?? [];
-  const canManage = Boolean(data?.permissions.can_manage);
+  const canManage = Boolean(data?.permissions?.can_manage);
 
   const hasAnyIntegration = useMemo(
     () => providers.length > 0 || webhooks.length > 0 || apis.some((a) => a.credential_configured),
@@ -402,8 +402,8 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
       </button>
       {mobileAgentOpen ? (
         <div role="dialog" aria-modal="true" aria-label="Integration Gateway Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
-          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1rem' }}>
+          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
+          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1rem' }}>
             <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
             {agentPanel}
           </div>
@@ -414,12 +414,7 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
         <ProviderDetailDrawer provider={selectedProvider} onClose={() => setSelectedProvider(null)} />
       ) : null}
 
-      <style>{`
-        @media (max-width: 900px) {
-          .integrationAgentRail { display: none; }
-          .integrationAgentMobileToggle { display: inline-flex !important; }
-        }
-      `}</style>
+      {/* The narrow-screen rail collapse lives in styles.css — see above. */}
     </main>
   );
 }

@@ -56,7 +56,7 @@ export function ProviderHealthCards({
           <p className="sectionEyebrow">External dependencies</p>
           <h2>Provider Health</h2>
         </div>
-        <Link href="/integrations" style={{ fontSize: '0.85rem', color: '#6aa9ff', textDecoration: 'none' }}>
+        <Link href="/integrations" style={{ fontSize: '0.85rem', color: 'var(--text-accent)', textDecoration: 'none' }}>
           View Integrations →
         </Link>
       </div>

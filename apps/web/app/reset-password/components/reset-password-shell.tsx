@@ -76,8 +76,8 @@ export default function ResetPasswordShell({
                 <header className="siLogoHeader">
                   <div className="siLogoIcon" aria-hidden="true">
                     <svg width="34" height="34" viewBox="0 0 34 34" fill="none">
-                      <path d="M17 3L4 8.5v9c0 7.5 5.5 13 13 15 7.5-2 13-7.5 13-15v-9L17 3z" fill="rgba(59,130,246,0.18)" stroke="#3b82f6" strokeWidth="1.8" strokeLinejoin="round" />
-                      <path d="M12 17l3.5 3.5L23 13" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M17 3L4 8.5v9c0 7.5 5.5 13 13 15 7.5-2 13-7.5 13-15v-9L17 3z" fill="rgba(59,130,246,0.18)" stroke="var(--accent-blue)" strokeWidth="1.8" strokeLinejoin="round" />
+                      <path d="M12 17l3.5 3.5L23 13" stroke="var(--accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </div>
                   <div className="siLogoText">
@@ -110,7 +110,7 @@ export default function ResetPasswordShell({
 
               <div className="siBrandFooter">
                 <p className="siTrustLine">
-                  <span style={{ display: 'flex', color: '#4ade80' }}><ShieldIcon size={15} /></span>
+                  <span style={{ display: 'flex', color: 'var(--success-fg)' }}><ShieldIcon size={15} /></span>
                   Secure. Reliable. Purpose-built for Real-World Assets.
                 </p>
               </div>

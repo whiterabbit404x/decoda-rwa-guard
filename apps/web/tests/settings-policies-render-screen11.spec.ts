@@ -247,7 +247,10 @@ async function mountPolicies(page: Page, options: MountOptions = {}) {
 test('Policies appears in the Settings tabs alongside the existing ones', async ({ page }) => {
   await mountPolicies(page);
   const tabs = await page.getByRole('tab').allInnerTexts();
-  expect(tabs).toEqual(['General', 'Team', 'Security', 'Policies', 'Billing', 'Notifications']);
+  // Appearance sits last: it is a display preference, not a governance
+  // control, so it must not push Policies or Security further from the eye.
+  expect(tabs).toEqual(['General', 'Team', 'Security', 'Policies', 'Billing', 'Notifications', 'Appearance']);
+  expect(tabs.indexOf('Appearance')).toBe(tabs.length - 1);
   await expect(page.getByRole('tab', { name: 'Policies' })).toHaveAttribute('aria-selected', 'true');
 });
 
@@ -326,9 +329,40 @@ test('a satisfied evaluation renders ALLOW, visibly distinct from DENY', async (
 
   const verdict = page.getByTestId('simulation-verdict');
   await expect(verdict).toContainText('ALLOW');
-  await expect(verdict).toHaveCSS('color', 'rgb(74, 222, 128)');
+  // The verdict reads the shared success token rather than a per-screen
+  // green, so ALLOW means the same thing here as everywhere else and the
+  // assertion survives a theme switch. Pinning a literal rgb() would only
+  // re-pin whichever theme happened to be active.
+  const allowColour = await verdict.evaluate((el) => getComputedStyle(el).color);
+  const successToken = await verdict.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue('--success-fg').trim(),
+  );
+  expect(successToken).not.toBe('');
+  expect(allowColour).toBe(await verdict.evaluate((el, token) => {
+    const probe = document.createElement('span');
+    probe.style.color = token;
+    el.appendChild(probe);
+    const resolved = getComputedStyle(probe).color;
+    probe.remove();
+    return resolved;
+  }, successToken));
+
   await expect(page.getByTestId('reason-code')).toHaveText('POLICY_SATISFIED');
   await expect(page.getByText('Approvals still required')).toHaveCount(0);
+});
+
+test('ALLOW and DENY are never painted the same colour', async ({ page }) => {
+  // The point of the previous test's colour check: an analyst must not have
+  // to read the word to know which way the policy engine went.
+  await mountPolicies(page, { simulate: FIXTURE.allow_evaluation });
+  await page.click('text=Run Simulation');
+  const allow = await page.getByTestId('simulation-verdict').evaluate((el) => getComputedStyle(el).color);
+
+  await mountPolicies(page);
+  await page.click('text=Run Simulation');
+  const deny = await page.getByTestId('simulation-verdict').evaluate((el) => getComputedStyle(el).color);
+
+  expect(allow).not.toBe(deny);
 });
 
 /* ── Fail closed ──────────────────────────────────────────────────────────── */

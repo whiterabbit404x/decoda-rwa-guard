@@ -57,7 +57,7 @@ export type DetectionDetail = DetectionRow & {
 /** One label/value row. A missing value reads "Not recorded", never a blank. */
 function Field({ label, children, mono = false }: { label: string; children: React.ReactNode; mono?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', padding: '0.35rem 0', borderBottom: '1px solid var(--border-subtle, rgba(148,163,184,0.12))' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', padding: '0.35rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
       <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{label}</span>
       <span
         style={{
@@ -300,7 +300,7 @@ export function OperationalIntegrityAnalysis({
             <p className="muted" style={{ fontSize: '0.85rem' }} data-testid="checks-unavailable">{CHECKS_UNAVAILABLE_COPY}</p>
           )}
 
-          <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle, rgba(148,163,184,0.18))' }}>
+          <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
             <p className="metricLabel" style={{ margin: 0 }}>Conclusion</p>
             <p
               data-testid="operational-conclusion"
@@ -319,7 +319,7 @@ export function OperationalIntegrityAnalysis({
           </div>
 
           {analysis.narrative || analysis.ai_summary ? (
-            <div style={{ marginTop: '0.9rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle, rgba(148,163,184,0.18))' }}>
+            <div style={{ marginTop: '0.9rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
               <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }} data-testid="operational-narrative">
                 {analysis.ai_summary || `${analysis.narrative?.finding ?? ''} ${analysis.narrative?.explanation ?? ''}`.trim()}
               </p>

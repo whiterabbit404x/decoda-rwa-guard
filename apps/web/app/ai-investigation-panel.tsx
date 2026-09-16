@@ -385,11 +385,11 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
           role="dialog"
           aria-modal="true"
           aria-label="Regenerate AI analysis"
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
           onClick={closeRegenerate}
         >
           <div
-            style={{ background: 'var(--card-bg, #0d1627)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
             onClick={(e) => e.stopPropagation()}
           >
             <p className="eyebrow">Regenerate analysis</p>
@@ -407,7 +407,7 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
               aria-required="true"
               aria-invalid={regenError ? true : undefined}
               placeholder="Why is this analysis being regenerated?"
-              style={{ width: '100%', boxSizing: 'border-box', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', color: 'inherit' }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--bg-inset)', color: 'inherit' }}
             />
             {regenError && <p role="alert" className="errorText" style={{ marginTop: '0.5rem' }}>{regenError}</p>}
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>

@@ -15,9 +15,9 @@ import {
 
 function Field({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.25rem 0', borderBottom: '1px solid var(--border-subtle, rgba(148,163,184,0.12))' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.25rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
       <span className="muted" style={{ fontSize: '0.74rem' }}>{label}</span>
-      <span style={{ fontSize: '0.78rem', fontWeight: 600, textAlign: 'right', fontFamily: mono ? 'var(--font-mono, monospace)' : undefined }}>{value}</span>
+      <span style={{ fontSize: '0.78rem', fontWeight: 600, textAlign: 'right', fontFamily: mono ? 'var(--font-mono)' : undefined }}>{value}</span>
     </div>
   );
 }
@@ -56,13 +56,13 @@ function Shell({ title, subtitle, onClose, children }: { title: string; subtitle
         type="button"
         aria-label="Close drawer"
         onClick={onClose}
-        style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none', cursor: 'pointer' }}
+        style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none', cursor: 'pointer' }}
       />
       <div
         style={{
           position: 'relative', width: 'min(480px, 100%)', height: '100%', overflowY: 'auto',
-          background: 'var(--surface, #0b1220)', borderLeft: '1px solid var(--border-strong, rgba(59,130,246,0.35))',
-          padding: '1.1rem 1.25rem', boxShadow: '-8px 0 32px rgba(0,0,0,0.4)',
+          background: 'var(--bg-surface)', borderLeft: '1px solid var(--border-strong)',
+          padding: '1.1rem 1.25rem', boxShadow: 'var(--shadow-lg)',
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
@@ -160,7 +160,7 @@ export function SourceDetailDrawer({
         ) : (
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
             {routingHistory.slice(0, 6).map((decision) => (
-              <li key={decision.id} style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', borderLeft: '2px solid var(--border-subtle, rgba(148,163,184,0.3))', paddingLeft: '0.5rem' }}>
+              <li key={decision.id} style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', borderLeft: '2px solid var(--border-subtle)', paddingLeft: '0.5rem' }}>
                 <div style={{ fontWeight: 600 }}>{decision.decision_type.replace(/_/g, ' ')}</div>
                 <div>
                   {decision.previous_route || '—'} → {decision.new_route || '—'} · {decision.actor_type || 'agent'} · {fmtRelative(decision.created_at)}

@@ -85,7 +85,7 @@ export function domainSurfaceVar(domain: IncidentEvidenceDomain | string | null 
     case 'OPERATIONAL': return 'var(--success-bg)';
     case 'POLICY': return 'var(--warning-bg)';
     case 'HUMAN_ACTION': return 'var(--violet-bg)';
-    default: return 'rgba(148,163,184,0.08)';
+    default: return 'var(--overlay-06)';
   }
 }
 

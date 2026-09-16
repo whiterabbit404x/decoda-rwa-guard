@@ -72,10 +72,10 @@ type Member = { user_id: string; email: string; full_name: string };
 
 const INPUT_STYLE: React.CSSProperties = {
   width: '100%',
-  background: '#0d1117',
-  border: '1px solid #30363d',
+  background: 'var(--bg-inset)',
+  border: '1px solid var(--border)',
   borderRadius: 8,
-  color: '#e6edf3',
+  color: 'var(--text-primary)',
   padding: '0.45rem 0.65rem',
   fontSize: '0.85rem',
 };
@@ -86,11 +86,11 @@ function Pill({ tone, children }: { tone: string; children: ReactNode }) {
 
 function DetailRow({ label, value, note }: { label: string; value: ReactNode; note?: string }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '0.5rem 1rem', alignItems: 'baseline', padding: '0.5rem 0', borderBottom: '1px solid #21262d' }}>
-      <span style={{ color: '#8b949e', fontSize: '0.82rem', fontWeight: 600 }}>{label}</span>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '0.5rem 1rem', alignItems: 'baseline', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+      <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600 }}>{label}</span>
       <span style={{ fontSize: '0.85rem' }}>
         {value}
-        {note ? <span style={{ display: 'block', color: '#5a6478', fontSize: '0.75rem', marginTop: '0.15rem' }}>{note}</span> : null}
+        {note ? <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '0.15rem' }}>{note}</span> : null}
       </span>
     </div>
   );
@@ -99,7 +99,7 @@ function DetailRow({ label, value, note }: { label: string; value: ReactNode; no
 function Field({ label, children, htmlFor }: { label: string; children: ReactNode; htmlFor?: string }) {
   return (
     <div style={{ marginBottom: '0.7rem' }}>
-      <label htmlFor={htmlFor} style={{ display: 'block', fontSize: '0.78rem', color: '#8b949e', marginBottom: '0.3rem', fontWeight: 600 }}>{label}</label>
+      <label htmlFor={htmlFor} style={{ display: 'block', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.3rem', fontWeight: 600 }}>{label}</label>
       {children}
     </div>
   );
@@ -195,8 +195,8 @@ function CreatePolicyDialog({
           <Field label="Maximum issuance (USD / day)" htmlFor="create-max-issuance">
             <input id="create-max-issuance" inputMode="decimal" placeholder="Not constrained" value={draft.maximum_daily_amount_usd} onChange={(e) => onChange({ ...draft, maximum_daily_amount_usd: e.target.value })} style={INPUT_STYLE} />
           </Field>
-          <fieldset style={{ border: '1px solid #30363d', borderRadius: 8, padding: '0.6rem 0.8rem', margin: '0 0 0.7rem' }}>
-            <legend style={{ fontSize: '0.78rem', color: '#8b949e', fontWeight: 600, padding: '0 0.35rem' }}>Required roles</legend>
+          <fieldset style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.6rem 0.8rem', margin: '0 0 0.7rem' }}>
+            <legend style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600, padding: '0 0.35rem' }}>Required roles</legend>
             {(vocabulary?.governance_roles ?? []).map((role) => (
               <label key={role.value} style={{ display: 'block', fontSize: '0.82rem', padding: '0.2rem 0' }}>
                 <input
@@ -216,7 +216,7 @@ function CreatePolicyDialog({
             ))}
           </fieldset>
           {message ? (
-            <p role={message.tone === 'success' ? 'status' : 'alert'} data-testid="create-policy-message" style={{ fontSize: '0.82rem', color: message.tone === 'success' ? '#4ade80' : message.tone === 'conflict' ? '#fbbf24' : '#f87171' }}>
+            <p role={message.tone === 'success' ? 'status' : 'alert'} data-testid="create-policy-message" style={{ fontSize: '0.82rem', color: message.tone === 'success' ? 'var(--success-fg)' : message.tone === 'conflict' ? 'var(--warning-fg)' : 'var(--danger-fg)' }}>
               {message.text}
             </p>
           ) : null}
@@ -563,21 +563,21 @@ export default function SettingsPoliciesPanel({
           <div>
             <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem' }}>Policy</p>
             <h2 style={{ margin: 0, fontSize: '1.1rem' }}>
-              {policy.name} <span style={{ color: '#8b949e', fontWeight: 500 }}>({policy.policy_key})</span>
+              {policy.name} <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>({policy.policy_key})</span>
             </h2>
             <div style={{ display: 'flex', gap: '1.25rem', marginTop: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.82rem', color: '#8b949e' }}>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
                 Status <Pill tone={policyStatusTone(policy.status)}>{policyStatusLabel(policy.status)}</Pill>
               </span>
-              <span style={{ fontSize: '0.82rem', color: '#8b949e' }}>
-                Version <strong style={{ color: '#e6edf3' }}>{policy.version}</strong>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                Version <strong style={{ color: 'var(--text-primary)' }}>{policy.version}</strong>
               </span>
-              <span style={{ fontSize: '0.82rem', color: '#8b949e' }}>
-                Operation <strong style={{ color: '#e6edf3' }}>{operationLabel(policy.operation)}</strong>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                Operation <strong style={{ color: 'var(--text-primary)' }}>{operationLabel(policy.operation)}</strong>
               </span>
             </div>
             {isDemoSeeded(policy) ? (
-              <p style={{ margin: '0.6rem 0 0', fontSize: '0.78rem', color: '#fbbf24' }}>
+              <p style={{ margin: '0.6rem 0 0', fontSize: '0.78rem', color: 'var(--warning-fg)' }}>
                 Seeded demo policy — not customer-authored configuration. Its evaluations are real; its constraints were provisioned for demonstration.
               </p>
             ) : null}
@@ -598,7 +598,7 @@ export default function SettingsPoliciesPanel({
         </div>
         {list.policies.length > 1 ? (
           <div style={{ marginTop: '0.9rem' }}>
-            <label htmlFor="policy-select" style={{ fontSize: '0.78rem', color: '#8b949e', fontWeight: 600, marginRight: '0.5rem' }}>Policy</label>
+            <label htmlFor="policy-select" style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600, marginRight: '0.5rem' }}>Policy</label>
             <select
               id="policy-select"
               value={policy.policy_id}
@@ -694,7 +694,7 @@ export default function SettingsPoliciesPanel({
           </button>
 
           {/* Simulation Result — rendered from the backend decision only. */}
-          <div style={{ marginTop: '1rem', border: '1px solid #30363d', borderRadius: 10, padding: '0.9rem' }}>
+          <div style={{ marginTop: '1rem', border: '1px solid var(--border)', borderRadius: 10, padding: '0.9rem' }}>
             <p className="sectionEyebrow" style={{ margin: '0 0 0.5rem' }}>Simulation Result</p>
             <p
               role="status"
@@ -704,7 +704,7 @@ export default function SettingsPoliciesPanel({
                 fontSize: '1.45rem',
                 fontWeight: 800,
                 letterSpacing: '0.04em',
-                color: display.tone === 'success' ? '#4ade80' : display.tone === 'danger' ? '#f87171' : '#8b949e',
+                color: display.tone === 'success' ? 'var(--success-fg)' : display.tone === 'danger' ? 'var(--danger-fg)' : 'var(--text-secondary)',
               }}
             >
               {display.tone === 'success' ? '🟢 ' : display.tone === 'danger' ? '🔴 ' : ''}{display.verdict}
@@ -716,8 +716,8 @@ export default function SettingsPoliciesPanel({
                 <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem' }}>Reason</p>
                 {display.reasonCodes.map((code) => (
                   <div key={code} style={{ marginBottom: '0.4rem' }}>
-                    <code data-testid="reason-code" style={{ fontSize: '0.82rem', color: display.tone === 'danger' ? '#f87171' : '#4ade80', fontWeight: 700 }}>{code}</code>
-                    <span style={{ display: 'block', color: '#8b949e', fontSize: '0.76rem' }}>{reasonCodeLabel(code)}</span>
+                    <code data-testid="reason-code" style={{ fontSize: '0.82rem', color: display.tone === 'danger' ? 'var(--danger-fg)' : 'var(--success-fg)', fontWeight: 700 }}>{code}</code>
+                    <span style={{ display: 'block', color: 'var(--text-secondary)', fontSize: '0.76rem' }}>{reasonCodeLabel(code)}</span>
                   </div>
                 ))}
               </div>
@@ -725,18 +725,18 @@ export default function SettingsPoliciesPanel({
 
             {evaluation ? (
               <>
-                <div style={{ marginTop: '0.85rem', paddingTop: '0.7rem', borderTop: '1px solid #21262d', display: 'grid', gap: '0.3rem' }}>
-                  <span style={{ fontSize: '0.76rem', color: '#8b949e' }}>
-                    Source <strong style={{ color: '#e6edf3' }}>{evaluation.decision_authority}</strong>
+                <div style={{ marginTop: '0.85rem', paddingTop: '0.7rem', borderTop: '1px solid var(--border)', display: 'grid', gap: '0.3rem' }}>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    Source <strong style={{ color: 'var(--text-primary)' }}>{evaluation.decision_authority}</strong>
                   </span>
-                  <span style={{ fontSize: '0.76rem', color: '#8b949e' }}>
-                    AI authority <strong style={{ color: '#e6edf3' }}>{evaluation.ai_authority}</strong>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    AI authority <strong style={{ color: 'var(--text-primary)' }}>{evaluation.ai_authority}</strong>
                   </span>
-                  <span style={{ fontSize: '0.76rem', color: '#8b949e' }}>
-                    Evaluated against <strong style={{ color: '#e6edf3' }}>{evaluation.policy_key} v{evaluation.policy_version}</strong>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    Evaluated against <strong style={{ color: 'var(--text-primary)' }}>{evaluation.policy_key} v{evaluation.policy_version}</strong>
                     {' · '}<code style={{ fontSize: '0.72rem' }}>{evaluation.engine_version}</code>
                   </span>
-                  <span style={{ fontSize: '0.76rem', color: '#8b949e' }}>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
                     Evaluation ID <code style={{ fontSize: '0.72rem' }}>{evaluation.evaluation_id}</code>
                   </span>
                 </div>
@@ -754,7 +754,7 @@ export default function SettingsPoliciesPanel({
                 ) : null}
 
                 {evaluation.ai_explanation ? (
-                  <div style={{ marginTop: '0.85rem', paddingTop: '0.7rem', borderTop: '1px solid #21262d' }}>
+                  <div style={{ marginTop: '0.85rem', paddingTop: '0.7rem', borderTop: '1px solid var(--border)' }}>
                     <p className="sectionEyebrow" style={{ margin: '0 0 0.3rem' }}>
                       AI Explanation
                       <span className="pill pill-neutral" style={{ marginLeft: '0.5rem', fontSize: '0.68rem' }}>
@@ -776,12 +776,12 @@ export default function SettingsPoliciesPanel({
                         const tone = checkStatusTone(check.status);
                         return (
                           <li key={check.key} data-testid={`check-${check.key}`} style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', padding: '0.25rem 0' }}>
-                            <span aria-hidden="true" style={{ color: tone === 'success' ? '#4ade80' : tone === 'danger' ? '#f87171' : '#5a6478' }}>
+                            <span aria-hidden="true" style={{ color: tone === 'success' ? 'var(--success-fg)' : tone === 'danger' ? 'var(--danger-fg)' : 'var(--text-muted)' }}>
                               {checkGlyph(check.status)}
                             </span>
                             <span style={{ fontSize: '0.8rem', flex: 1 }}>
                               {check.label}
-                              <span style={{ display: 'block', color: '#5a6478', fontSize: '0.74rem' }}>{check.detail}</span>
+                              <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.74rem' }}>{check.detail}</span>
                             </span>
                             <span className={`pill pill-${tone}`} style={{ fontSize: '0.68rem' }}>{checkStatusLabel(check.status)}</span>
                           </li>
@@ -811,7 +811,7 @@ export default function SettingsPoliciesPanel({
       <GovernanceDialog open={dialog === 'history'} title={`Version history — ${policy.policy_key}`} onClose={() => setDialog(null)} maxWidth={820}>
         {history.state === 'loading' ? <p className="muted">Loading version history…</p>
           : history.state === 'permission_denied' ? <p className="muted">You do not have permission to view this policy&apos;s history.</p>
-          : history.state === 'error' ? <p role="alert" style={{ color: '#f87171' }}>Version history unavailable.</p>
+          : history.state === 'error' ? <p role="alert" style={{ color: 'var(--danger-fg)' }}>Version history unavailable.</p>
           : history.versions.length === 0 ? (
             <p className="muted">
               No version history has been recorded for this policy yet. Versions appear here once a material governance
@@ -893,8 +893,8 @@ export default function SettingsPoliciesPanel({
             <Field label="Maximum issuance (USD / day)" htmlFor="edit-max-issuance">
               <input id="edit-max-issuance" inputMode="decimal" placeholder="Not constrained" value={draft.maximum_daily_amount_usd} onChange={(e) => setDraft({ ...draft, maximum_daily_amount_usd: e.target.value })} style={INPUT_STYLE} />
             </Field>
-            <fieldset style={{ border: '1px solid #30363d', borderRadius: 8, padding: '0.6rem 0.8rem', margin: '0 0 0.7rem' }}>
-              <legend style={{ fontSize: '0.78rem', color: '#8b949e', fontWeight: 600, padding: '0 0.35rem' }}>Required roles</legend>
+            <fieldset style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.6rem 0.8rem', margin: '0 0 0.7rem' }}>
+              <legend style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600, padding: '0 0.35rem' }}>Required roles</legend>
               {(vocabulary?.governance_roles ?? []).map((role) => (
                 <label key={role.value} style={{ display: 'block', fontSize: '0.82rem', padding: '0.2rem 0' }}>
                   <input
@@ -914,7 +914,7 @@ export default function SettingsPoliciesPanel({
               ))}
             </fieldset>
             {editMessage ? (
-              <p role={editMessage.tone === 'success' ? 'status' : 'alert'} style={{ fontSize: '0.82rem', color: editMessage.tone === 'success' ? '#4ade80' : editMessage.tone === 'conflict' ? '#fbbf24' : '#f87171' }}>
+              <p role={editMessage.tone === 'success' ? 'status' : 'alert'} style={{ fontSize: '0.82rem', color: editMessage.tone === 'success' ? 'var(--success-fg)' : editMessage.tone === 'conflict' ? 'var(--warning-fg)' : 'var(--danger-fg)' }}>
                 {editMessage.text}
                 {editMessage.tone === 'conflict' ? (
                   <button className="btn btn-ghost" type="button" style={{ marginLeft: '0.5rem', fontSize: '0.76rem', padding: '0.2rem 0.5rem' }} onClick={() => { setDialog(null); setDraft(null); void loadPolicies(); }}>Reload</button>

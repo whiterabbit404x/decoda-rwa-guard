@@ -124,10 +124,14 @@ test.describe('the opened menu is themed, not a white popup', () => {
   });
 
   test('the translucent input surface no longer backs an OS-drawn popup', () => {
-    // The textarea may keep it — it has no native popup — but the Feedback type
-    // control must not be a native <select> carrying that background.
+    // The textarea may keep a translucent surface — it has no native popup —
+    // but it now reads that surface from the themed overlay scale rather than
+    // a raw white wash, which was invisible the moment the workspace went
+    // light. The Feedback type control must still not be a native <select>
+    // carrying that background.
     const input = block(stylesSrc, '.planFeedbackInput {');
-    expect(input).toContain('background: rgba(255, 255, 255, 0.04)');
+    expect(input).toContain('background: var(--bg-input)');
+    expect(input).not.toContain('rgba(255, 255, 255');
     expect(badgeSrc).not.toMatch(/<select[^>]*className="planFeedbackInput"/);
   });
 });

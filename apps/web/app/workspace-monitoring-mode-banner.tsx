@@ -105,9 +105,9 @@ function isCritical(state: BannerState): boolean {
 }
 
 function stateColor(state: BannerState): string {
-  if (state === 'LIVE') return 'var(--success-fg, #16a34a)';
-  if (state === 'OFFLINE') return 'var(--danger-fg, #dc2626)';
-  return 'var(--warning-fg, #d97706)';
+  if (state === 'LIVE') return 'var(--success-fg)';
+  if (state === 'OFFLINE') return 'var(--danger-fg)';
+  return 'var(--warning-fg)';
 }
 
 function stateLabel(state: BannerState): string {

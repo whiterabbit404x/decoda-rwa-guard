@@ -47,7 +47,7 @@ export function GovernanceDialog({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(1, 4, 9, 0.72)',
+        background: 'var(--scrim)',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
@@ -66,10 +66,10 @@ export function GovernanceDialog({
         style={{
           width: '100%',
           maxWidth,
-          background: '#0d1117',
-          border: '1px solid #30363d',
+          background: 'var(--bg-inset)',
+          border: '1px solid var(--border)',
           borderRadius: 12,
-          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          boxShadow: '0 20px 60px var(--scrim)',
           outline: 'none',
         }}
       >
@@ -80,7 +80,7 @@ export function GovernanceDialog({
             justifyContent: 'space-between',
             gap: '1rem',
             padding: '1rem 1.25rem',
-            borderBottom: '1px solid #21262d',
+            borderBottom: '1px solid var(--border)',
           }}
         >
           <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{title}</h2>
@@ -90,9 +90,9 @@ export function GovernanceDialog({
             onClick={onClose}
             style={{
               background: 'none',
-              border: '1px solid #30363d',
+              border: '1px solid var(--border)',
               borderRadius: 8,
-              color: '#8b949e',
+              color: 'var(--text-secondary)',
               cursor: 'pointer',
               fontSize: '1.1rem',
               lineHeight: 1,
@@ -110,7 +110,7 @@ export function GovernanceDialog({
               justifyContent: 'flex-end',
               gap: '0.5rem',
               padding: '0.85rem 1.25rem',
-              borderTop: '1px solid #21262d',
+              borderTop: '1px solid var(--border)',
             }}
           >
             {footer}

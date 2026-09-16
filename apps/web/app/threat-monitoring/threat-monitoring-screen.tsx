@@ -379,7 +379,7 @@ function TelemetryVolumeCard({ summary, loading, liveCoverageFresh }: { summary:
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '8rem', color: 'var(--text-muted)', gap: '0.35rem', textAlign: 'center', padding: '0 1rem' }} data-testid="chart-empty-state">
           <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{emptyCopy.title}</span>
           <span style={{ fontSize: '0.875rem' }}>{emptyCopy.body}</span>
-          {emptyCopy.staleWarning ? <span style={{ fontSize: '0.8rem', color: 'var(--warning-fg, #f59e0b)' }}>{emptyCopy.staleWarning}</span> : null}
+          {emptyCopy.staleWarning ? <span style={{ fontSize: '0.8rem', color: 'var(--warning-fg)' }}>{emptyCopy.staleWarning}</span> : null}
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '3px', height: '8rem', padding: '0.5rem 0 0', overflowX: 'auto' }} data-testid="telemetry-volume-bars">
@@ -390,7 +390,7 @@ function TelemetryVolumeCard({ summary, loading, liveCoverageFresh }: { summary:
               <div
                 key={b.bucket_epoch}
                 title={`${new Date(b.bucket_epoch * 1000).toLocaleString()} · ${b.count} events${nonLive ? ` (${b.count - b.live_count} non-live)` : ''}`}
-                style={{ flex: '1 0 6px', minWidth: '6px', background: nonLive ? 'var(--info-fg, #60a5fa)' : 'var(--text-accent, #3b82f6)', borderRadius: '2px 2px 0 0', height: `${h}%` }}
+                style={{ flex: '1 0 6px', minWidth: '6px', background: nonLive ? 'var(--text-accent)' : 'var(--accent-blue)', borderRadius: '2px 2px 0 0', height: `${h}%` }}
               />
             );
           })}
@@ -618,7 +618,7 @@ function DetectionsTab({
                   data-category={String(d.category ?? '')}
                   aria-selected={selected}
                   onClick={() => setSelectedId(selected ? null : d.id)}
-                  style={{ cursor: 'pointer', background: selected ? 'var(--surface-raised, rgba(148,163,184,0.08))' : undefined }}
+                  style={{ cursor: 'pointer', background: selected ? 'var(--surface-raised)' : undefined }}
                 >
                   <td title={SEVERITY_TOOLTIP}><StatusPill label={severityLabel(d.severity)} variant={severityVariant(d.severity)} /></td>
                   <td>
@@ -1011,8 +1011,8 @@ function DetectionFilterBar({
             minWidth: '180px',
             padding: '0.45rem 0.6rem',
             fontSize: '0.85rem',
-            background: 'rgba(15,23,42,0.6)',
-            border: '1px solid rgba(148,163,184,0.2)',
+            background: 'var(--bg-input)',
+            border: '1px solid var(--border)',
             borderRadius: '6px',
             color: 'inherit',
           }}

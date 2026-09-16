@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import AppNavigation from './app-navigation';
 import { containsDiagnosticEnvVars } from './diagnostic-message';
@@ -12,6 +12,8 @@ import PlanBadge from './plan-badge';
 import { PlanStatusProvider } from './plan-status-context';
 import RuntimeBanner from './components/runtime-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
+import ThemeToggle from './theme-toggle';
+import { APP_NAV_ITEMS } from './product-nav';
 
 function BellIcon() {
   return (
@@ -37,6 +39,21 @@ function initials(name: string): string {
     .map((w) => w[0] ?? '')
     .join('')
     .toUpperCase();
+}
+
+/**
+ * The current screen's name, for the header.
+ *
+ * Resolved from the canonical nav list rather than a second hand-written
+ * route→title map, so a header title can never disagree with the sidebar
+ * label for the same route. Unlisted routes (detail pages, /workspaces,
+ * /help) fall back to no title instead of a guess.
+ */
+function pageTitleFor(pathname: string): string | null {
+  const exact = APP_NAV_ITEMS.find((item) => item.href === pathname);
+  if (exact) return exact.label;
+  const nested = APP_NAV_ITEMS.find((item) => item.href !== '/dashboard' && pathname.startsWith(item.href + '/'));
+  return nested ? nested.label : null;
 }
 
 
@@ -110,11 +127,16 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
   const pathname = usePathname();
   const router = useRouter();
   const { error, signOut, user } = usePilotAuth();
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const userChipRef = useRef<HTMLButtonElement | null>(null);
 
   const workspaceName = user?.current_workspace?.name ?? 'Select workspace';
   const userInitials = user?.email ? initials(user.email.split('@')[0] ?? 'U') : 'U';
+  const pageTitle = pageTitleFor(pathname);
 
   async function handleSignOut() {
+    setUserMenuOpen(false);
     await signOut();
     router.push('/sign-in');
   }
@@ -125,6 +147,41 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
       clearNavAttempt();
     }
   }, [pathname]);
+
+  // Close the user menu on route change, outside click, or Escape. Escape
+  // returns focus to the chip that opened it so keyboard users are not
+  // dropped at the top of the document.
+  useEffect(() => {
+    setUserMenuOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!userMenuOpen) {
+      return;
+    }
+
+    function onPointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (userMenuRef.current?.contains(target) || userChipRef.current?.contains(target)) {
+        return;
+      }
+      setUserMenuOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setUserMenuOpen(false);
+        userChipRef.current?.focus();
+      }
+    }
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [userMenuOpen]);
 
   useEffect(() => {
     function handleRouteLoadFailure(reason: unknown) {
@@ -180,41 +237,51 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
           <div className="sidebarMetaCard">
             <p className="sectionEyebrow">Active workspace</p>
-            <p style={{ margin: '0 0 0.35rem', fontWeight: 600, fontSize: '0.85rem' }}>{workspaceName}</p>
-            <p className="muted" style={{ margin: '0 0 0.75rem', fontSize: '0.78rem' }}>{user?.email ?? 'Guest mode'}</p>
-            <div className="overviewActions" style={{ marginTop: 0, gap: '0.5rem' }}>
-              <Link href="/workspaces" prefetch={false} style={{ fontSize: '0.8rem' }}>Switch workspace</Link>
+            <p className="sidebarWorkspaceName">{workspaceName}</p>
+            <p className="muted sidebarMetaEmail">{user?.email ?? 'Guest mode'}</p>
+            <div className="sidebarMetaLinks">
+              <Link href="/workspaces" prefetch={false}>Switch workspace</Link>
               {/* Internal staff only, and only because the BACKEND said so. This is
                   navigation, not authorization: /admin/customers authorizes every
                   request itself and answers a customer with 403. */}
               {showsInternalAdminLink(user) ? (
-                <Link href={INTERNAL_ADMIN_HREF} prefetch={false} style={{ fontSize: '0.8rem' }}>{INTERNAL_ADMIN_LABEL}</Link>
+                <Link href={INTERNAL_ADMIN_HREF} prefetch={false}>{INTERNAL_ADMIN_LABEL}</Link>
               ) : null}
-              <button type="button" onClick={() => void handleSignOut()} style={{ fontSize: '0.8rem', background: 'none', border: 'none', color: '#8cc8ff', cursor: 'pointer', padding: 0, fontWeight: 600 }}>Sign out</button>
+              <button type="button" className="sidebarSignOut" onClick={() => void handleSignOut()}>Sign out</button>
             </div>
-            <p className="tableMeta" style={{ marginTop: '0.6rem', fontSize: '0.72rem' }}>
+            <p className="tableMeta sidebarLegal">
               © {new Date().getFullYear()} Decoda ·{' '}
               <Link href="/privacy" prefetch={false}>Privacy</Link> ·{' '}
               <Link href="/terms" prefetch={false}>Terms</Link>
             </p>
           </div>
 
-          {error && !containsDiagnosticEnvVars(error) ? <p className="statusLine" style={{ fontSize: '0.78rem', color: 'var(--danger-fg)' }}>{error}</p> : null}
+          {error && !containsDiagnosticEnvVars(error) ? <p className="statusLine">{error}</p> : null}
         </aside>
 
         {/* ── Content area ────────────────────────────── */}
         <div className="appShellContent">
           <header className="appShellTop">
-            {/* Top bar: workspace selector + user actions */}
+            {/* Top bar: page context on the left, workspace + user controls
+                on the right. Kept visually light — the title carries the
+                hierarchy, not a heavy bar. */}
             <div className="shellHeaderBar">
-              <Link href="/workspaces" className="shellWorkspaceSelector" prefetch={false} aria-label="Switch workspace">
-                <span className="shellWorkspaceName">{workspaceName}</span>
-                <ChevronDownIcon />
-              </Link>
+              {pageTitle ? (
+                <div className="shellPageTitle">
+                  <h1>{pageTitle}</h1>
+                </div>
+              ) : null}
 
               <span className="shellHeaderSpacer" />
 
               <div className="shellHeaderActions">
+                <Link href="/workspaces" className="shellWorkspaceSelector" prefetch={false} aria-label="Switch workspace">
+                  <span className="shellWorkspaceName">{workspaceName}</span>
+                  <ChevronDownIcon />
+                </Link>
+
+                <span className="shellHeaderDivider" aria-hidden="true" />
+
                 {/* Plan chip: one compact control in the existing header. It opens
                     the evaluation usage panel and the feedback form, so no screen
                     needs its own plan banner. */}
@@ -222,18 +289,62 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
                 <button className="shellIconBtn" type="button" aria-label="Notifications">
                   <BellIcon />
                 </button>
-                <button
-                  className="shellUserChip"
-                  type="button"
-                  onClick={() => void handleSignOut()}
-                  aria-label="Sign out"
-                >
-                  <span className="shellAvatar" aria-hidden="true">{userInitials}</span>
-                  <span style={{ fontSize: '0.78rem', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {user?.email ?? 'Guest'}
-                  </span>
-                  <ChevronDownIcon />
-                </button>
+
+                {/* The account menu. This chip used to sign the analyst out the
+                    moment it was clicked while showing a chevron that promised a
+                    menu — one mis-click ended the session mid-investigation. */}
+                <div className="shellUserMenuWrap">
+                  <button
+                    className="shellUserChip"
+                    type="button"
+                    ref={userChipRef}
+                    onClick={() => setUserMenuOpen((open) => !open)}
+                    aria-haspopup="menu"
+                    aria-expanded={userMenuOpen}
+                    aria-label="Account menu"
+                  >
+                    <span className="shellAvatar" aria-hidden="true">{userInitials}</span>
+                    <span className="shellUserChipEmail">{user?.email ?? 'Guest'}</span>
+                    <ChevronDownIcon />
+                  </button>
+
+                  {userMenuOpen ? (
+                    <div className="shellUserMenu" role="menu" ref={userMenuRef} aria-label="Account">
+                      <div className="shellUserMenuHead">
+                        <p className="shellUserMenuEmail">{user?.email ?? 'Guest'}</p>
+                        <p className="shellUserMenuRole">{workspaceName}</p>
+                      </div>
+
+                      <p className="shellUserMenuLabel" id="shell-appearance-label">Appearance</p>
+                      <ThemeToggle labelledBy="shell-appearance-label" />
+
+                      <hr className="shellUserMenuSep" />
+
+                      <Link href="/settings" prefetch={false} className="shellUserMenuItem" role="menuitem" onClick={() => setUserMenuOpen(false)}>
+                        Settings
+                      </Link>
+                      <Link href="/workspaces" prefetch={false} className="shellUserMenuItem" role="menuitem" onClick={() => setUserMenuOpen(false)}>
+                        Switch workspace
+                      </Link>
+                      {showsInternalAdminLink(user) ? (
+                        <Link href={INTERNAL_ADMIN_HREF} prefetch={false} className="shellUserMenuItem" role="menuitem" onClick={() => setUserMenuOpen(false)}>
+                          {INTERNAL_ADMIN_LABEL}
+                        </Link>
+                      ) : null}
+
+                      <hr className="shellUserMenuSep" />
+
+                      <button
+                        type="button"
+                        className="shellUserMenuItem shellUserMenuItem--danger"
+                        role="menuitem"
+                        onClick={() => void handleSignOut()}
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 

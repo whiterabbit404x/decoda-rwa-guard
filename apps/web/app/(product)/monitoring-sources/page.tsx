@@ -101,7 +101,7 @@ function healthScoreCell(source: SourceRow) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
       <span style={{ fontWeight: 700, color }}>{score.toFixed(0)}</span>
-      <span aria-hidden style={{ width: 34, height: 5, borderRadius: 3, background: 'var(--surface-subtle, rgba(148,163,184,0.25))', position: 'relative', overflow: 'hidden' }}>
+      <span aria-hidden style={{ width: 34, height: 5, borderRadius: 3, background: 'var(--surface-subtle)', position: 'relative', overflow: 'hidden' }}>
         <span style={{ position: 'absolute', inset: 0, width: `${Math.max(4, Math.min(100, score))}%`, background: color }} />
       </span>
     </span>
@@ -781,8 +781,8 @@ export default function MonitoringSourcesPage() {
       </button>
       {mobileAgentOpen ? (
         <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.6)', border: 'none' }} />
-          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--surface, #0b1220)', padding: '1rem' }}>
+          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
+          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1rem' }}>
             <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
             {agentPanel}
           </div>
@@ -803,12 +803,7 @@ export default function MonitoringSourcesPage() {
         <DecisionEvidenceDrawer decision={selectedDecision} onClose={() => setSelectedDecision(null)} />
       ) : null}
 
-      <style>{`
-        @media (max-width: 900px) {
-          .sourceAgentRail { display: none; }
-          .sourceAgentMobileToggle { display: inline-flex !important; }
-        }
-      `}</style>
+      {/* The narrow-screen rail collapse lives in styles.css — see above. */}
     </main>
   );
 }
@@ -824,7 +819,7 @@ function SourceFilters(props: {
   sortDir: 'asc' | 'desc'; onSortDir: (v: 'asc' | 'desc') => void;
   onRefresh: () => void;
 }) {
-  const selectStyle = { fontSize: '0.76rem', padding: '0.28rem 0.4rem', background: 'var(--surface-subtle, #0f172a)', color: 'inherit', border: '1px solid var(--border-subtle, rgba(148,163,184,0.25))', borderRadius: 6 };
+  const selectStyle = { fontSize: '0.76rem', padding: '0.28rem 0.4rem', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-strong)', borderRadius: 6 };
   return (
     <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', margin: '0.75rem 0' }}>
       <input
