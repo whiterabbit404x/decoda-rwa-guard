@@ -114,6 +114,18 @@ class _ArchiveConnection:
             return _Result([self._permission_row] if self._permission_row else [])
         if 'FROM workspace_auth_policies' in normalized:
             return _Result([])
+        # The tenancy schema exists and this workspace is a Pilot, which is what
+        # makes MFA mandatory for its members. The operator below is enrolled, so
+        # the archive path runs exactly as it does in production.
+        if 'information_schema.tables' in normalized:
+            return _Result([{'table_count': 2, 'link_count': 1}])
+        if 'JOIN organizations o ON o.id = w.organization_id' in normalized:
+            return _Result([{
+                'id': 'org-1', 'name': 'Pilot Co', 'slug': 'pilot-co',
+                'plan': 'pilot', 'status': 'active',
+                'evaluation_started_at': None, 'evaluation_expires_at': None,
+                'entitlement_overrides': {}, 'created_at': None, 'updated_at': None,
+            }])
         if 'INSERT INTO audit_logs' in normalized:
             self.audit_actions.append(str(params[3]))
             try:
@@ -159,7 +171,12 @@ def _wire(monkeypatch, connection, storage, *, role: str = 'admin', workspace_id
     monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
     monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda *_: None)
     monkeypatch.setattr(pilot, 'pg_connection', _pg)
-    monkeypatch.setattr(pilot, 'authenticate_with_connection', lambda *_: {'id': 'user-1'})
+    # Enrolled: a Pilot workspace refuses an operator who is not, which the
+    # mandatory-MFA suite covers. Here the subject under test is the archive.
+    monkeypatch.setattr(
+        pilot, 'authenticate_with_connection',
+        lambda *_: {'id': 'user-1', 'mfa_enabled': True, 'memberships': []},
+    )
     monkeypatch.setattr(
         pilot, 'resolve_workspace', lambda *_: {'workspace_id': workspace_id, 'role': role},
     )

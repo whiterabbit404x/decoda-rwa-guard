@@ -1417,6 +1417,23 @@ def auth_email_verification_error_response(exc: HTTPException) -> JSONResponse |
     return JSONResponse(payload, status_code=exc.status_code, headers={'Cache-Control': 'no-store'})
 
 
+def sse_auth_error_response(exc: HTTPException) -> JSONResponse:
+    """Render an authentication refusal for an SSE endpoint, truthfully.
+
+    A stream cannot open a Server-Sent Events body for a refused caller, so the
+    refusal is returned as JSON instead. It must keep its OWN status and code: a
+    Pilot MFA refusal reported as 401 UNAUTHENTICATED would send the operator to
+    sign in again, when the remedy is to enrol or verify an authenticator. Only a
+    genuine 401 is reported as UNAUTHENTICATED.
+    """
+    detail = exc.detail
+    code = detail.get('code') if isinstance(detail, dict) else None
+    return JSONResponse(
+        {'detail': detail, 'code': code or ('UNAUTHENTICATED' if exc.status_code == 401 else 'FORBIDDEN')},
+        status_code=exc.status_code,
+    )
+
+
 def with_auth_schema_json(handler):
     try:
         return handler()
@@ -2966,6 +2983,10 @@ def auth_reset_password(payload: dict[str, Any], request: Request) -> dict[str, 
 
 @app.post('/auth/mfa/enroll', summary='Begin TOTP MFA enrollment')
 def auth_mfa_enroll(request: Request) -> dict[str, Any]:
+    # Rate limited like every sibling auth endpoint. It is reachable BEFORE the
+    # Pilot MFA boundary is satisfied (it has to be — it is how the boundary is
+    # satisfied), so it must not be an unmetered way to churn pending secrets.
+    enforce_auth_rate_limit(request, 'mfa_enroll')
     return with_auth_schema_json(lambda: mfa_begin_enrollment(request))
 
 
@@ -4336,7 +4357,7 @@ async def onboarding_agent_events(session_id: str, request: Request):
     try:
         user = authenticate_request(request)
     except HTTPException as exc:
-        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+        return sse_auth_error_response(exc)
     requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
     try:
         with pg_connection() as connection:
@@ -7630,7 +7651,7 @@ async def stream_alerts(request: Request):
     try:
         user = authenticate_request(request)
     except HTTPException as exc:
-        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+        return sse_auth_error_response(exc)
     requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
     try:
         with pg_connection() as connection:
@@ -7669,7 +7690,7 @@ async def stream_telemetry(request: Request):
     try:
         user = authenticate_request(request)
     except HTTPException as exc:
-        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+        return sse_auth_error_response(exc)
     requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
     try:
         with pg_connection() as connection:
@@ -7711,7 +7732,7 @@ async def stream_sources(request: Request):
     try:
         user = authenticate_request(request)
     except HTTPException as exc:
-        return JSONResponse({'detail': exc.detail, 'code': 'UNAUTHENTICATED'}, status_code=401)
+        return sse_auth_error_response(exc)
     requested_workspace_id = request.headers.get('x-workspace-id', '').strip()
     try:
         with pg_connection() as connection:

@@ -38,6 +38,31 @@ export type WorkspaceMembership = {
   workspace: WorkspaceSummary;
 };
 
+/**
+ * Mandatory-MFA state, exactly as the BACKEND reports it on /auth/me.
+ *
+ * Nothing here is an authorization decision. The API refuses a Pilot request
+ * that has not satisfied MFA whether or not the browser ever reads this — these
+ * fields exist so the app can render the required-enrollment screen instead of
+ * letting the operator walk into a wall of 403s.
+ *
+ * `required`          the workspace's EFFECTIVE policy covers this account
+ * `enrolled`          the account holds a second factor
+ * `session_verified`  THIS session completed a challenge with it
+ * `satisfied`         both of the above, or the policy does not cover them
+ * `code`              MFA_ENROLLMENT_REQUIRED | MFA_CHALLENGE_REQUIRED
+ */
+export type PilotMfaState = {
+  required: boolean;
+  enrolled: boolean;
+  session_verified: boolean;
+  satisfied: boolean;
+  code: 'MFA_ENROLLMENT_REQUIRED' | 'MFA_CHALLENGE_REQUIRED' | null;
+  enforcement?: string | null;
+  plan?: string | null;
+  workspace_id?: string | null;
+};
+
 export type PilotUser = {
   id: string;
   email: string;
@@ -55,6 +80,10 @@ export type PilotUser = {
   // permission. Nothing is authorized here: this decides whether the internal link
   // is rendered, and every internal request is authorized again server-side.
   is_internal_admin?: boolean;
+  // Optional because an API that predates the field omits it. An ABSENT field is
+  // not "MFA satisfied" — it is "the backend did not say" — so the gate treats it
+  // as nothing to show and leaves enforcement where it belongs, on the server.
+  mfa?: PilotMfaState;
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
 };

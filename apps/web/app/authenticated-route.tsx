@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
 import { markDashboardPerf } from 'app/dashboard-perf';
+import { MfaRequired, isMfaSetupPath, mfaGateVariant } from 'app/mfa-required-gate';
 import { PilotAccessRequired, usePilotAccessState } from 'app/pilot-access-gate';
 import { usePilotAuth } from 'app/pilot-auth-context';
 
@@ -110,6 +111,21 @@ export default function AuthenticatedRoute({ children }: { children: React.React
         <h1>Preparing your workspace…</h1>
         <p>We need a workspace selection before loading protected product data.</p>
       </section>
+    );
+  }
+
+  // Mandatory MFA. The BACKEND has already refused this session for every Pilot
+  // business and data API; rendering the product here would only show an
+  // operator a page of failed requests. The setup page itself is never gated —
+  // it is where the requirement is satisfied — which mirrors the server's own
+  // bootstrap allowlist. Nothing is enforced here: `user.mfa` is a backend fact,
+  // and an API that does not report it simply shows no gate.
+  if (mfaGateVariant(user?.mfa) && !isMfaSetupPath(pathname)) {
+    return (
+      <MfaRequired
+        variant={mfaGateVariant(user?.mfa) as 'enroll' | 'verify'}
+        returnTo={currentPath}
+      />
     );
   }
 
