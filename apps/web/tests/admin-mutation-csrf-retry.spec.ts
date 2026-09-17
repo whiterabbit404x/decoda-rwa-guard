@@ -285,12 +285,17 @@ test.describe('authorization is not weakened', () => {
 });
 
 test.describe('every internal-admin mutation shares the fix', () => {
-  // The seven buttons on /admin/customers and the route each one posts to.
+  // Every button on /admin/customers and the route each one posts to. The Pilot
+  // lifecycle controls (set / change / remove an end date, extend, end) all post
+  // to the same two routes as before, so the shared retry covers them too.
   const MUTATIONS: Array<[string, string]> = [
     ['Approve', '/api/admin/pilot-requests/req-1/approve'],
     ['Reject', '/api/admin/pilot-requests/req-1/reject'],
     ['Resend invitation', '/api/admin/pilot-requests/req-1/resend-invitation'],
+    ['Set end date', '/api/admin/customers/org-1/extend-evaluation'],
     ['Extend 30d', '/api/admin/customers/org-1/extend-evaluation'],
+    ['Remove end date', '/api/admin/customers/org-1/extend-evaluation'],
+    ['End Pilot', '/api/admin/customers/org-1/status'],
     ['Suspend', '/api/admin/customers/org-1/status'],
     ['Reactivate', '/api/admin/customers/org-1/status'],
     ['Upgrade to Scale', '/api/admin/customers/org-1/plan'],
@@ -320,7 +325,9 @@ test.describe('every internal-admin mutation shares the fix', () => {
   }
 
   test('both console helpers route through the shared retry', () => {
-    // act() covers Extend 30d / Suspend / Reactivate / Upgrade to Scale,
+    // act() covers the Pilot lifecycle controls / Suspend / Reactivate /
+    // Upgrade to Scale — including the ones PilotEvaluationControls renders,
+    // which call the same act() passed down to it.
     // actOnRequest() covers Approve / Reject / Resend invitation. Neither may
     // POST directly again: a bare fetch would reintroduce the bug for whichever
     // buttons it serves.

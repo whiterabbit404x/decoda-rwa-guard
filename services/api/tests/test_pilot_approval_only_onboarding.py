@@ -737,6 +737,49 @@ def test_14_a_approval_creates_an_invitation_and_mails_it(monkeypatch: pytest.Mo
     assert row['invitation_expires_at'] > NOW
 
 
+def test_14_b_the_invitation_email_promises_a_complimentary_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The customer-facing promise, rendered.
+
+    An open-ended deployment — the default — must not quote a duration, and must
+    not swing the other way into "free forever" either. Pilot access is
+    complimentary and approval-only, and Decoda ends it.
+    """
+    monkeypatch.delenv(ent.EVALUATION_DAYS_ENV, raising=False)
+    _subject, text, html = pilot._email_message(
+        'pilot_invitation',
+        token='invite-token',
+        context={
+            'company_name': 'ABC Tokenization', 'reference': REQUEST_ID,
+            'ttl_hours': 168, 'evaluation_days': ent.evaluation_days(),
+        },
+    )
+    for body in (text, html):
+        assert 'complimentary Pilot evaluation' in body
+        lowered = body.lower()
+        assert '30-day' not in lowered and '30 day' not in lowered
+        for forbidden in ('free forever', 'unlimited free', 'permanent'):
+            assert forbidden not in lowered
+
+
+def test_14_c_a_configured_window_is_still_stated_in_the_invitation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that DOES run dated Pilots still tells the applicant so."""
+    monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, '45')
+    _subject, text, html = pilot._email_message(
+        'pilot_invitation',
+        token='invite-token',
+        context={
+            'company_name': 'ABC Tokenization', 'reference': REQUEST_ID,
+            'ttl_hours': 168, 'evaluation_days': ent.evaluation_days(),
+        },
+    )
+    for body in (text, html):
+        assert '45-day Pilot evaluation' in body
+
+
 def test_15_a_only_a_token_hash_is_stored(monkeypatch: pytest.MonkeyPatch) -> None:
     """The plaintext token exists in the email and nowhere else, so a database
     dump cannot be used to accept an invitation."""
@@ -950,16 +993,21 @@ def test_26_a_the_new_organization_is_active(activated) -> None:
     assert new_org['status'] == ent.STATUS_ACTIVE
 
 
-def test_27_a_the_evaluation_window_starts_at_activation(activated) -> None:
+def test_27_a_the_evaluation_starts_at_activation(activated) -> None:
+    """Accepting the invitation records WHEN the evaluation began."""
     new_org = next(v for k, v in activated.connection.organizations.items() if k not in EXISTING_ORGS)
     assert new_org['evaluation_started_at'] is not None
-    assert new_org['evaluation_expires_at'] is not None
 
 
-def test_28_a_the_window_length_is_the_configured_pilot_evaluation_days(activated) -> None:
+def test_28_a_the_activated_pilot_is_open_ended_by_default(activated) -> None:
+    """No deadline is stamped on a newly approved Pilot.
+
+    The Pilot is complimentary and approval-only: it runs while the team is
+    evaluating and ends when Decoda ends it, so activation must not write an
+    expiry the evaluator was never given.
+    """
     new_org = next(v for k, v in activated.connection.organizations.items() if k not in EXISTING_ORGS)
-    window = new_org['evaluation_expires_at'] - new_org['evaluation_started_at']
-    assert window.days == ent.evaluation_days()
+    assert new_org['evaluation_expires_at'] is None
 
 
 def test_28_b_the_window_follows_a_changed_pilot_evaluation_days(

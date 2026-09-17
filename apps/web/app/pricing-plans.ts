@@ -7,7 +7,7 @@
 // labels and CTA routes cannot drift apart between the two surfaces.
 //
 // Positioning for institutional RWA security buyers:
-//   Pilot      — evaluation against live assets, by approval only
+//   Pilot      — complimentary evaluation against live assets, by approval only
 //   Scale      — production monitoring / incident response / evidence
 //   Enterprise — institutional, custom deployment
 //
@@ -36,7 +36,7 @@ export interface PricingPlan {
   /** Headline shown in the large price slot. */
   price: string;
   /**
-   * True when `price` is a word label ("Free Evaluation") rather than a
+   * True when `price` is a word label ("Pilot Evaluation") rather than a
    * currency amount, so the card can size it to fit the price slot.
    */
   priceIsLabel: boolean;
@@ -59,11 +59,11 @@ export const PRICING_PLANS: PricingPlan[] = [
   {
     key: 'pilot',
     tier: 'Pilot',
-    price: '30-Day Free Evaluation',
+    price: 'Pilot Evaluation',
     priceIsLabel: true,
     priceSub: '',
     description:
-      'Evaluate Decoda’s production security workflows on a limited set of live RWA assets.',
+      'Evaluate Decoda’s security workflows with a complimentary, approval-only workspace.',
     featured: false,
     ctaLabel: 'Request Pilot →',
     // Approval-only: this goes to the Pilot APPLICATION, not to sign-up. Sending
@@ -71,7 +71,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     // URL received an active evaluation without Decoda approving them.
     ctaHref: '/request-pilot',
     highlights: [
-      '30-day evaluation',
+      'Flexible evaluation period',
       '1 workspace',
       '5 monitored contracts',
       'Threat & compliance detection',
@@ -203,5 +203,5 @@ export const PRICING_PLANS: PricingPlan[] = [
  * describe automatic billing behaviour the application does not implement.
  */
 export const PRICING_NOTE =
-  'Pilot is a 30-day, approval-only evaluation with usage limits. Scale is for ongoing '
+  'Pilot is a complimentary, approval-only evaluation with usage limits. Scale is for ongoing '
   + 'production monitoring. Enterprise pricing is custom — contact sales@decodasecurity.com.';

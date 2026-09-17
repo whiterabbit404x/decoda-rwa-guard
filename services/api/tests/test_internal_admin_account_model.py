@@ -901,9 +901,16 @@ def test_11_a_activation_cannot_be_asked_for_a_paid_plan_or_an_override(
     assert ent.get_entitlements(organization)[ent.LIMIT_MONITORED_CONTRACTS] == 5
 
 
-def test_12_a_new_organization_defaults_to_pilot_with_a_real_evaluation_window(
+def test_12_a_new_organization_defaults_to_an_open_ended_pilot(
     signup_pilot: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A newly approved Pilot starts, and is given no deadline.
+
+    ``evaluation_started_at`` is still recorded — when the evaluation began is a
+    fact the founder console and pilot feedback both read — but nothing stamps an
+    expiry the customer was never told about.
+    """
+    monkeypatch.delenv(ent.EVALUATION_DAYS_ENV, raising=False)
     connection = _provision(signup_pilot, monkeypatch)
 
     _statement, params = _organization_insert(connection)
@@ -911,9 +918,8 @@ def test_12_a_new_organization_defaults_to_pilot_with_a_real_evaluation_window(
 
     assert plan == ent.PLAN_PILOT
     assert status_value == ent.STATUS_ACTIVE
-    assert started_at is not None and expires_at is not None
-    # The window is the ONE configured duration, not a hard-coded literal.
-    assert (expires_at - started_at).days == ent.evaluation_days()
+    assert started_at is not None
+    assert expires_at is None
 
 
 def test_12b_the_pilot_evaluation_length_follows_its_configured_value(

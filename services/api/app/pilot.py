@@ -2269,7 +2269,23 @@ def _email_message(
         expiry = _format_duration_phrase(int(context.get('ttl_hours') or 0) * 60)
         company = str(context.get('company_name') or '').strip()
         reference = str(context.get('reference') or '').strip()
-        evaluation_days = int(context.get('evaluation_days') or 0)
+        # None / 0 means this deployment runs OPEN-ENDED Pilots, which is the
+        # default. The invitation then promises a complimentary evaluation and
+        # quotes no length, rather than naming a window nobody configured.
+        try:
+            evaluation_days = int(context.get('evaluation_days') or 0)
+        except (TypeError, ValueError):
+            evaluation_days = 0
+        accepting_line = (
+            f'Accepting starts a {evaluation_days}-day Pilot evaluation.'
+            if evaluation_days > 0
+            else 'Accepting starts your complimentary Pilot evaluation.'
+        )
+        accepting_line_html = (
+            f'Accepting starts a {evaluation_days}-day Pilot evaluation in the Decoda product.'
+            if evaluation_days > 0
+            else 'Accepting starts your complimentary Pilot evaluation in the Decoda product.'
+        )
         company_line = (
             f'Your Pilot evaluation request for {company} has been approved by Decoda.'
             if company
@@ -2282,7 +2298,7 @@ def _email_message(
             f'Accept your invitation:\n{url}\n\n'
             f'This invitation expires after {expiry} and can be used once, by this '
             'email address only.\n\n'
-            f'Accepting starts a {evaluation_days}-day Pilot evaluation.\n\n'
+            f'{accepting_line}\n\n'
             f'Reference: {reference}\n\n'
             f'{brand} will never ask you for private keys, seed phrases, or wallet '
             f'recovery information.\n\n'
@@ -2294,7 +2310,7 @@ def _email_message(
             heading='Your Pilot evaluation is approved',
             paragraphs=[
                 company_line,
-                f'Accepting starts a {evaluation_days}-day Pilot evaluation in the Decoda product.',
+                accepting_line_html,
                 f'Reference: {reference}',
                 (
                     f'{brand} will never ask you for private keys, seed phrases, or wallet '

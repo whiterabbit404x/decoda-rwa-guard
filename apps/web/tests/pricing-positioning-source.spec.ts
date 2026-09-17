@@ -34,9 +34,11 @@ test('pricing plans are the canonical Pilot / Scale / Enterprise ladder', () => 
 
   const [pilot, scale, enterprise] = PRICING_PLANS;
 
-  // The 30-day window is the product promise, so it belongs in the headline
-  // slot rather than only in a bullet a reader may not reach.
-  expect(pilot.price).toBe('30-Day Free Evaluation');
+  // The Pilot is a complimentary, approval-only EVALUATION, and the headline
+  // slot says exactly that. It no longer names a duration, because the Pilot is
+  // no longer a fixed window — and it does not say "Free", which would read as
+  // a self-serve tier rather than something Decoda approves.
+  expect(pilot.price).toBe('Pilot Evaluation');
   expect(pilot.priceSub).toBe('');
   expect(pilot.ctaLabel).toBe('Request Pilot →');
   expect(pilot.badge).toBeUndefined();
@@ -70,12 +72,17 @@ test('plan limits match the published entitlements', () => {
   expect(enterprise.highlights).toContain('Custom SLA');
 });
 
-test('the Pilot card describes an evaluation of the production workflows', () => {
+test('the Pilot card describes a complimentary, approval-only evaluation', () => {
   const [pilot] = PRICING_PLANS;
 
-  expect(pilot.description).toContain('production security workflows');
+  expect(pilot.description).toBe(
+    'Evaluate Decoda\u2019s security workflows with a complimentary, approval-only workspace.',
+  );
+  // Pilot is recommend-only, so the card must not describe it as production
+  // EXECUTION even while describing production security workflows.
+  expect(pilot.description).not.toMatch(/production execution/i);
   for (const bullet of [
-    '30-day evaluation',
+    'Flexible evaluation period',
     '1 workspace',
     '5 monitored contracts',
     'Threat & compliance detection',
@@ -125,6 +132,30 @@ test('no card advertises automatic production execution', () => {
   }
 });
 
+test('public pricing no longer sells Pilot as a fixed 30-day window', () => {
+  // A Pilot runs while the team is evaluating and ends when Decoda ends it.
+  // Naming a duration on the public card would be a commitment the product no
+  // longer makes — and the entitlement engine no longer stamps.
+  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
+  for (const pattern of [/30[-\s]?day/i, /\bdays remaining\b/i, /\bexpires in\b/i]) {
+    expect(copy, String(pattern)).not.toMatch(pattern);
+  }
+});
+
+test('Pilot is complimentary, and never sold as free forever', () => {
+  // The opposite untruth. Pilot access is granted by approval and ended by
+  // Decoda; nothing on the public surface may imply it is permanent, and Scale
+  // stays the paid production plan.
+  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
+  for (const pattern of [/free forever/i, /unlimited free/i, /permanent(ly)? free/i, /always free/i]) {
+    expect(copy, String(pattern)).not.toMatch(pattern);
+  }
+  const [, scale] = PRICING_PLANS;
+  expect(scale.price).toBe('From $999');
+  expect(scale.priceSub).toBe('/ month');
+  expect(scale.description).toContain('Production monitoring');
+});
+
 test('public pricing does not present Decoda as a single-network product', () => {
   // A primary supported network in the current deployment is an implementation
   // fact, not a commercial limit, and it does not belong on a public card.
@@ -133,7 +164,7 @@ test('public pricing does not present Decoda as a single-network product', () =>
 });
 
 test('the footnote states the evaluation model and claims no automatic billing', () => {
-  expect(PRICING_NOTE).toContain('30-day, approval-only evaluation');
+  expect(PRICING_NOTE).toContain('complimentary, approval-only evaluation');
   expect(PRICING_NOTE).toContain('ongoing production monitoring');
   expect(PRICING_NOTE).toContain('Enterprise pricing is custom');
   // Checkout exists, but no provider webhook moves an organization onto Scale —

@@ -369,14 +369,132 @@ def test_G_pilot_to_scale_keeps_the_same_organization_and_workspaces() -> None:
     org_service.enforce_creation(connection, context, ent.LIMIT_MONITORED_CONTRACTS, now=NOW)
 
 
-def test_G2_moving_onto_pilot_starts_a_fresh_evaluation_window() -> None:
+def test_G2_moving_onto_pilot_opens_an_open_ended_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scale → Pilot starts the evaluation without inventing a deadline."""
+    monkeypatch.delenv(ent.EVALUATION_DAYS_ENV, raising=False)
     org = _org_row(ORG_A, plan=ent.PLAN_SCALE, evaluation_started_at=None, evaluation_expires_at=None)
     connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
     org_service.set_plan(connection, organization_id=ORG_A, plan='pilot', now=NOW)
     update = next(sql for sql, _ in connection.writes if 'update organizations' in sql.lower())
     params = next(p for sql, p in connection.writes if sql == update)
     assert params[0] == 'pilot'
-    assert params[2] == NOW + timedelta(days=ent.evaluation_days())
+    assert params[1] == NOW      # evaluation_started_at
+    assert params[2] is None     # evaluation_expires_at
+
+
+def test_G2b_moving_onto_pilot_honours_a_configured_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that runs dated Pilots still gets its window here."""
+    monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, '45')
+    org = _org_row(ORG_A, plan=ent.PLAN_SCALE, evaluation_started_at=None, evaluation_expires_at=None)
+    connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
+    org_service.set_plan(connection, organization_id=ORG_A, plan='pilot', now=NOW)
+    update = next(sql for sql, _ in connection.writes if 'update organizations' in sql.lower())
+    params = next(p for sql, p in connection.writes if sql == update)
+    assert params[2] == NOW + timedelta(days=45)
+
+
+# ── G3 — founder control of the optional Pilot deadline ───────────────────────
+# A Pilot is complimentary and open-ended by default, so the founder's job is no
+# longer "push the 30 days out". It is four decisions, and these are the writes
+# behind three of them (the fourth, "keep it active", writes nothing at all).
+
+def _pilot_update(connection: FakeConnection) -> tuple[str, Any]:
+    """The one organizations UPDATE a lifecycle write produced."""
+    return next(
+        (sql, params) for sql, params in connection.writes
+        if sql.lower().startswith('update organizations')
+    )
+
+
+def test_G3a_a_founder_can_set_an_explicit_deadline_on_an_open_ended_pilot() -> None:
+    deadline = NOW + timedelta(days=90)
+    org = _org_row(ORG_A, evaluation_expires_at=None)
+    connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
+    org_service.set_evaluation_expiry(
+        connection, organization_id=ORG_A, expires_at=deadline, now=NOW,
+    )
+    _sql, params = _pilot_update(connection)
+    assert params[0] == deadline
+
+
+def test_G3b_a_founder_can_remove_a_deadline_and_keep_the_pilot_running() -> None:
+    """The headline capability: extend a Pilot indefinitely without recreating it."""
+    connection = FakeConnection(
+        organizations={ORG_A: _org_row(ORG_A)}, workspace_org={WS_A: ORG_A},
+    )
+    org_service.set_evaluation_expiry(
+        connection, organization_id=ORG_A, expires_at=None, now=NOW,
+    )
+    sql, params = _pilot_update(connection)
+    assert 'evaluation_expires_at = null' in ' '.join(sql.lower().split())
+    # evaluation_started_at is COALESCE'd, never overwritten: WHEN the evaluation
+    # began stays the fact it was.
+    assert params == (NOW, ORG_A)
+
+
+def test_G3c_removing_a_deadline_never_reactivates_a_pilot_the_founder_ended() -> None:
+    """Migration safety, as a control rather than a comment.
+
+    An organization stopped on purpose must not come back because someone
+    cleared its deadline. Only ``set_status`` reactivates, and it is audited
+    separately.
+    """
+    for stopped in (ent.STATUS_EXPIRED, ent.STATUS_SUSPENDED):
+        org = _org_row(ORG_A, status=stopped)
+        connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
+        org_service.set_evaluation_expiry(
+            connection, organization_id=ORG_A, expires_at=None, now=NOW,
+        )
+        sql, _params = _pilot_update(connection)
+        assert 'status' not in sql.lower()
+
+
+def test_G3d_extending_an_open_ended_pilot_opens_a_window_from_today() -> None:
+    org = _org_row(ORG_A, evaluation_expires_at=None)
+    connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
+    org_service.extend_evaluation(connection, organization_id=ORG_A, days=30, now=NOW)
+    _sql, params = _pilot_update(connection)
+    assert params[0] == NOW + timedelta(days=30)
+
+
+def test_G3e_extending_a_dated_pilot_still_extends_from_its_own_deadline() -> None:
+    """Unchanged behaviour for the Pilots that already carry a date."""
+    connection = FakeConnection(
+        organizations={ORG_A: _org_row(ORG_A)}, workspace_org={WS_A: ORG_A},
+    )
+    org_service.extend_evaluation(connection, organization_id=ORG_A, days=30, now=NOW)
+    _sql, params = _pilot_update(connection)
+    assert params[0] == NOW + timedelta(days=53)   # 23 remaining + 30
+
+
+def test_G3f_only_a_pilot_can_carry_an_evaluation_deadline() -> None:
+    """Writing one onto Scale would create exactly the stray window set_plan clears."""
+    for plan in (ent.PLAN_SCALE, ent.PLAN_ENTERPRISE):
+        org = _org_row(ORG_A, plan=plan, evaluation_started_at=None, evaluation_expires_at=None)
+        connection = FakeConnection(organizations={ORG_A: org}, workspace_org={WS_A: ORG_A})
+        with pytest.raises(HTTPException) as excinfo:
+            org_service.set_evaluation_expiry(
+                connection, organization_id=ORG_A, expires_at=NOW + timedelta(days=30), now=NOW,
+            )
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.detail['code'] == 'PLAN_HAS_NO_EVALUATION'
+        assert connection.writes == []
+
+
+def test_G3g_ending_a_pilot_does_not_convert_it_to_scale() -> None:
+    """End Pilot stops the evaluation. It does not sell anyone anything."""
+    connection = FakeConnection(
+        organizations={ORG_A: _org_row(ORG_A, evaluation_expires_at=None)},
+        workspace_org={WS_A: ORG_A},
+    )
+    org_service.set_status(connection, organization_id=ORG_A, status_value=ent.STATUS_EXPIRED)
+    sql, params = _pilot_update(connection)
+    assert params[0] == ent.STATUS_EXPIRED
+    assert 'plan' not in sql.lower()
 
 
 # ── H / I — founder admin authorization ───────────────────────────────────────
@@ -404,6 +522,15 @@ def test_H2_every_admin_mutation_denies_a_customer(monkeypatch: pytest.MonkeyPat
     calls = [
         lambda: tenancy_endpoints.get_admin_customer(ORG_B, _request()),
         lambda: tenancy_endpoints.extend_admin_customer_evaluation(ORG_B, {'days': 30}, _request()),
+        # The deadline set/clear variants authorize through the same path, but a
+        # customer must not be able to reach them by choosing a different body.
+        lambda: tenancy_endpoints.extend_admin_customer_evaluation(
+            ORG_B, {'expires_at': '2027-01-01T00:00:00Z'}, _request(),
+        ),
+        lambda: tenancy_endpoints.extend_admin_customer_evaluation(
+            ORG_B, {'expires_at': None}, _request(),
+        ),
+        lambda: tenancy_endpoints.set_admin_customer_status(ORG_B, {'status': 'expired'}, _request()),
         lambda: tenancy_endpoints.set_admin_customer_status(ORG_B, {'status': 'suspended'}, _request()),
         lambda: tenancy_endpoints.set_admin_customer_plan(ORG_B, {'plan': 'enterprise'}, _request()),
         lambda: tenancy_endpoints.list_admin_feedback(_request()),
@@ -414,6 +541,67 @@ def test_H2_every_admin_mutation_denies_a_customer(monkeypatch: pytest.MonkeyPat
         assert exc_info.value.status_code == 403
     # A refused admin call never mutated anything.
     assert connection.writes == []
+
+
+def test_H7_the_admin_route_dispatches_on_the_body_it_was_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One route, three founder actions, chosen by the body.
+
+    ``expires_at`` is the more specific instruction, so it wins over ``days``
+    when both arrive — a client that sends a date meant the date.
+    """
+    def _run(body: dict[str, Any]) -> FakeConnection:
+        connection = _two_tenant_connection(
+            users={ADMIN_USER: {'email': 'founder@decodasecurity.com', 'is_internal_admin': True}},
+        )
+        _authenticate_as(monkeypatch, user_id=ADMIN_USER, workspace_id=WS_A)
+        _use_connection(monkeypatch, connection)
+        tenancy_endpoints.extend_admin_customer_evaluation(ORG_A, body, _request())
+        return connection
+
+    deadline = '2027-03-01T23:59:59+00:00'
+    dated = _pilot_update(_run({'expires_at': deadline}))
+    assert dated[1][0] == datetime.fromisoformat(deadline)
+
+    cleared_sql, _params = _pilot_update(_run({'expires_at': None}))
+    assert 'evaluation_expires_at = null' in ' '.join(cleared_sql.lower().split())
+
+    # The route reads the real clock, so this asserts the SHAPE of the extension
+    # (a real deadline ~30 days out) rather than a fixed instant.
+    extended = _pilot_update(_run({'days': 30}))
+    expected = datetime.now(timezone.utc) + timedelta(days=30)
+    assert abs((extended[1][0] - expected).total_seconds()) < 120
+
+    both = _pilot_update(_run({'days': 30, 'expires_at': deadline}))
+    assert both[1][0] == datetime.fromisoformat(deadline)
+
+
+def test_H8_the_admin_route_refuses_an_unusable_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed date is refused, and says what to send instead.
+
+    It is also the case an open-ended deployment hits by sending neither field:
+    there is no configured length to fall back to any more, so the error names
+    both ways out rather than reporting the absent default as a bad request.
+    """
+    for body, code in (
+        ({'expires_at': 'next tuesday'}, 'INVALID_EVALUATION_EXPIRY'),
+        ({}, 'INVALID_EVALUATION_EXTENSION'),
+    ):
+        connection = _two_tenant_connection(
+            users={ADMIN_USER: {'email': 'founder@decodasecurity.com', 'is_internal_admin': True}},
+        )
+        _authenticate_as(monkeypatch, user_id=ADMIN_USER, workspace_id=WS_A)
+        _use_connection(monkeypatch, connection)
+        monkeypatch.delenv(ent.EVALUATION_DAYS_ENV, raising=False)
+        with pytest.raises(HTTPException) as exc_info:
+            tenancy_endpoints.extend_admin_customer_evaluation(ORG_A, body, _request())
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail['code'] == code
+        assert 'expires_at' in exc_info.value.detail['message']
+        assert connection.writes == []
 
 
 def test_I_internal_admin_flag_is_read_from_the_database_only(monkeypatch: pytest.MonkeyPatch) -> None:

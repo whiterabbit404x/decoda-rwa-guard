@@ -797,6 +797,10 @@ def public_request_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def evaluation_days() -> int:
-    """The one configured Pilot evaluation length, re-exported for callers."""
+def evaluation_days() -> int | None:
+    """The configured automatic Pilot evaluation length, re-exported for callers.
+
+    ``None`` — the default — means a newly approved Pilot is OPEN-ENDED: there is
+    no length to quote in an invitation, and nothing may state one.
+    """
     return ent.evaluation_days()

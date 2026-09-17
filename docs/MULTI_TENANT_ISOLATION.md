@@ -421,7 +421,10 @@ A self-serve signup writes no `is_internal_admin` value at all, so the column's
 Enterprise plan, or an entitlement override: `_provision_signup_organization`
 hard-codes `PLAN_PILOT` and writes `'{}'::jsonb` overrides, and no plan field is
 read from the request. Every new organization starts `plan=pilot`,
-`status=active`, with an evaluation window whose length is `PILOT_EVALUATION_DAYS`.
+`status=active`, with an evaluation that is open-ended by default
+(`evaluation_started_at` set, `evaluation_expires_at` `NULL`). A deployment that
+sets `PILOT_EVALUATION_DAYS` gets a dated window instead; either way the plan
+limits and the recommend-only execution boundary are identical.
 
 ---
 

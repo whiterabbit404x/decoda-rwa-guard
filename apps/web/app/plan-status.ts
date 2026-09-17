@@ -5,10 +5,14 @@
 // the truthfulness rules below are directly unit-testable.
 //
 // Rules this module keeps
-//   * A countdown is rendered ONLY for a plan that has an evaluation window.
-//     Scale and Enterprise report no "days left", ever.
+//   * NO customer-facing countdown. A Pilot is a complimentary, approval-only
+//     evaluation, not a timer: the chip states the plan, and the only Pilot
+//     deadline state it will ever render is the terminal one, once the backend
+//     says the evaluation has actually ended.
 //   * An unavailable plan read is its own state. It is never rendered as a
-//     healthy Pilot, and never as "0 days left".
+//     healthy Pilot, and never as an ended one.
+//   * An ended evaluation is still stated. Dropping the countdown must not
+//     quietly turn a stopped tenant into a chip that reads normal.
 //   * An unlimited limit renders as "Unlimited", never as a large number that
 //     would read like a real cap.
 //   * A usage meter never claims headroom it cannot prove: an unknown limit
@@ -30,6 +34,17 @@ export interface UsageEntry {
   limit: number | null;
 }
 
+/**
+ * The backend's `evaluation` block for a Pilot.
+ *
+ * Two shapes, both normal:
+ *   * open-ended — `expires_at` and `days_remaining` are null, `expired` false.
+ *     The Pilot runs until a founder/admin ends it. This is the default.
+ *   * dated — a founder set a deadline, so `expires_at` is a timestamp and
+ *     `days_remaining` / `expired` describe it.
+ *
+ * A null `days_remaining` is the ABSENCE of a deadline, never zero days left.
+ */
 export interface PlanEvaluation {
   started_at: string | null;
   expires_at: string | null;
@@ -61,7 +76,15 @@ export const PLAN_LABELS: Record<PlanKey, string> = {
 };
 
 /**
- * The short header chip: "Pilot · 23 days left", "Scale", "Enterprise".
+ * The short header chip: "Pilot", "Scale", "Enterprise", plus a terminal state
+ * when there is one ("Pilot · Evaluation ended", "Pilot · Suspended").
+ *
+ * An ACTIVE Pilot is just "Pilot". It carries no duration, because the Pilot is
+ * a complimentary evaluation that runs while the team is evaluating — quoting
+ * days against it would state a commitment nobody made. It equally does not say
+ * "unlimited" or "free forever": the chip states the plan, and how long the
+ * evaluation continues is a conversation with Decoda, not a label.
+ *
  * Returns null when there is no plan to state — the header then shows nothing
  * rather than a placeholder that would look like a real plan.
  */
@@ -73,38 +96,36 @@ export function planBadgeLabel(plan: AccountPlanResponse | null | undefined): st
   if (plan.lifecycle_state === 'SUSPENDED') {
     return `${label} · Suspended`;
   }
-  const countdown = evaluationCountdownLabel(plan);
-  return countdown ? `${label} · ${countdown}` : label;
+  const evaluationState = evaluationStatusLabel(plan);
+  return evaluationState ? `${label} · ${evaluationState}` : label;
 }
 
 /**
- * "23 days left", "Last day", "Evaluation ended", or null.
+ * "Evaluation ended", or null. Never a countdown.
  *
- * null for every plan without an evaluation window and for an evaluation with
- * no recorded deadline — a countdown must never be invented.
+ * The ONLY evaluation state this states is the terminal one, and only once the
+ * backend has said so: `expired` is a canonical fact computed from the
+ * organization row, not a date this module compares against the browser clock.
+ *
+ * null for every plan without an evaluation window, for an open-ended Pilot, and
+ * for a dated Pilot that is still running. Dropping the countdown is a
+ * presentation change only — it must not hide a stopped evaluation, which is why
+ * the expired branch stays.
  */
-export function evaluationCountdownLabel(plan: AccountPlanResponse | null | undefined): string | null {
+export function evaluationStatusLabel(plan: AccountPlanResponse | null | undefined): string | null {
   if (!plan || plan.state !== 'available' || !plan.plan || !EVALUATION_PLANS.has(plan.plan)) {
     return null;
   }
-  const evaluation = plan.evaluation;
-  if (!evaluation || !evaluation.expires_at) {
-    return null;
-  }
-  if (evaluation.expired) {
-    return 'Evaluation ended';
-  }
-  const days = evaluation.days_remaining;
-  if (days === null || days === undefined) {
-    return null;
-  }
-  if (days <= 0) {
-    return 'Last day';
-  }
-  return `${days} ${days === 1 ? 'day' : 'days'} left`;
+  return plan.evaluation?.expired === true ? 'Evaluation ended' : null;
 }
 
-/** Pill tone for the header chip. Expired and suspended are never "ok". */
+/**
+ * Pill tone for the header chip. Expired and suspended are never "ok".
+ *
+ * There is no "running out" tone any more: an active Pilot has no deadline to be
+ * close to by default, and painting urgency from a countdown the chip no longer
+ * shows would be an alarm with nothing behind it.
+ */
 export function planBadgeTone(
   plan: AccountPlanResponse | null | undefined,
 ): 'info' | 'warning' | 'danger' | 'neutral' {
@@ -113,10 +134,6 @@ export function planBadgeTone(
   }
   if (plan.lifecycle_state === 'SUSPENDED' || plan.lifecycle_state === 'EXPIRED_PILOT') {
     return 'danger';
-  }
-  const days = plan.evaluation?.days_remaining;
-  if (plan.lifecycle_state === 'ACTIVE_PILOT' && typeof days === 'number' && days <= 7) {
-    return 'warning';
   }
   return 'info';
 }
@@ -217,6 +234,30 @@ export function lockedByEvaluationEnd(
 export const PILOT_EVALUATION_ACCESS_NOTE =
   'Evaluation access includes Decoda’s core production security workflows. '
   + 'Production execution remains unavailable during Pilot.';
+
+/**
+ * How long an ACTIVE Pilot with no deadline lasts, in one sentence.
+ *
+ * Says what is true and no more. It does not promise permanence — Pilot access
+ * is complimentary and approval-only, and Decoda ends it — and it does not
+ * imply a deadline the tenant has not been given. Rendered as the FIRST sentence
+ * of the access note rather than as a paragraph of its own, so stating it costs
+ * the plan panel a line rather than a block (the panel has to stay short enough
+ * to open inside the viewport with the feedback form expanded).
+ */
+export const PILOT_EVALUATION_DURATION_NOTE =
+  'Your Pilot evaluation stays active while you are evaluating Decoda.';
+
+/**
+ * The same sentence for a Pilot a founder gave a deadline.
+ *
+ * States the date, not a countdown: the panel reports the configured fact and
+ * does not tick. Withholding it would be the opposite failure — a customer whose
+ * evaluation has an end date is entitled to know what it is.
+ */
+export function pilotEvaluationDeadlineNote(date: string): string {
+  return `Your Pilot evaluation is scheduled through ${date}.`;
+}
 
 export interface RestrictedPlanState {
   title: string;

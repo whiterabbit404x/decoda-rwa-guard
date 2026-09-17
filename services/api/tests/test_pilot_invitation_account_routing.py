@@ -749,11 +749,15 @@ def test_22_e_the_new_account_ends_on_an_active_pilot_organization(invited_and_a
     assert invited_and_activated.result['organization']['plan'] == ent.PLAN_PILOT
 
 
-def test_23_e_the_evaluation_window_is_the_configured_length(invited_and_activated) -> None:
+def test_23_e_the_evaluation_starts_open_ended(invited_and_activated) -> None:
+    """The invited-account route agrees with the approval route: no deadline.
+
+    Both paths go through ``create_organization``, so a Pilot cannot arrive dated
+    by one route and open-ended by the other.
+    """
     organization = next(iter(invited_and_activated.connection.organizations.values()))
     assert organization['evaluation_started_at'] is not None
-    window = organization['evaluation_expires_at'] - organization['evaluation_started_at']
-    assert window.days == ent.evaluation_days()
+    assert organization['evaluation_expires_at'] is None
 
 
 def test_24_e_the_account_owns_a_workspace_and_an_organization_membership(

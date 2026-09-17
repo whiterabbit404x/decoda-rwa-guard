@@ -144,18 +144,48 @@ def test_override_can_express_unlimited_as_none() -> None:
 
 # ── evaluation window ─────────────────────────────────────────────────────────
 
-def test_evaluation_duration_is_centralised_and_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_new_pilot_is_open_ended_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Pilot model: complimentary and approval-only, not a 30-day timer.
+
+    An unconfigured deployment stamps NO deadline on a newly approved Pilot, so
+    nothing expires on a schedule the customer was never given.
+    """
     monkeypatch.delenv(ent.EVALUATION_DAYS_ENV, raising=False)
-    assert ent.evaluation_days() == ent.DEFAULT_EVALUATION_DAYS == 30
+    assert ent.DEFAULT_EVALUATION_DAYS is None
+    assert ent.evaluation_days() is None
+    started_at, expires_at = ent.evaluation_window(NOW)
+    assert started_at == NOW          # when the evaluation began is still a fact
+    assert expires_at is None         # ...its end is not
+
+
+def test_evaluation_duration_is_centralised_and_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment MAY still run dated Pilots. One env var, one code path."""
     monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, '45')
     assert ent.evaluation_days() == 45
+    assert ent.evaluation_window(NOW) == (NOW, NOW + timedelta(days=45))
     monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, 'garbage')
     assert ent.evaluation_days() == ent.DEFAULT_EVALUATION_DAYS
     monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, '99999')
     assert ent.evaluation_days() == ent.MAX_EVALUATION_DAYS
 
 
-def test_days_remaining_counts_down_for_pilot() -> None:
+@pytest.mark.parametrize('value', ['0', 'none', 'NONE', 'off', 'open-ended', '-5'])
+def test_open_ended_is_configurable_explicitly(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """A deployment can also SAY "no automatic deadline" rather than imply it."""
+    monkeypatch.setenv(ent.EVALUATION_DAYS_ENV, value)
+    assert ent.evaluation_days() is None
+    assert ent.evaluation_window(NOW)[1] is None
+
+
+def test_days_remaining_counts_down_for_a_dated_pilot() -> None:
+    """A founder-set deadline still counts down in the CANONICAL facts.
+
+    The customer-facing UI no longer renders this (see
+    apps/web/tests/plan-status-presentation.spec.ts), but the founder console and
+    the enforcement path both need the real number.
+    """
     assert ent.days_remaining(_org(), now=NOW) == 23
 
 
@@ -167,11 +197,88 @@ def test_days_remaining_is_none_outside_an_evaluation_plan() -> None:
         assert ent.evaluation_payload(org, now=NOW) is None
 
 
-def test_days_remaining_is_none_when_no_deadline_is_recorded() -> None:
-    """A missing date is not evidence of expiry, so no countdown is invented."""
+def test_an_open_ended_pilot_stays_active_and_reports_no_deadline() -> None:
+    """The default Pilot shape, end to end through the engine.
+
+    A missing date is not evidence of expiry, so nothing is invented: no
+    countdown, no expiry, and every evaluation capability stays on.
+    """
     org = _org(evaluation_expires_at=None)
     assert ent.days_remaining(org, now=NOW) is None
     assert ent.evaluation_expired(org, now=NOW) is False
+    assert ent.lifecycle_state(org, now=NOW) == ent.LIFECYCLE_ACTIVE_PILOT
+    assert ent.monitoring_allowed(org, now=NOW) is True
+    assert ent.provisioning_allowed(org, now=NOW) is True
+    assert ent.lifecycle_blocked_reason(org, now=NOW) is None
+
+    payload = ent.evaluation_payload(org, now=NOW)
+    assert payload == {
+        'started_at': (NOW - timedelta(days=7)).isoformat(),
+        'expires_at': None,
+        'days_remaining': None,
+        'expired': False,
+    }
+
+    effective = ent.effective_entitlements(org, now=NOW)
+    assert effective[ent.FEATURE_THREAT_MONITORING] is True
+    assert effective[ent.FEATURE_AI_INVESTIGATION] is True
+    assert effective[ent.FEATURE_EVIDENCE_EXPORT] is True
+
+
+def test_an_open_ended_pilot_is_still_recommend_only() -> None:
+    """Removing the deadline must not widen what a Pilot may DO.
+
+    Production execution is the line Pilot does not cross, and it is decided by
+    the plan table, never by how long the evaluation has been running.
+    """
+    for expires_at in (None, NOW + timedelta(days=23), NOW - timedelta(days=1)):
+        org = _org(evaluation_expires_at=expires_at)
+        effective = ent.effective_entitlements(org, now=NOW)
+        assert effective[ent.FEATURE_AUTOMATIC_EXECUTION] is False
+
+
+def test_an_open_ended_pilot_keeps_its_plan_limits() -> None:
+    """...nor may it widen how MUCH a Pilot may do."""
+    open_ended = ent.effective_entitlements(_org(evaluation_expires_at=None), now=NOW)
+    dated = ent.effective_entitlements(_org(), now=NOW)
+    for key in ent.LIMIT_KEYS:
+        assert ent.limit_for(open_ended, key) == ent.limit_for(dated, key)
+    assert ent.limit_for(open_ended, ent.LIMIT_WORKSPACES) == 1
+    assert ent.limit_for(open_ended, ent.LIMIT_MONITORED_CONTRACTS) == 5
+    assert ent.limit_for(open_ended, ent.LIMIT_EVIDENCE_PACKAGES) == 10
+
+
+def test_an_open_ended_pilot_is_still_stopped_by_status() -> None:
+    """No deadline is not "unstoppable": ending or suspending it still works.
+
+    This is how a founder ends an open-ended Pilot, and it is what stops a
+    `NULL` deadline from meaning permanent access.
+    """
+    ended = _org(evaluation_expires_at=None, status=ent.STATUS_EXPIRED)
+    assert ent.evaluation_expired(ended, now=NOW) is True
+    assert ent.lifecycle_state(ended, now=NOW) == ent.LIFECYCLE_EXPIRED_PILOT
+    assert ent.monitoring_allowed(ended, now=NOW) is False
+
+    suspended = _org(evaluation_expires_at=None, status=ent.STATUS_SUSPENDED)
+    assert ent.lifecycle_state(suspended, now=NOW) == ent.LIFECYCLE_SUSPENDED
+    assert ent.monitoring_allowed(suspended, now=NOW) is False
+
+
+def test_scale_and_enterprise_are_unchanged_by_the_open_ended_pilot_model() -> None:
+    """The change is Pilot's. The paid plans keep every answer they had."""
+    for plan in (ent.PLAN_SCALE, ent.PLAN_ENTERPRISE):
+        org = _org(plan=plan, evaluation_started_at=None, evaluation_expires_at=None)
+        assert ent.evaluation_payload(org, now=NOW) is None
+        assert ent.days_remaining(org, now=NOW) is None
+        assert ent.evaluation_expired(org, now=NOW) is False
+        assert ent.monitoring_allowed(org, now=NOW) is True
+        effective = ent.effective_entitlements(org, now=NOW)
+        assert effective[ent.FEATURE_THREAT_MONITORING] is True
+        assert effective[ent.FEATURE_AUTOMATIC_EXECUTION] is False
+    scale = ent.effective_entitlements(_org(plan=ent.PLAN_SCALE), now=NOW)
+    assert ent.limit_for(scale, ent.LIMIT_WORKSPACES) == 3
+    assert ent.limit_for(scale, ent.LIMIT_MONITORED_CONTRACTS) == 25
+    assert ent.limit_for(scale, ent.LIMIT_EVIDENCE_PACKAGES) is None
 
 
 def test_expired_evaluation_reports_zero_days_and_expired_state() -> None:

@@ -151,8 +151,12 @@ def test_A_signup_creates_a_pilot_organization_and_plan_surface(live, tenants) -
     assert plan['plan'] == 'pilot'
     assert plan['status'] == 'active'
     assert plan['lifecycle_state'] == 'ACTIVE_PILOT'
-    # The badge's countdown comes from the configured default, not a literal.
-    assert plan['evaluation']['days_remaining'] in (29, 30)
+    # A newly approved Pilot is complimentary and OPEN-ENDED: it reports when the
+    # evaluation started, and no deadline, because none was stamped.
+    assert plan['evaluation']['started_at'] is not None
+    assert plan['evaluation']['expires_at'] is None
+    assert plan['evaluation']['days_remaining'] is None
+    assert plan['evaluation']['expired'] is False
     assert plan['usage']['monitored_contracts'] == {'current': 0, 'limit': 5}
     assert plan['usage']['workspaces'] == {'current': 1, 'limit': 1}
     assert plan['usage']['evidence_packages'] == {'current': 0, 'limit': 10}
@@ -415,8 +419,13 @@ def test_H3_suspend_reactivate_and_plan_change_work_in_place(live, tenants) -> N
     assert detail['evaluation'] is None
 
 
-def test_H4_extending_an_active_evaluation_adds_to_its_deadline(live, tenants) -> None:
-    """Extending a LIVE evaluation must not shorten it back to today + N."""
+def test_H4_the_founder_can_set_extend_and_remove_a_pilot_deadline(live, tenants) -> None:
+    """The three deadline actions, in the order a founder would take them.
+
+    Moving onto Pilot opens an OPEN-ENDED evaluation, so this walks: no deadline
+    → set one → extend it (which must add to it, not shorten it back to today + N)
+    → remove it and keep the Pilot running.
+    """
     from services.api.app import organizations as org_service
     from services.api.app.domains.tenancy import endpoints as tenancy
 
@@ -425,11 +434,60 @@ def test_H4_extending_an_active_evaluation_adds_to_its_deadline(live, tenants) -
     target = admin['organization_id']
 
     tenancy.set_admin_customer_plan(target, {'plan': 'pilot'}, request)
+    opened = tenancy.get_admin_customer(target, request)
+    assert opened['evaluation']['expires_at'] is None
+    assert opened['evaluation']['expired'] is False
+
+    deadline = datetime.now(timezone.utc) + timedelta(days=60)
+    dated = tenancy.extend_admin_customer_evaluation(
+        target, {'expires_at': deadline.isoformat()}, request,
+    )
+    assert dated['evaluation']['expires_at'] is not None
+    assert dated['evaluation']['days_remaining'] in (59, 60)
+
     before = org_service.get_organization(live, target)['evaluation_expires_at']
     detail = tenancy.extend_admin_customer_evaluation(target, {'days': 14}, request)
     after = org_service.get_organization(live, target)['evaluation_expires_at']
     assert (after - before).days == 14
     assert detail['evaluation']['days_remaining'] > 14
+
+    cleared = tenancy.extend_admin_customer_evaluation(target, {'expires_at': None}, request)
+    assert cleared['evaluation']['expires_at'] is None
+    assert cleared['evaluation']['days_remaining'] is None
+    assert cleared['evaluation']['expired'] is False
+    # Still a running Pilot — removing the deadline stops nothing.
+    assert org_service.get_organization(live, target)['status'] == 'active'
+    assert cleared['organization']['plan'] == 'pilot'
+
+
+def test_H4b_ending_a_pilot_stops_it_and_clearing_its_deadline_does_not_revive_it(
+    live, tenants,
+) -> None:
+    """Migration safety, against the real database.
+
+    A Pilot the founder deliberately ended must stay ended. Clearing a deadline
+    is a scheduling change, never a reactivation.
+    """
+    from services.api.app import organizations as org_service
+    from services.api.app.domains.tenancy import endpoints as tenancy
+
+    admin = tenants['b']
+    request = _request(admin['token'], admin['workspace_id'])
+    target = admin['organization_id']
+
+    tenancy.set_admin_customer_plan(target, {'plan': 'pilot'}, request)
+    ended = tenancy.set_admin_customer_status(target, {'status': 'expired'}, request)
+    assert ended['organization']['status'] == 'expired'
+    assert ended['evaluation']['expired'] is True
+    assert ended['organization']['plan'] == 'pilot'   # ending is not an upgrade
+
+    still_ended = tenancy.extend_admin_customer_evaluation(target, {'expires_at': None}, request)
+    assert still_ended['evaluation']['expired'] is True
+    assert org_service.get_organization(live, target)['status'] == 'expired'
+
+    # Reactivating is its own explicit action.
+    revived = tenancy.set_admin_customer_status(target, {'status': 'active'}, request)
+    assert revived['evaluation']['expired'] is False
 
 
 def test_H5_extending_an_expired_evaluation_grants_the_full_window(live, tenants) -> None:

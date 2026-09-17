@@ -131,10 +131,15 @@ function formatDate(value: string | null): string {
 }
 
 function evaluationCell(customer: AdminCustomer): string {
-  if (!customer.evaluation || !customer.evaluation.expires_at) {
-    // Truthful: an organization with no deadline has none. Not "expired",
-    // and not a fabricated date.
-    return 'No deadline';
+  if (!customer.evaluation) {
+    // Not a Pilot: no evaluation window exists to report one way or the other.
+    return '—';
+  }
+  if (!customer.evaluation.expires_at) {
+    // The DEFAULT shape of a Pilot: complimentary and open-ended, running until
+    // this console ends it. Truthful either way — not "expired", and not a
+    // fabricated date.
+    return 'Open-ended';
   }
   const date = formatDate(customer.evaluation.expires_at);
   if (customer.evaluation.expired) {
@@ -253,7 +258,8 @@ export default function AdminCustomersClient() {
     void refreshCsrfToken().catch(() => undefined);
   }, [csrfReady, isAuthenticated, refreshCsrfToken]);
 
-  // Extend 30d / Suspend / Reactivate / Upgrade to Scale. Routed through
+  // Extend / Set end date / Remove end date / End Pilot / Suspend / Reactivate /
+  // Upgrade to Scale. Routed through
   // mutateWithCsrfRetry so an anti-CSRF token that expired while this tab was
   // open heals itself instead of surfacing a 403 the founder has to fix with a
   // browser refresh. A non-CSRF 403 (INTERNAL_ADMIN_REQUIRED) is NOT retried and
@@ -469,14 +475,13 @@ export default function AdminCustomersClient() {
                   <td>{customer.feedback_count}</td>
                   <td>
                     <div className="adminRowActions">
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={!csrfReady || busyId === customer.id}
-                        onClick={() => void act(customer.id, 'extend-evaluation', { days: 30 })}
-                      >
-                        Extend 30d
-                      </button>
+                      {customer.plan === 'pilot' ? (
+                        <PilotEvaluationControls
+                          customer={customer}
+                          disabled={!csrfReady || busyId === customer.id}
+                          onAct={act}
+                        />
+                      ) : null}
                       {customer.status === 'suspended' ? (
                         <button
                           type="button"
@@ -711,6 +716,99 @@ export default function AdminCustomersClient() {
  * backend refuses a submission that looks like it carries one, so no credential
  * is ever stored to be rendered.
  */
+/**
+ * The founder's Pilot lifecycle controls for one organization.
+ *
+ * A Pilot is complimentary and approval-only, and by default open-ended, so the
+ * console's job is no longer "push the 30 days out". It is the four things a
+ * founder actually decides:
+ *
+ *   Keep Pilot active   the default. No control, because it needs no action —
+ *                       an open-ended Pilot keeps running on its own.
+ *   Set end date        name a deadline for a Pilot that has none.
+ *   Extend              move an existing deadline out, or open one from today.
+ *   Remove end date     drop the deadline and leave the Pilot running. This
+ *                       does NOT reactivate an ended or suspended tenant —
+ *                       the backend deliberately leaves `status` alone — so it
+ *                       is offered only while the organization is active.
+ *   End Pilot           stop it, through the same audited status action that
+ *                       every other lifecycle stop goes through.
+ *
+ * "Upgrade to Scale" stays a separate, explicitly clicked action next to these:
+ * ending a Pilot never converts anyone to a paid plan on its own.
+ */
+function PilotEvaluationControls({
+  customer,
+  disabled,
+  onAct,
+}: {
+  customer: AdminCustomer;
+  disabled: boolean;
+  onAct: (organizationId: string, path: string, body: Record<string, unknown>) => Promise<void>;
+}) {
+  const [date, setDate] = useState('');
+  const hasDeadline = Boolean(customer.evaluation?.expires_at);
+  const alreadyEnded = customer.status === 'expired' || customer.evaluation?.expired === true;
+
+  return (
+    <>
+      <label className="adminInlineField">
+        <span className="sr-only">Pilot end date</span>
+        <input
+          type="date"
+          className="adminInlineDate"
+          value={date}
+          disabled={disabled}
+          aria-label={`Pilot end date for ${customer.name ?? customer.slug ?? customer.id}`}
+          onChange={(event) => setDate(event.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        className="btn"
+        disabled={disabled || !date}
+        onClick={() => {
+          // End of the chosen day, in UTC, so "through 1 December" does not cut
+          // the evaluator off at midnight on the morning of the 1st.
+          void onAct(customer.id, 'extend-evaluation', {
+            expires_at: `${date}T23:59:59Z`,
+          }).then(() => setDate(''));
+        }}
+      >
+        {hasDeadline ? 'Change end date' : 'Set end date'}
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={disabled}
+        onClick={() => void onAct(customer.id, 'extend-evaluation', { days: 30 })}
+      >
+        Extend 30d
+      </button>
+      {hasDeadline && !alreadyEnded ? (
+        <button
+          type="button"
+          className="btn"
+          disabled={disabled}
+          onClick={() => void onAct(customer.id, 'extend-evaluation', { expires_at: null })}
+        >
+          Remove end date
+        </button>
+      ) : null}
+      {alreadyEnded ? null : (
+        <button
+          type="button"
+          className="btn"
+          disabled={disabled}
+          onClick={() => void onAct(customer.id, 'status', { status: 'expired' })}
+        >
+          End Pilot
+        </button>
+      )}
+    </>
+  );
+}
+
 function FeedbackDetail({ item, onClose }: { item: FeedbackItem; onClose: () => void }) {
   const available = item.detail_available;
   const answers: Array<{ label: string; value: string | null }> = [
