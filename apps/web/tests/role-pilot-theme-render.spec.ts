@@ -4,9 +4,10 @@
  * Three things a theme refactor could quietly break, each of which is a
  * product rule rather than a styling preference:
  *
- *   1. The pilot chip must keep reporting how much evaluation is left, and
- *      must not read "fine" when it is nearly out. Its tone is derived from
- *      the backend's days_remaining, not from the chip's own styling.
+ *   1. The pilot chip must keep naming the plan without turning into a
+ *      countdown, and must not read "fine" once the evaluation has actually
+ *      ended. Both come from the backend's own lifecycle facts, not from the
+ *      chip's own styling.
  *   2. The internal-admin link is rendered from ONE backend fact
  *      (is_internal_admin). A founder sees it; a customer must not.
  *   3. Whatever the role, the chrome has to stay readable in both themes.
@@ -41,12 +42,33 @@ let harness: Harness;
 test.beforeAll(async () => { harness = await startRenderHarness({ bootstrap: BOOTSTRAP }); });
 test.afterAll(async () => { await harness?.close(); });
 
-type Role = { internalAdmin: boolean; plan: string; planLabel: string; lifecycle: string; daysRemaining: number | null };
+type Role = {
+  internalAdmin: boolean;
+  plan: string;
+  planLabel: string;
+  lifecycle: string;
+  daysRemaining: number | null;
+  /** The backend's canonical "this evaluation has ended" fact. */
+  expired?: boolean;
+};
 
 const ROLES: Record<string, Role> = {
-  Founder: { internalAdmin: true, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'ACTIVE_PILOT', daysRemaining: 23 },
-  Pilot: { internalAdmin: false, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'ACTIVE_PILOT', daysRemaining: 23 },
+  // daysRemaining: null is the DEFAULT Pilot the backend sends — complimentary
+  // and open-ended, with no deadline to report.
+  Founder: { internalAdmin: true, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'ACTIVE_PILOT', daysRemaining: null },
+  Pilot: { internalAdmin: false, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'ACTIVE_PILOT', daysRemaining: null },
   User: { internalAdmin: false, plan: 'scale', planLabel: 'Scale', lifecycle: 'ACTIVE', daysRemaining: null },
+};
+
+/** A Pilot a founder gave an explicit deadline. Still a running evaluation. */
+const DATED_PILOT: Role = {
+  internalAdmin: false, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'ACTIVE_PILOT', daysRemaining: 3,
+};
+
+/** A Pilot the founder ENDED. No deadline was ever set; status stopped it. */
+const ENDED_PILOT: Role = {
+  internalAdmin: false, plan: 'pilot', planLabel: 'Pilot', lifecycle: 'EXPIRED_PILOT', daysRemaining: null,
+  expired: true,
 };
 
 async function mountAs(page: Page, role: Role) {
@@ -85,8 +107,11 @@ async function mountAs(page: Page, role: Role) {
           organization: { id: 'org-1', name: 'Acme Capital', slug: 'acme' },
           plan: r.plan, plan_label: r.planLabel, status: 'active', lifecycle_state: r.lifecycle,
           evaluation: r.daysRemaining === null
-            ? { started_at: null, expires_at: null, days_remaining: null, expired: false }
-            : { started_at: null, expires_at: '2026-10-09T00:00:00Z', days_remaining: r.daysRemaining, expired: false },
+            ? { started_at: null, expires_at: null, days_remaining: null, expired: r.expired === true }
+            : {
+                started_at: null, expires_at: '2026-10-09T00:00:00Z',
+                days_remaining: r.daysRemaining, expired: r.expired === true,
+              },
           usage: {
             workspaces: { current: 1, limit: 1 },
             monitored_contracts: { current: 3, limit: 5 },
@@ -111,24 +136,32 @@ for (const [name, role] of Object.entries(ROLES)) {
   });
 }
 
-test('the pilot chip still reports the evaluation time left', async ({ page }) => {
+test('the pilot chip names the plan and renders no countdown', async ({ page }) => {
   await mountAs(page, ROLES.Pilot);
   const badge = page.locator('.planBadge');
   await expect(badge).toBeVisible();
-  await expect(badge).toContainText('Pilot');
-  // The number comes from the backend's days_remaining, unchanged.
-  await expect(badge).toContainText('23 days left');
+  await expect(badge).toHaveText('Pilot');
 });
 
-test('a pilot close to expiry is not painted as comfortable', async ({ page }) => {
-  await mountAs(page, { ...ROLES.Pilot, daysRemaining: 3 });
+test('a pilot with a deadline still renders no countdown', async ({ page }) => {
+  // The deadline is real and the founder console shows it. The customer chip is
+  // not a timer, so 3 days left reaches neither the text nor the tone.
+  await mountAs(page, DATED_PILOT);
   const badge = page.locator('.planBadge');
-  await expect(badge).toContainText('3 days left');
+  await expect(badge).toHaveText('Pilot');
+  await expect(badge).not.toContainText('days left');
+  await expect(badge).toHaveClass(/pill-info/);
+  await expect(badge).not.toHaveClass(/pill-warning/);
+});
 
-  // planBadgeTone() turns days_remaining <= 7 into the warning tone; the chip
-  // renders that as pill-warning. Assert on the class the backend fact
-  // produced, then prove the class is painted distinctly in both themes.
-  await expect(badge).toHaveClass(/pill-warning/);
+test('an ENDED pilot is not painted as comfortable', async ({ page }) => {
+  // The rule the countdown used to carry, moved onto the fact that survives it:
+  // a stopped evaluation must not read as a healthy one. This Pilot never had a
+  // deadline — the founder ended it — so only `expired` says so.
+  await mountAs(page, ENDED_PILOT);
+  const badge = page.locator('.planBadge');
+  await expect(badge).toContainText('Evaluation ended');
+  await expect(badge).toHaveClass(/pill-danger/);
 
   for (const theme of ['light', 'dark'] as const) {
     await applyTheme(page, theme);
@@ -141,14 +174,14 @@ test('a pilot close to expiry is not painted as comfortable', async ({ page }) =
       el.remove();
       return c;
     });
-    expect(badgeColour, `${theme}: an expiring pilot must not read as healthy`).not.toBe(healthyTone);
+    expect(badgeColour, `${theme}: an ended pilot must not read as healthy`).not.toBe(healthyTone);
   }
 });
 
-test('a comfortable pilot is not painted as urgent either', async ({ page }) => {
-  // The other half of the rule: 23 days left must not shout. Tone comes from
-  // the backend's number, so the chip cannot invent urgency any more than it
-  // can hide it.
+test('a running pilot is not painted as urgent either', async ({ page }) => {
+  // The other half of the rule: an open-ended evaluation must not shout. Tone
+  // comes from the backend's lifecycle state, so the chip cannot invent urgency
+  // any more than it can hide an ended evaluation.
   await mountAs(page, ROLES.Pilot);
   const badge = page.locator('.planBadge');
   await expect(badge).toHaveClass(/pill-info/);

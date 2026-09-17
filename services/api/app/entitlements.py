@@ -234,32 +234,61 @@ _PLAN_TABLE: dict[str, dict[str, Any]] = {
 
 
 # ── Evaluation duration (Phase 5) ────────────────────────────────────────────
-#: The ONE place the default evaluation length is written down. Nothing else in
-#: the codebase may hard-code "30".
-DEFAULT_EVALUATION_DAYS = 30
+#: The default automatic evaluation length. ``None`` means a newly approved Pilot
+#: receives NO deadline: the Pilot is a complimentary, approval-only evaluation
+#: that stays active while the team is evaluating, and it ends when an authorized
+#: founder/admin ends it — not on a timer nobody agreed to.
+#:
+#: This is the ONE place the default is written down. Nothing else in the
+#: codebase may hard-code an evaluation length.
+DEFAULT_EVALUATION_DAYS: int | None = None
 EVALUATION_DAYS_ENV = 'PILOT_EVALUATION_DAYS'
 MIN_EVALUATION_DAYS = 1
 MAX_EVALUATION_DAYS = 365
 #: Upper bound on a single "extend pilot" action from the founder admin.
 MAX_EVALUATION_EXTENSION_DAYS = 365
 
+#: ``PILOT_EVALUATION_DAYS`` values that explicitly ask for an open-ended Pilot.
+#: Spelled out so a deployment can state "no automatic deadline" as a word rather
+#: than relying on the empty string meaning the same thing as the default.
+OPEN_ENDED_EVALUATION_VALUES: frozenset[str] = frozenset(
+    {'0', 'none', 'null', 'off', 'open', 'open-ended', 'unset'}
+)
 
-def evaluation_days() -> int:
-    """Configured evaluation length in days, clamped to a sane range."""
+
+def evaluation_days() -> int | None:
+    """Automatic evaluation length in days, or ``None`` for an open-ended Pilot.
+
+    ``None`` is the default and the product model. A deployment that wants every
+    newly approved Pilot stamped with a deadline sets ``PILOT_EVALUATION_DAYS``
+    to a positive number of days; it is clamped to a sane range. An unparseable
+    value falls back to the default rather than inventing a window.
+    """
     raw = (os.getenv(EVALUATION_DAYS_ENV) or '').strip()
     if not raw:
         return DEFAULT_EVALUATION_DAYS
+    if raw.lower() in OPEN_ENDED_EVALUATION_VALUES:
+        return None
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
         return DEFAULT_EVALUATION_DAYS
+    if parsed <= 0:
+        return None
     return max(MIN_EVALUATION_DAYS, min(MAX_EVALUATION_DAYS, parsed))
 
 
-def evaluation_window(started_at: datetime | None = None) -> tuple[datetime, datetime]:
-    """(started_at, expires_at) for a new evaluation, using the configured length."""
+def evaluation_window(started_at: datetime | None = None) -> tuple[datetime, datetime | None]:
+    """``(started_at, expires_at)`` for a new evaluation.
+
+    ``expires_at`` is ``None`` unless the deployment configured an automatic
+    window. An open-ended Pilot still records WHEN it started — the founder
+    console and pilot feedback both read that — without inventing a deadline the
+    customer was never given.
+    """
     start = started_at or datetime.now(timezone.utc)
-    return start, start + timedelta(days=evaluation_days())
+    days = evaluation_days()
+    return start, (start + timedelta(days=days) if days is not None else None)
 
 
 # ── Error codes ──────────────────────────────────────────────────────────────
@@ -470,8 +499,11 @@ def effective_entitlements(
 
         ACTIVE Pilot    evaluates the production security workflows — monitoring,
                         detection, AI investigation, playbooks, recommendations,
-                        evidence — bounded by 30 days, 1 workspace, 5 contracts,
-                        10 evidence packages, and recommend-only execution.
+                        evidence — bounded by 1 workspace, 5 contracts, 10
+                        evidence packages, and recommend-only execution. It runs
+                        for as long as the evaluation does: an optional
+                        ``evaluation_expires_at`` ends it, and ``NULL`` means it
+                        stays active until a founder/admin ends it.
         EXPIRED Pilot   keeps every record and loses the ability to start new
                         expensive work, until the organization upgrades.
 
@@ -652,6 +684,15 @@ def evaluation_payload(
 
     ``None`` for any plan without an evaluation window — the frontend must not be
     handed a countdown it would render for a Scale or Enterprise tenant.
+
+    A Pilot reports one of two shapes, and the frontend must handle both:
+
+      * **open-ended** — ``expires_at`` and ``days_remaining`` are ``None`` and
+        ``expired`` is ``False``. There is no deadline to state, so no deadline
+        may be rendered.
+      * **dated** — ``expires_at`` is set and ``days_remaining``/``expired``
+        describe it. A ``None`` here is the absence of a deadline, never a
+        deadline of zero.
     """
     org = organization or {}
     if normalize_plan(org.get('plan')) not in EVALUATION_PLANS:

@@ -6,6 +6,8 @@ import { usePilotAuth } from './pilot-auth-context';
 import { usePlanStatus } from './plan-status-context';
 import {
   PILOT_EVALUATION_ACCESS_NOTE,
+  PILOT_EVALUATION_DURATION_NOTE,
+  pilotEvaluationDeadlineNote,
   type PlanEvaluation,
   USAGE_ROWS,
   planBadgeLabel,
@@ -76,7 +78,27 @@ function PlanPanel({ onClose }: { onClose: () => void }) {
   // Stated only while the evaluation is RUNNING. Once it ends, the restricted
   // notice above is the accurate thing to say, and repeating "your evaluation
   // includes these workflows" underneath it would contradict it.
-  const evaluationAccess = plan?.lifecycle_state === 'ACTIVE_PILOT' ? PILOT_EVALUATION_ACCESS_NOTE : null;
+  //
+  // It leads with how long the evaluation runs, for the two Pilot shapes the
+  // backend sends.
+  // An open-ended Pilot gets the standing sentence; one the founder gave a
+  // deadline gets that deadline, stated as a date rather than a countdown so
+  // the panel reports the configured fact and does not tick. An unparseable
+  // deadline falls back to the standing sentence rather than rendering
+  // "Invalid Date" as a commitment.
+  //
+  // It joins the access note as one paragraph rather than becoming a third one:
+  // the panel opens over the page with the feedback form inside it, and every
+  // block it grows by is a block closer to not fitting the viewport.
+  const evaluationDeadline = plan?.evaluation?.expires_at
+    ? formatEvaluationDate(plan.evaluation.expires_at)
+    : null;
+  const evaluationAccess =
+    plan?.lifecycle_state === 'ACTIVE_PILOT'
+      ? `${evaluationDeadline
+          ? pilotEvaluationDeadlineNote(evaluationDeadline)
+          : PILOT_EVALUATION_DURATION_NOTE} ${PILOT_EVALUATION_ACCESS_NOTE}`
+      : null;
 
   return (
     <div className="planPanel" role="dialog" aria-label="Plan and usage">
@@ -120,12 +142,27 @@ function PlanPanel({ onClose }: { onClose: () => void }) {
         })}
       </ul>
 
-      {evaluationAccess ? <p className="planPanelNote">{evaluationAccess}</p> : null}
+      {evaluationAccess ? (
+        <p className="planPanelNote" data-testid="plan-evaluation-note">{evaluationAccess}</p>
+      ) : null}
       {recommendOnly ? <p className="planPanelNote">{recommendOnly}</p> : null}
 
       <FeedbackForm onSubmitted={() => void refresh()} evaluation={plan?.evaluation ?? null} />
     </div>
   );
+}
+
+/**
+ * A deadline as a plain date. Returns null for anything unparseable, and the
+ * caller then states nothing rather than rendering "Invalid Date" as a
+ * commitment.
+ */
+function formatEvaluationDate(value: string): string | null {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString().slice(0, 10);
 }
 
 function FeedbackForm({

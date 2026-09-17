@@ -436,6 +436,33 @@ def test_11b_scale_and_enterprise_alone_do_not_unlock_execution() -> None:
         assert lock['reason'] == execution_authz.REASON_PLAN_RECOMMEND_ONLY
 
 
+def test_11d_an_open_ended_pilot_still_cannot_execute_production_actions() -> None:
+    """The line an open-ended Pilot does NOT cross.
+
+    Removing the 30-day deadline changed WHEN a Pilot ends, not what it may do:
+    execution is refused by the plan table, which never consulted the evaluation
+    window in the first place. A Pilot with no deadline is refused exactly as a
+    dated one is, and for the same reason.
+    """
+    open_ended = execution_authz.resolve_execution_lock(
+        _Conn(_org(evaluation_expires_at=None)), WS,
+    )
+    dated = execution_authz.resolve_execution_lock(_Conn(_org()), WS)
+    assert open_ended == dated
+    assert open_ended['locked'] is True
+    assert open_ended['reason'] == execution_authz.REASON_PLAN_RECOMMEND_ONLY
+    assert open_ended['plan'] == ent.PLAN_PILOT
+
+
+def test_11e_an_open_ended_pilot_keeps_its_plan_limits() -> None:
+    """...and it is metered exactly as a dated Pilot is."""
+    open_ended = ent.effective_entitlements(_org(evaluation_expires_at=None))
+    dated = ent.effective_entitlements(_org())
+    for key in ent.LIMIT_KEYS:
+        assert ent.limit_for(open_ended, key) == ent.limit_for(dated, key)
+    assert ent.limit_for(open_ended, ent.LIMIT_MONITORED_CONTRACTS) == 5
+
+
 def test_11c_an_unmigrated_deployment_keeps_its_existing_behaviour() -> None:
     lock = execution_authz.resolve_execution_lock(_Conn(None, schema_ready=False), WS)
     assert lock['locked'] is False
@@ -472,6 +499,19 @@ def test_12d_an_expired_or_suspended_tenant_is_refused_with_its_own_reason() -> 
         _Conn(_org(status=ent.STATUS_SUSPENDED)), WS,
     )
     assert suspended['reason'] == execution_authz.REASON_ORGANIZATION_SUSPENDED
+
+
+def test_12f_a_pilot_the_founder_ENDED_is_refused_as_an_expired_evaluation() -> None:
+    """A Pilot with no deadline is stopped by ``status``, and reported that way.
+
+    This is how an open-ended Pilot ends, so the reason code has to be the
+    evaluation one — not "suspended", and certainly not an unlocked gate.
+    """
+    ended = execution_authz.resolve_execution_lock(
+        _Conn(_org(evaluation_expires_at=None, status=ent.STATUS_EXPIRED)), WS,
+    )
+    assert ended == {'locked': True, 'reason': execution_authz.REASON_EVALUATION_EXPIRED,
+                     'plan': ent.PLAN_PILOT}
 
 
 def test_12e_every_lock_reason_carries_a_user_safe_sentence() -> None:

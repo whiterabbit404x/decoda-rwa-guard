@@ -165,6 +165,30 @@ test.describe('the column in the table', () => {
     expect(client).toContain('Upgrade to Scale');
   });
 
+  test('the founder can set, extend, remove, and end a Pilot evaluation', () => {
+    // The four decisions a founder actually makes about a complimentary Pilot.
+    // "Keep Pilot active" needs no control: an open-ended Pilot keeps running.
+    expect(client).toContain('Set end date');
+    expect(client).toContain('Change end date');
+    expect(client).toContain('Extend 30d');
+    expect(client).toContain('Remove end date');
+    expect(client).toContain('End Pilot');
+
+    // Removing the deadline sends an explicit null, not an omitted field, so the
+    // backend can tell "clear this" from "leave it alone".
+    expect(client).toContain("'extend-evaluation', { expires_at: null }");
+    // Ending a Pilot goes through the audited status action, and never converts
+    // anyone onto a paid plan.
+    expect(client).toContain("'status', { status: 'expired' }");
+  });
+
+  test('an organization with no deadline is reported as open-ended, not expired', () => {
+    // A Pilot with no `evaluation_expires_at` is the DEFAULT shape, not missing
+    // data and not an ended evaluation.
+    expect(client).toContain("return 'Open-ended';");
+    expect(client).not.toContain("return 'No deadline';");
+  });
+
   test('the cell reads the backend field and derives nothing itself', () => {
     expect(client).toContain('primary_contact_email: string | null;');
     expect(client).toContain('primaryContactLabel(customer)');

@@ -17,7 +17,8 @@ Internal founder admin (``users.is_internal_admin`` or the exact-address
 deployment allowlist — never a workspace role, never a request parameter):
   * ``GET   /admin/customers``                        every organization
   * ``GET   /admin/customers/{id}``                   one organization in detail
-  * ``POST  /admin/customers/{id}/extend-evaluation`` push the deadline out
+  * ``POST  /admin/customers/{id}/extend-evaluation`` set / extend / remove the
+                                                     optional Pilot deadline
   * ``POST  /admin/customers/{id}/status``            suspend / reactivate / expire
   * ``POST  /admin/customers/{id}/plan``              change plan in place
   * ``GET   /admin/feedback``                         evaluator feedback + roadmap counters
@@ -50,6 +51,7 @@ returns another organization's contact.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from services.api.app import entitlements as ent
@@ -300,34 +302,101 @@ def _admin_lifecycle_audit(
     )
 
 
+def _parse_evaluation_expiry(raw: Any) -> datetime | None:
+    """``expires_at`` from an admin payload: a datetime, or ``None`` to clear it.
+
+    Accepts an ISO-8601 string (``Z`` included) or a datetime. A naive value is
+    read as UTC, matching every other timestamp the tenancy schema stores.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                'code': 'INVALID_EVALUATION_EXPIRY',
+                'message': 'expires_at must be an ISO-8601 timestamp, or null to remove the deadline.',
+            },
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def extend_admin_customer_evaluation(
     organization_id: str, payload: dict[str, Any], request: Any,
 ) -> dict[str, Any]:
+    """Configure one Pilot's evaluation deadline. Three founder actions, one route.
+
+    The route name is kept because extending is still what it mostly does, but a
+    Pilot no longer has to be a dated window at all, so the body chooses:
+
+      ``{"days": 30}``                  extend (or open) a window N days out
+      ``{"expires_at": "2026-12-01Z"}`` set an exact deadline
+      ``{"expires_at": null}``          remove the deadline, Pilot stays active
+
+    ``expires_at`` wins when both are sent, because naming a date is the more
+    specific instruction. Ending a Pilot is NOT here: that is
+    ``POST /admin/customers/{id}/status`` with ``expired``, so stopping a tenant
+    stays one deliberate, separately audited action.
+    """
     pilot.require_live_mode()
     body = payload if isinstance(payload, dict) else {}
-    raw_days = body.get('days', ent.evaluation_days())
-    try:
-        days = int(raw_days)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={'code': 'INVALID_EVALUATION_EXTENSION', 'message': 'days must be an integer.'},
-        ) from None
+    setting_expiry = 'expires_at' in body
+    expires_at: datetime | None = None
+    days = 0
+    if setting_expiry:
+        expires_at = _parse_evaluation_expiry(body.get('expires_at'))
+    else:
+        raw_days = body.get('days', ent.evaluation_days())
+        try:
+            days = int(raw_days)
+        except (TypeError, ValueError):
+            # Reached when the deployment runs open-ended Pilots (the default),
+            # so there is no configured length to fall back to. Say what to send
+            # rather than reporting the absent default as a malformed request.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'code': 'INVALID_EVALUATION_EXTENSION',
+                    'message': (
+                        'days must be an integer, or send expires_at (a timestamp, '
+                        'or null to remove the deadline).'
+                    ),
+                },
+            ) from None
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         admin = org_service.require_internal_admin(connection, request)
         _require_tenancy_schema(connection)
         before = org_service.get_organization(connection, organization_id)
-        organization = org_service.extend_evaluation(
-            connection, organization_id=organization_id, days=days,
-        )
+        if setting_expiry:
+            organization = org_service.set_evaluation_expiry(
+                connection, organization_id=organization_id, expires_at=expires_at,
+            )
+        else:
+            organization = org_service.extend_evaluation(
+                connection, organization_id=organization_id, days=days,
+            )
         _admin_lifecycle_audit(
             connection, request,
             actor_user_id=str(admin['id']),
-            action='organization.evaluation_extended',
+            action=(
+                'organization.evaluation_expiry_set' if setting_expiry
+                else 'organization.evaluation_extended'
+            ),
             organization=organization,
             metadata={
                 'days': days,
+                # True only for the explicit "keep this Pilot running with no
+                # deadline" action, so the audit trail distinguishes it from a
+                # Pilot that simply never had one.
+                'expiry_cleared': bool(setting_expiry and expires_at is None),
                 'previous_expires_at': (
                     (before or {}).get('evaluation_expires_at').isoformat()
                     if hasattr((before or {}).get('evaluation_expires_at'), 'isoformat')

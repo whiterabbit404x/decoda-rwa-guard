@@ -1,21 +1,28 @@
-"""Pilot is a 30-day EVALUATION, not a permanently stripped-down plan.
+"""Pilot is an EVALUATION, not a permanently stripped-down plan.
 
 The product rule these tests hold in place:
 
     ACTIVE Pilot    evaluates the important production security workflows —
                     monitoring, threat detection, alerts, incidents, AI
                     investigation, incident playbooks, response recommendations,
-                    evidence and audit exports — bounded by 30 days, 1 workspace,
+                    evidence and audit exports — bounded by 1 workspace,
                     5 monitored contracts, 10 evidence packages, and
                     recommend-only execution.
 
     EXPIRED Pilot   keeps every record it produced and loses the ability to START
                     new expensive work, until the organization upgrades.
 
+An ACTIVE Pilot is NOT bounded by a fixed duration. ``evaluation_expires_at`` is
+optional: ``NULL`` is a complimentary, open-ended evaluation that runs until an
+authorized founder/admin ends it, and a timestamp is a deadline a founder set.
+Both are ACTIVE until they are not, and both are stopped by the same
+``lifecycle_state`` path — see test_plan_entitlements_engine.py for that split.
+
 Both halves matter. Labelling an evaluation feature "upgrade required" while the
-window is open defeats the evaluation; leaving it open after the window closes
-gives away the thing Scale is sold for. The same entitlement call has to answer
-both, which is why ``effective_entitlements`` reads plan AND lifecycle.
+evaluation is running defeats the evaluation; leaving it open after the
+evaluation ends gives away the thing Scale is sold for. The same entitlement call
+has to answer both, which is why ``effective_entitlements`` reads plan AND
+lifecycle.
 
 Run:
     python -m pytest services/api/tests/test_pilot_evaluation_entitlements.py -q

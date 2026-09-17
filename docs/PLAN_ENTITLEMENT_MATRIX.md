@@ -40,8 +40,9 @@ ability to start new expensive work.
 
 ## How to read the columns
 
-* **ACTIVE PILOT** — a 30-day, approval-only evaluation. Bounded by 1 workspace,
-  5 monitored contracts, 10 evidence packages, and recommend-only execution.
+* **ACTIVE PILOT** — a complimentary, approval-only evaluation. Bounded by
+  1 workspace, 5 monitored contracts, 10 evidence packages, and recommend-only
+  execution. Not bounded by a fixed duration: see "Pilot duration" below.
 * **EXPIRED PILOT** — `evaluation_expires_at` has passed. Nothing is deleted and
   every read path still works; new monitoring, investigations, evidence packages,
   integrations and executions are refused with `PLAN_EVALUATION_EXPIRED`.
@@ -71,9 +72,19 @@ their plan grants or withholds:
 * `multi_network`
 * `priority_routing`
 
-## Grandfathered Pilots
+## Pilot duration
 
-An organization on the Pilot plan whose `evaluation_expires_at` is `NULL` never
-expires: a missing deadline is not evidence of one, and inventing it would revoke
-access the tenant was never told about. These predate the invitation lifecycle.
-Newly approved Pilots always receive a real 30-day deadline.
+`evaluation_expires_at` is OPTIONAL, and a Pilot is one of two shapes:
+
+* **`NULL` — open-ended.** The default for a newly approved Pilot, and what the
+  grandfathered pre-invitation Pilots already were. The evaluation stays active
+  until an authorized founder/admin ends it (`status = 'expired'`) or suspends
+  the organization. A missing deadline is not evidence of one, and inventing it
+  would revoke access the tenant was never told about. This is not "free
+  forever": Pilot access is complimentary and approval-only, and Decoda ends it.
+* **A timestamp — dated.** A founder set or extended a deadline by hand, or the
+  deployment set `PILOT_EVALUATION_DAYS` so every new Pilot is stamped with one.
+  `PLAN_EVALUATION_EXPIRED` applies once it passes, exactly as before.
+
+Both shapes are enforced by the same `evaluation_expired` / `lifecycle_state`
+path, so nothing downstream carries its own reading of a null deadline.

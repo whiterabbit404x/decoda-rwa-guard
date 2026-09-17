@@ -15,6 +15,8 @@ type Invitation = {
   email: string;
   company_name: string | null;
   expires_at: string | null;
+  /** An automatic evaluation length, when the deployment configured one.
+      `null` is the default: a complimentary Pilot with no fixed duration. */
   evaluation_days: number | null;
   status?: string | null;
   /**
@@ -210,9 +212,13 @@ export default function AcceptInvitationClient({ hasSessionCookie = false }: { h
           {validInvitation.company_name
             ? `Decoda approved a Pilot evaluation for ${validInvitation.company_name}.`
             : 'Decoda approved your Pilot evaluation.'}
+          {/* A deployment that configured an automatic window states it. By
+              default there is none, and the copy then promises a complimentary
+              evaluation rather than a duration nobody set — and never "free
+              forever", which Decoda has not offered either. */}
           {typeof validInvitation.evaluation_days === 'number' && validInvitation.evaluation_days > 0
             ? ` Accepting starts a ${validInvitation.evaluation_days}-day evaluation.`
-            : ''}
+            : ' Accepting starts your complimentary Pilot evaluation.'}
         </p>
         <dl className="pilotRequestDetails">
           <div>

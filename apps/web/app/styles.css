@@ -7390,8 +7390,8 @@ td .tableMeta {
 .pricingTierPrice--label {
   font-size: 1.5rem;
   letter-spacing: -0.01em;
-  /* A word label can run to two lines ("30-Day Free Evaluation"); line-height 1
-     from .pricingTierPrice would collide the rows. */
+  /* A word label can run to two lines ("Pilot Evaluation"); line-height 1 from
+     .pricingTierPrice would collide the rows. */
   line-height: 1.15;
   display: flex;
   align-items: center;
@@ -10924,6 +10924,27 @@ a.mktTrustBadge:hover {
 .adminRowActions button {
   font-size: 0.74rem;
   padding: 0.25rem 0.55rem;
+}
+
+/* The Pilot end-date picker sits inline with the row's action buttons, so it is
+   sized to match them rather than to the form inputs elsewhere on the page. */
+.adminInlineField {
+  display: inline-flex;
+  align-items: center;
+}
+
+.adminInlineDate {
+  font-size: 0.74rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--border-subtle, var(--border, rgba(148, 163, 184, 0.35)));
+  border-radius: 4px;
+  background: var(--surface-1, transparent);
+  color: inherit;
+}
+
+.adminInlineDate:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* ── Public Pilot application / invitation acceptance ─────────────────────────

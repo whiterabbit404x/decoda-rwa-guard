@@ -275,10 +275,14 @@ def create_organization(
     start_evaluation: bool = True,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Insert one organization. Starts an evaluation window for evaluation plans.
+    """Insert one organization. Opens an evaluation for evaluation plans.
 
-    The evaluation length comes from ``entitlements.evaluation_days()`` — the one
-    configured default — so no caller ever writes a hard-coded duration.
+    The evaluation length comes from ``entitlements.evaluation_window()`` — the
+    one configured default — so no caller ever writes a hard-coded duration. By
+    default that window has NO deadline: ``evaluation_started_at`` is recorded and
+    ``evaluation_expires_at`` stays ``NULL``, which is an active Pilot that runs
+    until a founder/admin sets a deadline or ends it. A deployment that sets
+    ``PILOT_EVALUATION_DAYS`` gets a dated window here instead.
     """
     plan_key = ent.normalize_plan(plan)
     status_key = ent.normalize_status(status_value)
@@ -449,7 +453,10 @@ def _unavailable(reason: str) -> dict[str, Any]:
 #: link predates migration 0150, and silently stopping its work would be a far
 #: worse failure than briefly not applying the newer rule to it — the API heals
 #: the link on the tenant's next request. And a Pilot with no recorded deadline is
-#: grandfathered: a missing date is not evidence of expiry.
+#: an OPEN-ENDED evaluation, which is the default shape of a Pilot: a missing date
+#: is not evidence of expiry. Such a Pilot is stopped by ``status`` alone — the
+#: founder ending it, or suspending the organization — which the first branch
+#: already covers.
 _INACTIVE_TENANT_EXCLUSION_TEMPLATE = """
               AND NOT EXISTS (
                   SELECT 1
@@ -725,7 +732,12 @@ def extend_evaluation(
 
     Extends from whichever is later — the current expiry or now — so extending an
     already-expired evaluation grants the full requested window rather than a
-    deadline still in the past.
+    deadline still in the past. An OPEN-ENDED Pilot has no expiry to extend from,
+    so this sets one ``days`` out from now: the founder asked for a dated window,
+    and this is how they get one.
+
+    To go the other way — drop a deadline and leave the Pilot running — call
+    ``set_evaluation_expiry`` with ``expires_at=None``.
     """
     if not isinstance(days, int) or isinstance(days, bool) or days < 1 or days > ent.MAX_EVALUATION_EXTENSION_DAYS:
         raise _http_error(
@@ -758,6 +770,78 @@ def extend_evaluation(
     return _require_organization(connection, organization_id)
 
 
+def set_evaluation_expiry(
+    connection: Any,
+    *,
+    organization_id: str,
+    expires_at: datetime | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Set an explicit Pilot deadline, or clear it to leave the Pilot open-ended.
+
+    The two directions are deliberately NOT symmetric about ``status``:
+
+      * Setting a date may reactivate an organization that ``status = 'expired'``
+        had stopped, exactly as ``extend_evaluation`` does. Naming a future
+        deadline is an explicit "this Pilot runs until then".
+      * Clearing the date NEVER changes ``status``. A Pilot the founder
+        deliberately ended, or an organization they suspended, stays stopped —
+        removing a deadline from it must not hand a revoked tenant its access
+        back. Reactivating is its own audited action (``set_status``).
+
+    Only an evaluation plan has a deadline to configure. Writing one onto Scale or
+    Enterprise would create exactly the stray window ``set_plan`` clears.
+    """
+    organization = _require_organization(connection, organization_id)
+    plan_key = ent.normalize_plan(organization.get('plan'))
+    if plan_key not in ent.EVALUATION_PLANS:
+        raise _http_error(
+            400,
+            {
+                'code': 'PLAN_HAS_NO_EVALUATION',
+                'message': (
+                    f'{ent.PLAN_LABELS.get(plan_key, plan_key)} has no evaluation window. '
+                    'Only a Pilot organization can carry an evaluation deadline.'
+                ),
+            },
+        )
+    moment = now or _utc_now()
+    if expires_at is None:
+        connection.execute(
+            '''
+            UPDATE organizations
+            SET evaluation_expires_at = NULL,
+                evaluation_started_at = COALESCE(evaluation_started_at, %s),
+                updated_at = NOW()
+            WHERE id = %s
+            ''',
+            (moment, str(organization_id)),
+        )
+        return _require_organization(connection, organization_id)
+
+    if not isinstance(expires_at, datetime):
+        raise _http_error(
+            400,
+            {
+                'code': 'INVALID_EVALUATION_EXPIRY',
+                'message': 'expires_at must be an ISO-8601 timestamp, or null to remove the deadline.',
+            },
+        )
+    deadline = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    connection.execute(
+        '''
+        UPDATE organizations
+        SET evaluation_expires_at = %s,
+            evaluation_started_at = COALESCE(evaluation_started_at, %s),
+            status = CASE WHEN status = %s THEN %s ELSE status END,
+            updated_at = NOW()
+        WHERE id = %s
+        ''',
+        (deadline, moment, ent.STATUS_EXPIRED, ent.STATUS_ACTIVE, str(organization_id)),
+    )
+    return _require_organization(connection, organization_id)
+
+
 def set_status(connection: Any, *, organization_id: str, status_value: str) -> dict[str, Any]:
     """Suspend, reactivate, or mark expired. Never touches customer records."""
     key = str(status_value or '').strip().lower()
@@ -785,8 +869,10 @@ def set_plan(
     plan's limits on the next request.
 
     Moving OFF an evaluation plan clears the evaluation window, so a Scale tenant
-    can never render a "days remaining" countdown. Moving ONTO Pilot starts a
-    fresh window using the configured evaluation length.
+    can never carry a Pilot deadline. Moving ONTO Pilot opens a fresh evaluation
+    using the configured length — open-ended by default. A Pilot that is already a
+    Pilot keeps whatever window it has, so re-applying the plan neither resets nor
+    silently removes a deadline a founder configured by hand.
     """
     key = str(plan or '').strip().lower()
     if key not in ent.PLANS:
