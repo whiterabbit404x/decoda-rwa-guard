@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,14 +71,38 @@ def _verify_evidence_metadata(chain: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execute_live_action_path() -> dict[str, Any]:
+    """Submit the LIVE proof governance action, if this tenant may execute at all.
+
+    This is a real submission to a real provider, so it goes through the same
+    plan authorization a request does: ``pilot.authorize_production_execution``
+    reads the workspace's organization and refuses a recommend-only tenant with
+    ``PILOT_EXECUTION_DISABLED``. A Pilot deployment therefore cannot produce a
+    'live execution' proof artifact — which is the point: an artifact generated
+    without a real authorized submission would be simulator output presented as
+    customer evidence.
+    """
     action = {
         'id': 'action-live-1',
+        'action_type': 'freeze_wallet',
+        'mode': 'live',
         'target_wallet': '0xddd0000000000000000000000000000000000404',
         'operator_notes': 'LIVE proof governance submission for freeze_wallet.',
     }
-    workspace_context = {'workspace_id': 'ws-live-proof-1'}
+    workspace_id = os.getenv('LIVE_PROOF_WORKSPACE_ID', '').strip() or 'ws-live-proof-1'
+    workspace_context = {'workspace_id': workspace_id}
     user = {'id': 'admin-live-proof-1'}
-    governance_response = pilot._submit_freeze_wallet_governance_action(action, workspace_context, user)
+    with pilot.pg_connection() as connection:
+        authorization = pilot.authorize_production_execution(
+            connection,
+            workspace_id=workspace_id,
+            action=action,
+            user=user,
+            source='script',
+            actor_type='service',
+        )
+        governance_response = pilot._submit_freeze_wallet_governance_action(
+            action, workspace_context, user, authorization=authorization,
+        )
     external_reference = str(governance_response.get('action_id') or '')
     _require(bool(external_reference), 'governance submission did not return action_id external reference')
     return {

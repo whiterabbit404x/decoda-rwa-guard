@@ -160,17 +160,31 @@ Pilot runs in **recommend-only** mode. Monitoring, detection, alerts, incidents,
 AI investigation, evidence, and response recommendations are all fully enabled;
 what is refused is a LIVE run against production.
 
-The lock lives in the same deterministic execution gate that Screen 8 already
-renders (`pilot.plan_execution_lock` → reason code
-`PLAN_EXECUTION_NOT_ENTITLED`), so a direct API call that never rendered the UI
-hits exactly the same refusal, and the block is written to the audit log as
-`response_action.execution_gate_locked`. It is a CAPABILITY fact, not an
-authorization verdict: a valid policy ALLOW is still reported as `AUTHORIZED`,
-and simulate / review / approve / reject stay available.
+The decision lives in `services/api/app/execution_authorization.py` — one
+module the API, the execution service, the provider boundary and any future
+worker all read, so a lock cannot mean one thing on Screen 8 and another in a
+queue consumer. `pilot.plan_execution_lock` (what Screen 8 renders, as reason
+code `PLAN_EXECUTION_NOT_ENTITLED`) delegates to it.
+
+Enforcement is layered, and the last layer is structural: both write-capable
+provider calls require an `ExecutionAuthorization` issued for that exact
+workspace and action, so a caller cannot reach a production provider by
+forgetting a check upstream. The compliance governance gateway routes, which
+submit a freeze or a pause without ever creating a response action, carry the
+same boundary. A direct API call is refused **403 `PILOT_EXECUTION_DISABLED`**
+and the attempt is recorded as `pilot_execution_blocked`.
+
+No caller identity is an input: Founder and internal-admin privileges do not
+lift it. It is a CAPABILITY fact, not an authorization verdict — a valid policy
+ALLOW is still reported as `AUTHORIZED`, and simulate / review / approve /
+reject stay available.
 
 It fails **closed** — an entitlement that could not be read is not permission to
 execute — while being absent entirely on a deployment that has not yet run
 migration 0150, where there is no organization plan to consult.
+
+Full statement, including what it does not claim:
+[PILOT_EXECUTION_BOUNDARY.md](PILOT_EXECUTION_BOUNDARY.md).
 
 ---
 
@@ -427,6 +441,10 @@ python -m pytest \
   services/api/tests/test_organization_plan_limit_wiring.py \
   services/api/tests/test_pilot_execution_lock.py \
   -q
+
+# The Pilot execution boundary end to end: API, service layer, worker/queue,
+# provider boundary, signer non-loading, audit event, and the regression sweep
+python -m pytest services/api/tests/test_pilot_execution_boundary.py -q
 
 # Founder vs customer account model: the privilege opens the console and
 # nothing else — no entitlement, limit, execution, or isolation bypass

@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  PLAN_EXECUTION_ENFORCEMENT_NOTE,
   PLAN_EXECUTION_NOT_ENTITLED,
+  executionEnforcementNote,
   executionLockPresentation,
   normalizeExecutionGate,
 } from '../app/(product)/response-actions-presentation';
@@ -66,6 +68,29 @@ test.describe('Screen 8 plan execution lock', () => {
     const lock = executionLockPresentation(normalizeExecutionGate(payload));
     expect(lock.subtitle).toContain('recommend-only mode');
     expect(lock.subtitle).not.toContain('Security lead');
+  });
+
+  test('names the backend as the control, not the disabled button', async () => {
+    const note = executionEnforcementNote(normalizeExecutionGate(planLockedGatePayload()));
+    expect(note).toBe(PLAN_EXECUTION_ENFORCEMENT_NOTE);
+    expect(note).toContain('Enforced server-side');
+    expect(note).toContain('PILOT_EXECUTION_DISABLED');
+    // And says what a Pilot evaluator CAN still do, so the note is not read as
+    // "the screen is off".
+    expect(note).toContain('simulation');
+    expect(note).toContain('evidence');
+  });
+
+  test('the enforcement note is not shown for an ordinary locked gate', async () => {
+    // A missing quorum IS actionable; telling the operator the server would
+    // refuse them anyway would be noise, not clarity.
+    const payload = authorizedGatePayload({
+      can_execute: false,
+      decision: 'LOCKED',
+      reason_codes: ['HUMAN_QUORUM_INCOMPLETE'],
+      reasons: [{ code: 'HUMAN_QUORUM_INCOMPLETE', label: 'Quorum incomplete.' }],
+    });
+    expect(executionEnforcementNote(normalizeExecutionGate(payload))).toBeNull();
   });
 
   test('an unlocked gate is unaffected', async () => {

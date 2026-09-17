@@ -1001,6 +1001,27 @@ export function executionLockPresentation(gate: ExecutionGate | null | undefined
   };
 }
 
+/** What actually enforces the Pilot boundary, said plainly to the operator.
+ *
+ *  A disabled button is not a security control, and the screen must not let
+ *  anyone believe it is. The refusal lives in the backend: POST /execute (and the
+ *  compliance governance gateway) resolve the tenant's plan server-side and
+ *  answer 403 PILOT_EXECUTION_DISABLED, so a direct API call, a stale client, or
+ *  a hand-inserted job is refused identically. */
+export const PLAN_EXECUTION_ENFORCEMENT_NOTE =
+  'Enforced server-side. The API refuses this run with PILOT_EXECUTION_DISABLED and '
+  + 'records the attempt, whether or not this control is shown. Review, simulation, '
+  + 'policy result, approval and evidence are unaffected.';
+
+/** The enforcement note when the PLAN is what closed the lock, else null.
+ *
+ *  Deliberately not shown for an ordinary locked gate: a missing quorum IS
+ *  something the operator can act on, and telling them "the server would refuse
+ *  you anyway" there would be noise rather than clarity. */
+export function executionEnforcementNote(gate: ExecutionGate | null | undefined): string | null {
+  return gate?.planExecutionLocked ? PLAN_EXECUTION_ENFORCEMENT_NOTE : null;
+}
+
 /** The most specific reason the lock is closed, preferring the human quorum
  *  (the operator's actionable next step) over advisory codes. */
 export function executionLockSubtitle(gate: ExecutionGate): string {
