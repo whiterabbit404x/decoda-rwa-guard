@@ -53,6 +53,7 @@ from services.api.app.observability import current_trace_id, increment, gauge, o
 from services.api.app import dashboard_timing
 from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
 from services.api.app import entitlements as plan_entitlement_engine
+from services.api.app import execution_authorization as execution_authz
 from services.api.app import organizations as organization_service
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
@@ -20183,7 +20184,31 @@ def _unsubmitted_governance_action(payload: dict[str, Any], *, reason_code: str,
     }
 
 
-def _submit_freeze_wallet_governance_action(action: dict[str, Any], workspace_context: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+def _submit_freeze_wallet_governance_action(
+    action: dict[str, Any],
+    workspace_context: dict[str, Any],
+    user: dict[str, Any],
+    *,
+    authorization: execution_authz.ExecutionAuthorization | None = None,
+) -> dict[str, Any]:
+    """Submit a freeze to the external governance provider.
+
+    Reaching this function MEANS a production state change is about to be
+    requested, so the plan authorization is verified here unconditionally —
+    there is no ``mode`` consulted and no benefit of the doubt. ``authorization``
+    is the grant ``authorize_production_execution`` issued for THIS workspace and
+    THIS action; a missing, mismatched, or borrowed grant is refused exactly like
+    a Pilot plan is. That is what makes the recommend-only invariant structural:
+    a future worker, queue consumer, agent, or script cannot reach this provider
+    by forgetting a check upstream.
+    """
+    execution_authz.assert_provider_call_allowed(
+        authorization,
+        workspace_id=str(workspace_context.get('workspace_id') or ''),
+        action_id=str(action.get('id') or '') or None,
+        action_type=str(action.get('action_type') or '') or None,
+        provider='governance',
+    )
     payload = {
         'action_type': 'freeze_wallet',
         'target_type': 'wallet',
@@ -20306,7 +20331,29 @@ def _build_live_execution_evidence(
 
 
 
-def _propose_safe_transaction(action_id: str, *, to: str, data: str, chain_network: str | None = None) -> str:
+def _propose_safe_transaction(
+    action_id: str,
+    *,
+    to: str,
+    data: str,
+    chain_network: str | None = None,
+    workspace_id: str | None = None,
+    authorization: execution_authz.ExecutionAuthorization | None = None,
+) -> str:
+    """Propose a multisig transaction to the Safe transaction service.
+
+    The plan authorization is verified FIRST — before the payload is assembled
+    and therefore before ``_safe_signer_key()`` is called — so a workspace that
+    may not execute against production never causes signing material to be read
+    at all. ``authorization`` is the grant issued for this exact workspace and
+    action; a missing or mismatched grant is refused.
+    """
+    execution_authz.assert_provider_call_allowed(
+        authorization,
+        workspace_id=str(workspace_id or (authorization.workspace_id if authorization else '')),
+        action_id=str(action_id or '') or None,
+        provider='safe',
+    )
     service_url = os.getenv('SAFE_TX_SERVICE_URL', '').strip().rstrip('/')
     safe_wallet = _normalize_eth_address(os.getenv('SAFE_WALLET_ADDRESS', '').strip(), field='SAFE_WALLET_ADDRESS')
     if not service_url or not safe_wallet:
@@ -21906,6 +21953,29 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             logger.warning('execute_blocked_invalid_status action_id=%s status=%s', action_id, row.get('status'))
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Action must be pending before execute.')
         action = _json_safe_value(dict(row))
+        # One tenant read per request. The lock is a property of the workspace,
+        # not of the moment, so resolving it once and reusing it keeps the
+        # layered enforcement below from issuing the same query several times.
+        _authz_cache: dict[str, Any] = {}
+        # TENANT EXECUTION BOUNDARY — the FIRST thing this command decides, before
+        # approver checks, before step-up MFA, before the deterministic gate, and
+        # long before any provider payload or signing credential is assembled.
+        #
+        # It is first because it is the only refusal here that nothing the caller
+        # does can lift: a recommend-only tenant does not become executable by
+        # collecting approvals or completing a step-up, and reporting one of those
+        # instead would send an operator to work that cannot succeed. A Founder or
+        # Admin is refused identically — the restriction belongs to the tenant.
+        if execution_authz.is_production_execution(action):
+            authorize_production_execution(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                action=action,
+                user=user,
+                request=request,
+                source=execution_authz.SOURCE_API,
+                cache=_authz_cache,
+            )
         safe_tx_hash = None
         execution_tx_hash: str | None = None
         provider_request_id: str | None = None
@@ -21988,6 +22058,7 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         _enforce_execution_gate(
             connection, action, workspace_id=workspace_context['workspace_id'],
             workspace_context=workspace_context, user=user, request=request,
+            cache=_authz_cache,
         )
         execution_state = 'simulated'
         next_status = 'executed'
@@ -22004,11 +22075,26 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
             metadata['execution_mode'] = 'simulation'
         elif capability.get('live_execution_path') == 'safe':
             _require_execution_adapter(action_id=action_id, live_execution_path='safe')
+            # SERVICE-LAYER plan authorization, re-established here rather than
+            # inherited from the gate above. The grant it returns is what the
+            # provider boundary verifies, so the Safe signer cannot be loaded for
+            # a workspace that may not execute against production.
+            _execution_grant = authorize_production_execution(
+                connection,
+                workspace_id=workspace_context['workspace_id'],
+                action=action,
+                user=user,
+                request=request,
+                source=execution_authz.SOURCE_SERVICE,
+                cache=_authz_cache,
+            )
             safe_response = _propose_safe_transaction(
                 action_id,
                 to=str(action.get('token_contract') or ''),
                 data=str(action.get('calldata') or ''),
                 chain_network=str(action.get('chain_network') or ''),
+                workspace_id=workspace_context['workspace_id'],
+                authorization=_execution_grant,
             )
             if isinstance(safe_response, str):
                 safe_response = {'safe_tx_hash': safe_response}
@@ -22049,7 +22135,20 @@ def execute_enforcement_action(action_id: str, request: Request) -> dict[str, An
         elif capability.get('live_execution_path') == 'governance':
             _require_execution_adapter(action_id=action_id, live_execution_path='governance')
             if str(action.get('action_type') or '') == 'freeze_wallet':
-                governance_response = _submit_freeze_wallet_governance_action(action, workspace_context, user)
+                # Same rule as the Safe path: the grant is re-established at the
+                # service layer and verified again inside the provider call.
+                _execution_grant = authorize_production_execution(
+                    connection,
+                    workspace_id=workspace_context['workspace_id'],
+                    action=action,
+                    user=user,
+                    request=request,
+                    source=execution_authz.SOURCE_SERVICE,
+                    cache=_authz_cache,
+                )
+                governance_response = _submit_freeze_wallet_governance_action(
+                    action, workspace_context, user, authorization=_execution_grant,
+                )
                 # Whether an EXTERNAL provider actually answered. A response that
                 # did not come from one is a simulation artifact, never a receipt:
                 # it gets no response code, no attestation, and no provider entry
@@ -24923,58 +25022,19 @@ def plan_execution_lock(
     reaches a production provider. Returns
     ``{'locked': bool, 'reason': str|None, 'plan': str|None}``.
 
+    The decision itself lives in ``execution_authorization`` — the ONE definition
+    the API, the execution service, the provider boundary and any future worker
+    all read, so a lock cannot mean one thing on Screen 8 and another in a queue
+    consumer. This function is the Screen 8 spelling of that call and keeps its
+    original contract.
+
     Fail-closed on a read error. Once the tenancy schema exists, an entitlement we
     could not read is not permission to execute — the same rule the rest of this
     gate follows for every other authorization fact. A deployment that has not
     run migration 0150 yet is NOT locked, because there is no organization plan to
     consult and the pre-existing gates all still apply.
     """
-    cache_key = f'plan_execution_lock:{workspace_id}'
-    if cache is not None and cache_key in cache:
-        return cache[cache_key]
-    result: dict[str, Any]
-    try:
-        schema_state = organization_service.tenancy_schema_state(connection)
-        if schema_state == organization_service.SCHEMA_UNKNOWN:
-            # The probe itself failed. That is not evidence the schema is absent,
-            # and an entitlement we could not read is not permission to execute.
-            result = {'locked': True, 'reason': 'entitlement_unavailable', 'plan': None}
-        elif schema_state == organization_service.SCHEMA_ABSENT:
-            result = {'locked': False, 'reason': 'tenancy_schema_not_migrated', 'plan': None}
-        else:
-            organization = organization_service.organization_for_workspace(connection, workspace_id)
-            if organization is None:
-                result = {'locked': True, 'reason': 'organization_not_linked', 'plan': None}
-            else:
-                # EFFECTIVE entitlements: an expired evaluation or a suspended
-                # tenant has execution withdrawn even where the plan row lists
-                # it, and the reason names which of the two closed the lock so
-                # the operator is not sent to upgrade a plan that is not the
-                # obstacle.
-                entitlements = plan_entitlement_engine.effective_entitlements(organization)
-                allowed = plan_entitlement_engine.has_entitlement(
-                    entitlements, plan_entitlement_engine.FEATURE_AUTOMATIC_EXECUTION,
-                )
-                lifecycle = plan_entitlement_engine.lifecycle_state(organization)
-                if allowed:
-                    reason = None
-                elif lifecycle == plan_entitlement_engine.LIFECYCLE_EXPIRED_PILOT:
-                    reason = 'evaluation_expired'
-                elif lifecycle == plan_entitlement_engine.LIFECYCLE_SUSPENDED:
-                    reason = 'organization_suspended'
-                else:
-                    reason = 'plan_recommend_only'
-                result = {
-                    'locked': not allowed,
-                    'reason': reason,
-                    'plan': plan_entitlement_engine.normalize_plan(organization.get('plan')),
-                }
-    except Exception:
-        logger.warning('plan_execution_lock_read_failed workspace_id=%s', workspace_id, exc_info=True)
-        result = {'locked': True, 'reason': 'entitlement_unavailable', 'plan': None}
-    if cache is not None:
-        cache[cache_key] = result
-    return result
+    return execution_authz.resolve_execution_lock(connection, workspace_id, cache=cache)
 
 
 #: What to SAY when the plan lock is closed, per reason. A recommend-only plan
@@ -24992,6 +25052,229 @@ PLAN_EXECUTION_LOCK_LABELS: dict[str, str] = {
         'production. Existing records remain available; contact Decoda to reactivate it.'
     ),
 }
+
+
+def _record_pilot_execution_blocked(
+    connection: Any,
+    error: execution_authz.ExecutionForbidden,
+    *,
+    workspace_id: str,
+    user: dict[str, Any] | None = None,
+    request: Request | None = None,
+    actor_type: str = 'user',
+    incident_id: str | None = None,
+) -> None:
+    """Record ONE refused production-execution attempt as a security event.
+
+    A refusal that leaves no trace is indistinguishable from an attempt that
+    never happened, which is exactly the thing an evaluation customer's auditor
+    needs to be able to tell apart. Written on every path that refuses — request,
+    service, provider boundary — so the event answers "who tried, from where,
+    against which action" without anyone having to correlate three logs.
+
+    Carries machine facts only (see ``execution_authorization.blocked_audit_metadata``):
+    no signing material, no seed phrase, no bearer token, no request body. Audit
+    writing never masks the block — a failure here is logged and swallowed, and
+    the caller still refuses.
+    """
+    action_id = error.action_id or ''
+    metadata = execution_authz.blocked_audit_metadata(
+        error,
+        actor_id=(user or {}).get('id'),
+        actor_type=actor_type,
+        request_id=(getattr(request, 'headers', {}) or {}).get('x-request-id') if request else None,
+        occurred_at=utc_now_iso(),
+    )
+    # A configured deployment signer is a DEPLOYMENT fact, never a tenant one, so
+    # a locked workspace must never reach it. Say so when one exists — its
+    # presence alongside a refused attempt is the condition worth seeing in an
+    # audit — and never name, read, or log the material itself.
+    try:
+        signer_configured = bool(os.getenv('SAFE_SIGNER_KEY', '').strip()
+                                 or os.getenv('SAFE_SIGNER_KEY_ENCRYPTED', '').strip())
+    except Exception:  # pragma: no cover - os.getenv does not raise in practice
+        signer_configured = False
+    metadata['deployment_signer_configured'] = signer_configured
+    if signer_configured:
+        logger.warning(
+            'pilot_execution_blocked_with_signer_configured workspace_id=%s action_id=%s source=%s '
+            'reason=%s (deployment signer present; it was NOT loaded)',
+            workspace_id, action_id or None, error.source, error.reason,
+        )
+    logger.warning(
+        'pilot_execution_blocked workspace_id=%s action_id=%s action_type=%s source=%s reason=%s plan=%s',
+        workspace_id, action_id or None, error.action_type, error.source, error.reason, error.plan,
+    )
+    try:
+        write_action_history(
+            connection,
+            workspace_id=workspace_id,
+            actor_type=actor_type,
+            actor_id=(user or {}).get('id'),
+            object_type='response_action',
+            object_id=action_id,
+            action_type=f'response_action.{execution_authz.AUDIT_EVENT_BLOCKED}',
+            details={
+                'display_label': 'Pilot Execution Blocked',
+                'type_label': 'Execution Gate',
+                'result_summary': 'Blocked',
+                **metadata,
+            },
+        )
+        append_incident_timeline_event(
+            connection,
+            workspace_id=workspace_id,
+            incident_id=incident_id or '',
+            event_type=f'response_action.{execution_authz.AUDIT_EVENT_BLOCKED}',
+            message=(
+                'Production execution was refused: this workspace operates in '
+                'recommend-only mode.'
+            ),
+            actor_user_id=(user or {}).get('id'),
+            metadata={'response_action_id': action_id or None, **metadata},
+        )
+        log_audit(
+            connection,
+            action=f'response_action.{execution_authz.AUDIT_EVENT_BLOCKED}',
+            entity_type='response_action',
+            entity_id=action_id,
+            request=request,
+            user_id=(user or {}).get('id'),
+            workspace_id=workspace_id,
+            metadata=metadata,
+        )
+        connection.commit()
+    except Exception:  # pragma: no cover - never let audit writing mask the block
+        logger.warning('pilot_execution_blocked_audit_failed workspace_id=%s action_id=%s',
+                       workspace_id, action_id or None)
+
+
+def authorize_production_execution(
+    connection: Any,
+    *,
+    workspace_id: str,
+    action: dict[str, Any] | None = None,
+    user: dict[str, Any] | None = None,
+    request: Request | None = None,
+    source: str = execution_authz.SOURCE_SERVICE,
+    actor_type: str = 'user',
+    cache: dict[str, Any] | None = None,
+) -> execution_authz.ExecutionAuthorization:
+    """Authorize a production run for this workspace, or refuse with 403.
+
+    The SERVICE-layer spelling of ``execution_authorization.assert_execution_allowed``:
+    it adds the audit event and the HTTP shape, and returns the grant the provider
+    boundary later verifies. Every path that can reach a write-capable provider —
+    the execute command, a worker, a queue consumer, a script — calls this and
+    carries its result down.
+
+    Raises HTTP 403 with ``code = PILOT_EXECUTION_DISABLED``. No caller identity
+    is consulted: a Founder or Admin is refused exactly like an analyst, because
+    the restriction belongs to the tenant and not to the seat.
+    """
+    try:
+        return execution_authz.assert_execution_allowed(
+            connection, workspace_id=workspace_id, action=action, source=source, cache=cache,
+        )
+    except execution_authz.ExecutionForbidden as error:
+        _record_pilot_execution_blocked(
+            connection, error, workspace_id=workspace_id, user=user,
+            request=request, actor_type=actor_type,
+            incident_id=str((action or {}).get('incident_id') or '') or None,
+        )
+        raise execution_authz.as_http_exception(error) from error
+
+
+#: Governance operations that CHANGE state — the compliance service's own
+#: freeze / unfreeze / pause / resume / allow / block writes. Submitting one is a
+#: production action in every sense the Pilot invariant means: it alters what the
+#: product will permit for a wallet or an asset, and it is a write-capable
+#: integration call. A Pilot tenant may see the resulting policy state and may
+#: recommend one of these, but may not submit one.
+#:
+#: Mirrors the compliance-service schema's own vocabulary
+#: (schemas.GovernanceActionRequest.action_type). Recorded here so a test can
+#: assert every one of them is a write; the guard itself does not consult the
+#: set, because an UNKNOWN type must be refused too — see
+#: ``governance_action_changes_state``.
+STATE_CHANGING_GOVERNANCE_ACTION_TYPES: frozenset[str] = frozenset({
+    'freeze_wallet',
+    'unfreeze_wallet',
+    'allowlist_wallet',
+    'blocklist_wallet',
+    'mark_wallet_review_required',
+    'pause_asset_transfers',
+    'resume_asset_transfers',
+})
+
+
+def governance_action_changes_state(action_type: Any) -> bool:
+    """Whether submitting this governance action would change production policy.
+
+    True for every value, including one this build does not recognise. The
+    compliance schema's vocabulary has no read verb — each entry freezes,
+    unfreezes, pauses, resumes, allows or blocks — so treating an unknown type as
+    a write is the fail-closed reading, and a type added upstream is refused for
+    Pilot by default rather than silently permitted.
+
+    The function exists so that stays true by STATEMENT rather than by accident:
+    if a read-only governance verb is ever introduced, this is the one place that
+    has to learn about it.
+    """
+    return True
+
+
+def require_governance_action_execution_allowed(
+    payload: dict[str, Any], request: Request,
+) -> None:
+    """Refuse a direct governance-action submission from a recommend-only tenant.
+
+    The compliance gateway routes accept a governance action — freeze a wallet,
+    pause an asset's transfers — WITHOUT going through the response-action
+    lifecycle, so the deterministic execution gate never sees them. That makes
+    this the second production-write entry point in the product, and it needs the
+    same tenant boundary as the first: a Pilot workspace may read the resulting
+    policy state and may recommend one of these, but may not submit one.
+
+    Fails closed, and never invents a verdict it could not read:
+
+      * a resolvable tenant without the entitlement  → 403 PILOT_EXECUTION_DISABLED
+      * a workspace that cannot be resolved          → 403 PILOT_EXECUTION_DISABLED
+      * an unauthenticated caller                    → the 401 auth already raises
+      * an unreachable database                      → that layer's own 5xx, so a
+        transient outage is reported as an outage rather than as a plan verdict
+      * a deployment without the tenancy migration   → unchanged behaviour, the
+        same exemption ``execution_authorization`` applies everywhere else
+    """
+    action_type = str((payload or {}).get('action_type') or '')
+    if not governance_action_changes_state(action_type):  # pragma: no cover - always a write today
+        return
+    with pg_connection() as connection:
+        try:
+            user = authenticate_with_connection(connection, request)
+            workspace_context = resolve_workspace(
+                connection, user['id'], (getattr(request, 'headers', {}) or {}).get('x-workspace-id'),
+            )
+            workspace_id = str(workspace_context['workspace_id'])
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning('governance_action_workspace_unresolved error=%s', exc.__class__.__name__)
+            raise execution_authz.as_http_exception(
+                execution_authz.ExecutionForbidden(
+                    reason=execution_authz.REASON_ORGANIZATION_NOT_LINKED,
+                    action_type=action_type,
+                    source=execution_authz.SOURCE_API,
+                )
+            ) from exc
+        authorize_production_execution(
+            connection,
+            workspace_id=workspace_id,
+            action={'action_type': action_type, 'mode': 'live'},
+            user=user,
+            request=request,
+            source=execution_authz.SOURCE_API,
+        )
 
 
 def _apply_plan_execution_lock(
@@ -25315,16 +25598,42 @@ def _enforce_execution_gate(
     workspace_context: dict[str, Any],
     user: dict[str, Any] | None = None,
     request: Request | None = None,
+    cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Server-side execution gate. Raises 409 when the gate is not satisfied.
+    """Server-side execution gate. Raises when the gate is not satisfied.
 
     This is the enforcement point that makes the lock on Screen 8 real: a direct
     API call that skips the UI hits exactly the same deterministic evaluation. A
     blocked attempt is recorded as its own audit event, so an execution that was
     refused can never be mistaken for one that never happened.
+
+    Two refusals, deliberately distinct:
+
+      403 ``PILOT_EXECUTION_DISABLED``  the TENANT may not execute against
+          production at all. Nothing the operator does — collecting approvals,
+          re-evaluating policy, waiting — changes it, so it is not a 409 conflict
+          and it is raised BEFORE any other gate condition is reported. It is
+          also raised before any signing credential could be loaded.
+      409 ``EXECUTION_GATE_LOCKED``     this particular run is not authorized YET
+          (quorum, policy, expiry, adapter). The remedy is in the operator's
+          hands.
     """
+    # The plan lock first, and on its own code. A recommend-only tenant is not a
+    # locked gate to be worked through; reporting it as one would send an
+    # operator to collect approvals that can never unlock anything.
+    if execution_authz.is_production_execution(action):
+        authorize_production_execution(
+            connection,
+            workspace_id=workspace_id,
+            action=action,
+            user=user,
+            request=request,
+            source=execution_authz.SOURCE_API,
+            cache=cache,
+        )
     gate = response_action_execution_gate(
         connection, action, workspace_id=workspace_id, workspace_context=workspace_context,
+        cache=cache,
     )
     blocking = [
         code for code in (gate.get('reason_codes') or [])

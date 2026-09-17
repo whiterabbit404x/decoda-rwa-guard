@@ -26,6 +26,7 @@ import {
   compareHistoryRecency,
   completeMfaHref,
   deriveRowApproval,
+  executionEnforcementNote,
   executionLockPresentation,
   formatExactTimestamp,
   formatRelativeTime,
@@ -1906,6 +1907,17 @@ function ExecutionLockPanel({
       <p style={{ margin: '0.2rem 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
         {lock.subtitle}
       </p>
+      {/* WHAT ENFORCES IT. Only for the plan lock, and only because the operator
+          must not read a disabled button as the control: the refusal is the
+          backend's, and it answers a direct API call the same way. */}
+      {executionEnforcementNote(gate) ? (
+        <p
+          data-execution-enforcement="server"
+          style={{ margin: '0.35rem 0 0', fontSize: '0.73rem', color: 'var(--text-secondary)' }}
+        >
+          {executionEnforcementNote(gate)}
+        </p>
+      ) : null}
       {/* THE POLICY EVALUATION RECORD, in Screen 11's own field names.
           Screen 8 renders the governance engine's decision object verbatim; it
           has no branch that constructs one. A field the backend did not send

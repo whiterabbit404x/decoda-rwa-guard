@@ -86,6 +86,7 @@ from services.api.app.pilot import (
     pilot_mode,
     pg_connection,
     resolve_workspace,
+    require_governance_action_execution_allowed,
     runtime_environment_identity,
     run_startup_migrations_if_enabled,
     validate_runtime_configuration,
@@ -2679,9 +2680,14 @@ def compliance_governance_action(action_id: str, request: Request) -> dict[str, 
     return {'detail': f'Unknown action_id: {action_id}', 'source': 'fallback', 'degraded': True}
 
 
-@app.post('/compliance/governance/actions', summary='Feature 3 governance action create', description='Creates a governance action via the compliance service or records a deterministic fallback action when the service is unavailable.')
+@app.post('/compliance/governance/actions', summary='Feature 3 governance action create', description='Creates a governance action via the compliance service or records a deterministic fallback action when the service is unavailable. Refused for a recommend-only tenant.')
 def compliance_create_governance_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     authenticate_request(request)
+    # A governance action freezes, pauses or blocks — a production state change
+    # that never passes through the response-action execution gate. The tenant
+    # boundary is applied here, before the compliance service is contacted, so
+    # this gateway cannot be the way around Recommend-only.
+    require_governance_action_execution_allowed(payload, request)
     response = proxy_compliance('governance/actions', payload)
     return response or fallback_governance_action(payload)
 
@@ -6233,6 +6239,10 @@ def pilot_compliance_screen_residency(payload: dict[str, Any], request: Request)
 
 @app.post('/pilot/compliance/governance/actions', summary='Create and persist a governance action for live mode')
 def pilot_compliance_governance_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Same boundary as the gateway route above, and for the same reason: this
+    # submits the action before any workspace record is written, so the refusal
+    # has to come first or the write reaches the provider regardless.
+    require_governance_action_execution_allowed(payload, request)
     response = proxy_compliance('governance/actions', payload) or fallback_governance_action(payload)
     with pg_connection() as connection:
         user = authenticate_with_connection(connection, request)

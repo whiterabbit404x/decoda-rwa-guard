@@ -95,6 +95,12 @@ def test_feature3_live_gateway_shapes(client: TestClient, api_main, sample_paylo
     }
 
     monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
+    # These are gateway SHAPE tests and carry no database, so the tenant
+    # execution boundary on POST /compliance/governance/actions is stubbed here
+    # exactly as authentication is. The boundary's own behaviour — a Pilot tenant
+    # refused 403 PILOT_EXECUTION_DISABLED, an entitled one allowed through — is
+    # asserted in test_pilot_execution_boundary.py.
+    monkeypatch.setattr(api_main, 'require_governance_action_execution_allowed', lambda *_a, **_k: None)
     monkeypatch.setattr(api_main, 'fetch_compliance_dashboard', lambda: live_dashboard)
     monkeypatch.setattr(api_main, 'proxy_compliance', lambda path, body: live_action if path == 'governance/actions' else live_residency if path == 'screen/residency' else live_transfer)
     monkeypatch.setattr(api_main, 'fetch_compliance_policy_state', lambda: {'allowlisted_wallets': [], 'blocklisted_wallets': []})
@@ -112,6 +118,8 @@ def test_feature3_live_gateway_shapes(client: TestClient, api_main, sample_paylo
 
 def test_feature3_gateway_fallback_works_when_compliance_service_is_unavailable(client: TestClient, api_main, sample_payloads: dict[str, dict[str, Any]], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_main, 'authenticate_request', lambda r: {'id': 'test-user'})
+    # Stubbed for the same reason as above; see test_pilot_execution_boundary.py.
+    monkeypatch.setattr(api_main, 'require_governance_action_execution_allowed', lambda *_a, **_k: None)
     monkeypatch.setattr(api_main, 'fetch_compliance_dashboard', lambda: None)
     monkeypatch.setattr(api_main, 'proxy_compliance', lambda path, body: None)
     monkeypatch.setattr(api_main, 'fetch_compliance_policy_state', lambda: None)

@@ -31,6 +31,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from services.api.app import execution_authorization as execution_authz
 from services.api.app import pilot
 from services.api.app.domains.governance_policy import config as gpc
 from services.api.app.domains.governance_policy import enforcement
@@ -43,6 +44,22 @@ from services.api.app.domains.response_gate.engine import (
 
 WORKSPACE = 'ws-1'
 ACTION_ID = 'b2222222-2222-4222-8222-222222222222'
+
+
+def _execution_grant() -> execution_authz.ExecutionAuthorization:
+    """The plan authorization a provider call now requires.
+
+    ``_submit_freeze_wallet_governance_action`` verifies that the tenant was
+    authorized for THIS workspace and THIS action before it contacts anything
+    (see services/api/app/execution_authorization.py). The tests below exercise
+    what a provider RECEIPT may claim, not who may execute, so they hand it a
+    grant for the entitled case and let test_pilot_execution_boundary.py own the
+    refusal cases.
+    """
+    return execution_authz.ExecutionAuthorization(
+        workspace_id=WORKSPACE, plan='enterprise',
+        source=execution_authz.SOURCE_SERVICE, action_id=ACTION_ID,
+    )
 INCIDENT_ID = 'c537b73f-1976-4a44-b589-946194794399'
 ALERT_ID = 'a1111111-1111-4111-8111-111111111111'
 DETECTION_ID = 'd3333333-3333-4333-8333-333333333333'
@@ -1133,6 +1150,7 @@ def test_13_a_an_unconfigured_governance_adapter_is_not_a_200_receipt(monkeypatc
     monkeypatch.delenv('COMPLIANCE_SERVICE_URL', raising=False)
     result = pilot._submit_freeze_wallet_governance_action(
         {'id': ACTION_ID, 'target_wallet': '0xabc'}, {'workspace_id': WORKSPACE}, {'id': 'operator-1'},
+        authorization=_execution_grant(),
     )
     assert result['provider_contacted'] is False
     assert result['receipt_type'] == 'simulation'
@@ -1155,6 +1173,7 @@ def test_13_b_a_failed_provider_call_is_not_a_200_receipt(monkeypatch):
     monkeypatch.setattr(pilot, 'urlopen', _boom)
     result = pilot._submit_freeze_wallet_governance_action(
         {'id': ACTION_ID, 'target_wallet': '0xabc'}, {'workspace_id': WORKSPACE}, {'id': 'operator-1'},
+        authorization=_execution_grant(),
     )
     assert result['error_code'] == pilot.GOVERNANCE_PROVIDER_UNAVAILABLE
     assert result['provider_contacted'] is False
