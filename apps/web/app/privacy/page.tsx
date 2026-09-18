@@ -73,9 +73,11 @@ export default function PrivacyPage() {
         The schedule above removes your operational security records. It does not remove your workspace configuration:
         the asset registry, monitoring targets and monitoring configuration, integrations and their stored credentials,
         API keys, webhooks, notification destinations, team membership and invitations, governance policies, and
-        workspace settings remain until the account is closed. Closing the account removes them; request it from
-        Settings → Security, or contact <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>. We
-        list this rather than implying the schedule deletes everything, because it does not.
+        workspace settings are not on any automatic schedule. Removing them means deleting the workspace itself, which
+        Decoda does on request — contact <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>.
+        Deleting your individual user account (Account settings) anonymizes your own identity and revokes your sessions;
+        it does not delete the workspace. We list this rather than implying the schedule deletes everything, because it
+        does not.
       </p>
 
       <h2>Requesting deletion earlier</h2>
