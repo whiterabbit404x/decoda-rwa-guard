@@ -46,6 +46,27 @@ Adding a KMS/HSM provider later means implementing :class:`EvidenceManifestSigne
 with ``provider='aws_kms'`` (or similar), ``algorithm='RSASSA-PSS-SHA256'`` /
 ``'ECDSA-P256-SHA256'``, ``hardware_backed=True`` and a public-key reference —
 without touching manifest construction, verification flow or the UI contract.
+
+Public-key authenticity (Ed25519)
+---------------------------------
+Independent of hardware custody — and the reason this module reports two
+separate facts — a seal may ALSO carry an Ed25519 signature produced by
+:mod:`services.api.app.evidence_ed25519`. That signature is what a customer,
+auditor or regulator can check offline with nothing but Decoda's PUBLIC
+verification key, using ``tools/decoda_evidence_verifier``.
+
+The distinction this module refuses to blur:
+
+``signature verified``
+    Some seal on this package re-derived correctly against a key THIS
+    deployment holds. For an HMAC seal that key is the shared secret, so the
+    check proves the package is unaltered — to us.
+``authenticity independently verifiable``
+    A third party holding only PUBLIC key material can prove the manifest was
+    signed by the holder of Decoda's private signing key. ONLY a verified
+    Ed25519 signature establishes this. It is reported in the ``authenticity``
+    block of :meth:`EvidenceManifestSigner.verify`, and an HMAC-only package
+    never sets it however cleanly its MAC verifies.
 """
 from __future__ import annotations
 
@@ -62,12 +83,21 @@ from services.api.app.managed_keys import (
 
 _log = logging.getLogger(__name__)
 
-#: The only signature algorithm this build can produce or verify.
+#: The shared-secret algorithm every seal has always carried.
 SIGNATURE_ALGORITHM = 'HMAC-SHA256'
 
 #: Assurance classes. These are what the product is allowed to CLAIM.
 ASSURANCE_SHARED_SECRET_HMAC = 'shared_secret_hmac'
+#: An asymmetric signature a third party can verify with PUBLIC key material
+#: alone. This is the only assurance class that licenses the product to say
+#: authenticity is independently verifiable.
+ASSURANCE_PUBLIC_KEY_SIGNATURE = 'public_key_signature'
 ASSURANCE_HARDWARE_BACKED = 'hardware_backed_signature'
+
+#: How a seal's authenticity can be established, and by whom.
+AUTHENTICITY_PUBLIC_KEY = 'public_key'
+AUTHENTICITY_SHARED_SECRET = 'shared_secret'
+AUTHENTICITY_NONE = 'none'
 
 #: Where the private/secret key material lives while signing happens.
 CUSTODY_APPLICATION_MEMORY = 'application_memory'
@@ -82,6 +112,7 @@ SIGNATURE_ABSENT = 'absent'
 
 _HUMAN_ASSURANCE_LABELS = {
     ASSURANCE_SHARED_SECRET_HMAC: 'Shared-secret HMAC (software)',
+    ASSURANCE_PUBLIC_KEY_SIGNATURE: 'Ed25519 public-key signature (software key)',
     ASSURANCE_HARDWARE_BACKED: 'Hardware-backed signature',
 }
 
@@ -132,6 +163,13 @@ class SignerIdentity:
     production_grade: bool
     #: Customer-safe caveat, or None. Rendered verbatim by the UI.
     warning: str | None = None
+    #: True ONLY when this signer additionally produces an asymmetric signature
+    #: a third party can verify with PUBLIC key material alone. This is the one
+    #: flag that licenses the phrase "independently verifiable authenticity".
+    public_key_signing: bool = False
+    #: The public-key algorithm and key id for new signatures, when available.
+    public_key_algorithm: str | None = None
+    public_key_id: str | None = None
 
     @property
     def assurance_label(self) -> str:
@@ -149,6 +187,9 @@ class SignerIdentity:
             'key_custody': self.key_custody,
             'production_grade': self.production_grade,
             'warning': self.warning,
+            'public_key_signing': self.public_key_signing,
+            'public_key_algorithm': self.public_key_algorithm,
+            'public_key_id': self.public_key_id,
         }
 
 
@@ -202,6 +243,20 @@ class EvidenceManifestSigner:
         Returns ``{'status', 'valid', 'reason', 'key_id', 'provider', 'algorithm'}``
         where ``status`` is one of ``valid`` / ``invalid`` / ``unavailable`` /
         ``absent`` and ``valid`` is ``True`` only for ``valid``.
+
+        A schema-2 seal carries BOTH an HMAC and an Ed25519 signature. Both are
+        checked and the strongest available truth is reported, but never
+        optimistically: if EITHER layer is present and does not verify, the whole
+        seal is ``invalid``. A public-key signature that verifies is enough to
+        reach ``valid`` even when the HMAC key has rotated out of reach, because
+        it is the strictly stronger proof.
+
+        The result additionally carries an ``authenticity`` block stating WHO can
+        establish authenticity from this seal. Only a verified Ed25519 signature
+        sets ``independently_verifiable``: an HMAC seal is checkable here solely
+        because Decoda holds the secret, and a party who holds that secret could
+        also forge the seal — so it can never establish authenticity to a third
+        party, however cleanly it verifies.
         """
         base = {
             'key_id': str((seal or {}).get('key_id') or '') or None,
@@ -209,13 +264,28 @@ class EvidenceManifestSigner:
             'provider': str((seal or {}).get('key_provider') or '') or None,
             'algorithm': str((seal or {}).get('signature_algorithm') or '') or None,
         }
+        public = _verify_public_key_signature(manifest, seal)
+        base['authenticity'] = _authenticity_block(public)
+        base['public_key_signature'] = public
+
         if not isinstance(seal, dict) or not str(seal.get('signature') or '').strip():
             return {**base, 'status': SIGNATURE_ABSENT, 'valid': False, 'reason': 'no_signature_in_package'}
+
+        # A tampered or wrong-key public signature is tampering evidence in its
+        # own right and is reported as such regardless of the HMAC outcome.
+        if public['status'] == SIGNATURE_INVALID:
+            return {
+                **base, 'status': SIGNATURE_INVALID, 'valid': False,
+                'reason': public.get('reason') or 'public_key_signature_mismatch',
+            }
 
         declared_algorithm = str(seal.get('signature_algorithm') or '').strip()
         if declared_algorithm and declared_algorithm != SIGNATURE_ALGORITHM:
             # A seal produced by an algorithm this build cannot check is
-            # UNVERIFIABLE, never "invalid" (which would imply tampering).
+            # UNVERIFIABLE, never "invalid" (which would imply tampering) —
+            # unless the public-key layer already proved it genuine.
+            if public['status'] == SIGNATURE_VALID:
+                return {**base, 'status': SIGNATURE_VALID, 'valid': True, 'reason': None}
             return {
                 **base, 'status': SIGNATURE_UNAVAILABLE, 'valid': False,
                 'reason': 'unsupported_signature_algorithm',
@@ -223,6 +293,8 @@ class EvidenceManifestSigner:
 
         secret = _verification_key(version=str(seal.get('key_version') or '') or None)
         if secret is None:
+            if public['status'] == SIGNATURE_VALID:
+                return {**base, 'status': SIGNATURE_VALID, 'valid': True, 'reason': None}
             return {
                 **base, 'status': SIGNATURE_UNAVAILABLE, 'valid': False,
                 'reason': 'verification_key_unavailable',
@@ -233,6 +305,123 @@ class EvidenceManifestSigner:
         if hmac.compare_digest(expected.encode(), actual.encode()):
             return {**base, 'status': SIGNATURE_VALID, 'valid': True, 'reason': None}
         return {**base, 'status': SIGNATURE_INVALID, 'valid': False, 'reason': 'signature_mismatch'}
+
+
+def public_key_signatures(seal: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The Ed25519 signature documents a seal carries, if any.
+
+    Schema-1 (legacy, HMAC-only) seals have none, which is a truthful fact about
+    the package rather than an error. Never raises on a malformed seal.
+    """
+    if not isinstance(seal, dict):
+        return []
+    entries = seal.get('signatures')
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _verify_public_key_signature(
+    manifest: dict[str, Any],
+    seal: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Check the seal's Ed25519 signature against the PUBLISHED public key.
+
+    Uses public key material only — this path cannot sign, and a compromise of
+    it cannot forge evidence.
+
+    ``absent``      the seal carries no public-key signature (every legacy
+                    package, and any deployment with no Ed25519 key provisioned).
+    ``unavailable`` a signature is present but this deployment does not publish
+                    the key it names, so it could not be checked here. That is
+                    NOT tampering, and an offline auditor holding the right
+                    keyring may still verify it.
+    ``invalid``     the signature is present and does NOT verify.
+    ``valid``       the signature verifies against the published public key.
+
+    The digest it verifies against is RECOMPUTED from the manifest body, never
+    read from the seal's own ``signed_manifest_sha256`` — a seal that names its
+    own digest could otherwise authenticate a manifest it does not describe.
+    """
+    entries = public_key_signatures(seal)
+    if not entries:
+        return {'status': SIGNATURE_ABSENT, 'valid': False, 'reason': 'no_public_key_signature',
+                'algorithm': None, 'key_id': None}
+    document = entries[0]
+    key_id = str(document.get('key_id') or '') or None
+    algorithm = str(document.get('algorithm') or '') or None
+    computed_digest = evidence_signing._sha256_hex(
+        evidence_signing.canonical_json({k: v for k, v in manifest.items() if k != 'manifest_sha256'})
+    )
+    try:
+        from services.api.app import evidence_ed25519
+
+        if algorithm != evidence_ed25519.ALGORITHM:
+            return {'status': SIGNATURE_UNAVAILABLE, 'valid': False,
+                    'reason': 'unsupported_public_key_algorithm',
+                    'algorithm': algorithm, 'key_id': key_id}
+        public_key = evidence_ed25519.public_key_for(key_id or '')
+        if not public_key:
+            return {'status': SIGNATURE_UNAVAILABLE, 'valid': False,
+                    'reason': 'public_key_not_published', 'algorithm': algorithm, 'key_id': key_id}
+        ok = evidence_ed25519.verify_signature_document(document, computed_digest, public_key)
+    except Exception:  # noqa: BLE001 - a verification-side fault is never "tampered"
+        _log.exception('evidence_public_key_verification_error key_id=%s', key_id)
+        return {'status': SIGNATURE_UNAVAILABLE, 'valid': False,
+                'reason': 'public_key_verification_error', 'algorithm': algorithm, 'key_id': key_id}
+    if ok:
+        return {'status': SIGNATURE_VALID, 'valid': True, 'reason': None,
+                'algorithm': algorithm, 'key_id': key_id}
+    return {'status': SIGNATURE_INVALID, 'valid': False, 'reason': 'public_key_signature_mismatch',
+            'algorithm': algorithm, 'key_id': key_id}
+
+
+def _authenticity_block(public: dict[str, Any]) -> dict[str, Any]:
+    """Who can establish authenticity from this seal, stated without euphemism.
+
+    ``independently_verifiable`` is True ONLY for a verified public-key
+    signature. A valid HMAC never sets it: Decoda holds that secret, so Decoda
+    could have produced any seal it checks, and a customer cannot be given the
+    secret without being given the ability to forge.
+    """
+    if public['status'] == SIGNATURE_VALID:
+        return {
+            'method': AUTHENTICITY_PUBLIC_KEY,
+            'status': 'verified',
+            'independently_verifiable': True,
+            'algorithm': public.get('algorithm'),
+            'key_id': public.get('key_id'),
+            'detail': 'Signed with Decoda\'s Ed25519 evidence key and verifiable offline with the published public key.',
+        }
+    if public['status'] == SIGNATURE_INVALID:
+        return {
+            'method': AUTHENTICITY_PUBLIC_KEY,
+            'status': 'failed',
+            'independently_verifiable': False,
+            'algorithm': public.get('algorithm'),
+            'key_id': public.get('key_id'),
+            'detail': 'The public-key signature on this package does not verify.',
+        }
+    if public['status'] == SIGNATURE_UNAVAILABLE:
+        return {
+            'method': AUTHENTICITY_PUBLIC_KEY,
+            'status': 'unavailable',
+            'independently_verifiable': False,
+            'algorithm': public.get('algorithm'),
+            'key_id': public.get('key_id'),
+            'detail': 'This package carries a public-key signature that could not be checked here.',
+        }
+    return {
+        'method': AUTHENTICITY_SHARED_SECRET,
+        'status': 'unavailable',
+        'independently_verifiable': False,
+        'algorithm': SIGNATURE_ALGORITHM,
+        'key_id': None,
+        'detail': (
+            'This package carries only a shared-secret HMAC seal. It is tamper-evident to Decoda, '
+            'but its authenticity cannot be independently verified by a third party.'
+        ),
+    }
 
 
 def _identity_from_environment() -> SignerIdentity:
@@ -257,19 +446,38 @@ def _identity_from_environment() -> SignerIdentity:
     elif not strong:
         warning = str(key_status.get('error') or 'A known-weak evidence signing key is configured.')
 
+    # Public-key signing is reported from what is actually PROVISIONED, never
+    # from the fact that this build supports it.
+    public_key_signing = False
+    public_key_algorithm: str | None = None
+    public_key_id: str | None = None
+    try:
+        from services.api.app import evidence_ed25519
+
+        if evidence_ed25519.signing_available():
+            public_key_signing = True
+            public_key_algorithm = evidence_ed25519.ALGORITHM
+            public_key_id = evidence_ed25519.signing_key_id()
+    except Exception:  # noqa: BLE001 - an unusable key is reported as "not available"
+        _log.warning('evidence_ed25519_identity_unavailable')
+
     return SignerIdentity(
         provider=provider,
         algorithm=SIGNATURE_ALGORITHM,
         key_id=key_id,
         key_version=key_version,
-        # Every provider this build can construct computes the MAC in-process
-        # with fetched key material. None of them is hardware-custodied, so this
-        # is False unconditionally — the UI must never print "HSM" from it.
+        # Signing happens in-process with fetched key material for BOTH the HMAC
+        # seal and the Ed25519 signature. Ed25519 makes authenticity
+        # independently verifiable; it does not make the key hardware-custodied,
+        # so this stays False and the UI must never print "HSM" from it.
         hardware_backed=False,
-        assurance=ASSURANCE_SHARED_SECRET_HMAC,
+        assurance=ASSURANCE_PUBLIC_KEY_SIGNATURE if public_key_signing else ASSURANCE_SHARED_SECRET_HMAC,
         key_custody=CUSTODY_APPLICATION_MEMORY,
         production_grade=configured and strong,
         warning=warning,
+        public_key_signing=public_key_signing,
+        public_key_algorithm=public_key_algorithm,
+        public_key_id=public_key_id,
     )
 
 
@@ -294,4 +502,7 @@ def signer_status() -> dict[str, Any]:
         # Explicit so no caller has to infer it from `hardware_backed`.
         'hsm_backed': False,
         'kms_backed': False,
+        # Whether NEW packages can be given a signature a third party can verify
+        # with public key material alone.
+        'public_key_signing_available': identity.public_key_signing,
     }

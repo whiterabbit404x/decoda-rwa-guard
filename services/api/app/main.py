@@ -5894,6 +5894,41 @@ def exports_verify(export_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: verify_evidence_package(export_id, request))
 
 
+@app.get(
+    '/.well-known/decoda-evidence-keys.json',
+    summary='Public Ed25519 verification keys for evidence packages',
+    description=(
+        'Public key material only. Anyone can fetch this to verify a Decoda evidence package '
+        'offline. Contains no private signing material and requires no authentication.'
+    ),
+)
+def well_known_evidence_keys() -> Response:
+    """Publish the PUBLIC evidence verification keyring.
+
+    Deliberately unauthenticated: a verification key that only customers with a
+    login can fetch is not a public key, and "independently verifiable" would be
+    a claim we could not keep. Nothing here is secret — the private signing seed
+    is never read on this path.
+
+    Offline verification does NOT require this endpoint. An auditor pins the
+    keyring once and verifies forever after with no network at all; this is
+    simply where the pin comes from. The response is cacheable for that reason,
+    and a retired key is never removed, so evidence signed years ago stays
+    verifiable.
+    """
+    from services.api.app import evidence_ed25519
+
+    keyring = evidence_ed25519.public_keyring()
+    return Response(
+        content=json.dumps(keyring, indent=2, sort_keys=True),
+        media_type='application/json',
+        headers={
+            'Cache-Control': 'public, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+        },
+    )
+
+
 @app.get('/metrics', include_in_schema=False)
 def metrics() -> Response:
     subscriber_snapshot = alert_stream.subscriber_health()

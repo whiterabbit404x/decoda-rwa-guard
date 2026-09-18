@@ -63,6 +63,11 @@ def _purpose_env_prefix(purpose: str) -> str:
         'AUTH': 'AUTH_TOKEN',
         'ENCRYPTION': 'SECRET_ENCRYPTION',
         'EVIDENCE_SIGNING': 'EVIDENCE_SIGNING',
+        # Ed25519 evidence signing seed. Deliberately a SEPARATE purpose from the
+        # HMAC key: they have different algorithms, different rotation schedules
+        # and different blast radii, and a public-key signing seed must never be
+        # sourced from the same material as a shared secret.
+        'EVIDENCE_SIGNING_ED25519': 'EVIDENCE_SIGNING_ED25519',
     }
     return aliases.get(normalized, normalized)
 
@@ -131,6 +136,11 @@ def _load_key_cached(purpose: str, version: str | None) -> ManagedKey:
         'AUTH': ('AUTH_TOKEN_SECRET', 'JWT_SECRET'),
         'ENCRYPTION': ('SECRET_ENCRYPTION_KEY',),
         'EVIDENCE_SIGNING': ('EXPORT_SIGNING_SECRET', 'EVIDENCE_SIGNING_SECRET'),
+        # Development/self-hosted fallback for the Ed25519 seed (base64 of 32
+        # bytes). Production should provision it through a managed provider;
+        # there is no built-in default keypair, so an unset value simply means
+        # "no public-key signing", never a hard-coded forgeable key.
+        'EVIDENCE_SIGNING_ED25519': ('EVIDENCE_SIGNING_ED25519_PRIVATE_KEY',),
     }
     raw = next((os.getenv(name, '').strip() for name in legacy_names.get(purpose.upper(), ()) if os.getenv(name, '').strip()), '')
     if not raw:
@@ -163,7 +173,7 @@ def rotate_managed_key(purpose: str) -> ManagedKey:
     previous version for verification/decryption until its grace or retention period ends.
     """
     normalized = purpose.strip().upper()
-    if normalized not in {'AUTH', 'ENCRYPTION', 'EVIDENCE_SIGNING', 'PROVIDER_CREDENTIALS'}:
+    if normalized not in {'AUTH', 'ENCRYPTION', 'EVIDENCE_SIGNING', 'EVIDENCE_SIGNING_ED25519', 'PROVIDER_CREDENTIALS'}:
         raise RuntimeError(f'Unsupported managed key rotation purpose: {normalized}')
     provider = managed_key_provider()
     if provider not in {'aws_secrets_manager', 'aws-secrets-manager'}:

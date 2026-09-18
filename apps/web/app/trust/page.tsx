@@ -20,8 +20,16 @@ const principles = [
   },
   {
     icon: 'evidence',
-    title: 'Evidence integrity',
-    body: 'Evidence packages carry stable UUIDs assigned at generation time. Once exported, the record cannot be retroactively altered. Package IDs are logged in the immutable audit trail.',
+    title: 'Independently verifiable evidence',
+    // Truthfulness: "tamper-evident", not "immutable". Nothing here physically
+    // prevents a file being changed — what the package guarantees is that a
+    // change is DETECTABLE by anyone, without our help. And "independently
+    // verifiable" is stated only because a public-key signature makes it true:
+    // it was not claimable while the only seal was a shared-secret HMAC.
+    body: 'Evidence exports contain a SHA-256 hash for each file, a canonical manifest hash and a Merkle integrity root, '
+      + 'so any change to a packaged artifact is detectable. New evidence packages are signed with Decoda\'s evidence-signing '
+      + 'key and can be verified offline using the published public verification key. Verification does not require access to '
+      + 'Decoda\'s application, API, database or any Decoda secret. Packages carry stable UUIDs and an audit-chain anchor.',
   },
   {
     icon: 'auditlog',

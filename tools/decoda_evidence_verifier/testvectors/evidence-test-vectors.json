@@ -1,0 +1,250 @@
+{
+  "canonical_json": {
+    "cases": [
+      {
+        "bytes_utf8": "{}",
+        "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "value": {}
+      },
+      {
+        "bytes_utf8": "{\"a\":2,\"b\":1}",
+        "sha256": "d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772",
+        "value": {
+          "a": 2,
+          "b": 1
+        }
+      },
+      {
+        "bytes_utf8": "{\"unicode\":\"caf\\u00e9 \\u2014 M\\u00fcnchen\"}",
+        "sha256": "b882cbf672b6c2900150b1d3f4d10fd17a67a9d666b0bd63859cc93070d5ae6c",
+        "value": {
+          "unicode": "café — München"
+        }
+      },
+      {
+        "bytes_utf8": "[1,2.5,true,false,null]",
+        "sha256": "86ce1d8411dee238e097aa5c5623db5b3aff0bd8bdee95bb5cccbf20214ec1a8",
+        "value": [
+          1,
+          2.5,
+          true,
+          false,
+          null
+        ]
+      },
+      {
+        "bytes_utf8": "{\"nested\":{\"a\":{},\"z\":[{\"y\":1}]}}",
+        "sha256": "a711c456a95aeb7b023ad7195757ed9e6404b80d738d9fee7c2fe17317b149c0",
+        "value": {
+          "nested": {
+            "a": {},
+            "z": [
+              {
+                "y": 1
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "rules": "json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('utf-8')"
+  },
+  "description": "Cross-implementation test vectors for Decoda evidence packages. Asserted by the backend generation tests, the backend verification tests and the standalone offline verifier tests, so all three provably agree byte for byte.",
+  "file_entries": [
+    {
+      "domain": "PACKAGE",
+      "media_type": "application/json",
+      "path": "alerts.json",
+      "sha256": "28381b5c6f8bbb7dd271a0fa6a5971d7a3e2f1f7b31c09647f587d7fdb6e8399",
+      "size_bytes": 75,
+      "source_record_type": "evidence"
+    },
+    {
+      "domain": "PACKAGE",
+      "media_type": "application/json",
+      "path": "audit_log.json",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "size_bytes": 2,
+      "source_record_type": "evidence"
+    },
+    {
+      "domain": "PACKAGE",
+      "media_type": "application/json",
+      "path": "incidents.json",
+      "sha256": "7e7837d3f309b2190a30d87bab6f0cad38ea29416f70eb438ee3aa3c5e5c1196",
+      "size_bytes": 60,
+      "source_record_type": "evidence"
+    },
+    {
+      "domain": "PACKAGE",
+      "media_type": "application/json",
+      "path": "summary.json",
+      "sha256": "4eda4c5934d2a2e2e4397303d830c5818371de18e2c2b09a45f7ca1d583fc354",
+      "size_bytes": 60,
+      "source_record_type": "evidence"
+    }
+  ],
+  "file_values": {
+    "alerts.json": [
+      {
+        "id": "alert-1",
+        "note": "café — München",
+        "severity": "high"
+      }
+    ],
+    "audit_log.json": [],
+    "incidents.json": [
+      {
+        "id": "inc-1",
+        "nested": {
+          "a": 1,
+          "b": 2
+        },
+        "status": "contained"
+      }
+    ],
+    "summary.json": {
+      "count": 3,
+      "export_id": "pkg-vector-1",
+      "incident_id": "inc-1"
+    }
+  },
+  "manifest": {
+    "artifact_count": 4,
+    "export_id": "pkg-vector-1",
+    "export_type": "proof_bundle",
+    "files": [
+      {
+        "domain": "PACKAGE",
+        "media_type": "application/json",
+        "path": "alerts.json",
+        "sha256": "28381b5c6f8bbb7dd271a0fa6a5971d7a3e2f1f7b31c09647f587d7fdb6e8399",
+        "size_bytes": 75,
+        "source_record_type": "evidence"
+      },
+      {
+        "domain": "PACKAGE",
+        "media_type": "application/json",
+        "path": "audit_log.json",
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "size_bytes": 2,
+        "source_record_type": "evidence"
+      },
+      {
+        "domain": "PACKAGE",
+        "media_type": "application/json",
+        "path": "incidents.json",
+        "sha256": "7e7837d3f309b2190a30d87bab6f0cad38ea29416f70eb438ee3aa3c5e5c1196",
+        "size_bytes": 60,
+        "source_record_type": "evidence"
+      },
+      {
+        "domain": "PACKAGE",
+        "media_type": "application/json",
+        "path": "summary.json",
+        "sha256": "4eda4c5934d2a2e2e4397303d830c5818371de18e2c2b09a45f7ca1d583fc354",
+        "size_bytes": 60,
+        "source_record_type": "evidence"
+      }
+    ],
+    "generated_at": "2026-01-01T00:00:00+00:00",
+    "generated_by_user_id": "user-vector-1",
+    "hash_algorithm": "SHA-256",
+    "manifest_version": "1.0",
+    "merkle_root": "5611bda9a0aa0d785c4aa47c456381de0e0b5c70658ccc6910e10bf20a1457dd",
+    "merkle_scheme": "decoda-merkle-v1",
+    "policy_snapshot": {
+      "present": false,
+      "reason": "No policy evaluation was recorded for this incident."
+    },
+    "previous_audit_anchor_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "required_artifacts": [
+      "alerts.json",
+      "audit_log.json",
+      "incidents.json",
+      "summary.json"
+    ],
+    "schema_version": "2.0",
+    "source_resource_id": "inc-1",
+    "source_resource_type": "incident",
+    "storage_backend": "local",
+    "workspace_id": "ws-vector-1"
+  },
+  "manifest_canonical_utf8": "{\"artifact_count\":4,\"export_id\":\"pkg-vector-1\",\"export_type\":\"proof_bundle\",\"files\":[{\"domain\":\"PACKAGE\",\"media_type\":\"application/json\",\"path\":\"alerts.json\",\"sha256\":\"28381b5c6f8bbb7dd271a0fa6a5971d7a3e2f1f7b31c09647f587d7fdb6e8399\",\"size_bytes\":75,\"source_record_type\":\"evidence\"},{\"domain\":\"PACKAGE\",\"media_type\":\"application/json\",\"path\":\"audit_log.json\",\"sha256\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"size_bytes\":2,\"source_record_type\":\"evidence\"},{\"domain\":\"PACKAGE\",\"media_type\":\"application/json\",\"path\":\"incidents.json\",\"sha256\":\"7e7837d3f309b2190a30d87bab6f0cad38ea29416f70eb438ee3aa3c5e5c1196\",\"size_bytes\":60,\"source_record_type\":\"evidence\"},{\"domain\":\"PACKAGE\",\"media_type\":\"application/json\",\"path\":\"summary.json\",\"sha256\":\"4eda4c5934d2a2e2e4397303d830c5818371de18e2c2b09a45f7ca1d583fc354\",\"size_bytes\":60,\"source_record_type\":\"evidence\"}],\"generated_at\":\"2026-01-01T00:00:00+00:00\",\"generated_by_user_id\":\"user-vector-1\",\"hash_algorithm\":\"SHA-256\",\"manifest_version\":\"1.0\",\"merkle_root\":\"5611bda9a0aa0d785c4aa47c456381de0e0b5c70658ccc6910e10bf20a1457dd\",\"merkle_scheme\":\"decoda-merkle-v1\",\"policy_snapshot\":{\"present\":false,\"reason\":\"No policy evaluation was recorded for this incident.\"},\"previous_audit_anchor_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"required_artifacts\":[\"alerts.json\",\"audit_log.json\",\"incidents.json\",\"summary.json\"],\"schema_version\":\"2.0\",\"source_resource_id\":\"inc-1\",\"source_resource_type\":\"incident\",\"storage_backend\":\"local\",\"workspace_id\":\"ws-vector-1\"}",
+  "manifest_sha256": "2a92a397ba67f8288c0e43d6288f1ddd84a3bfdb4c0ddcc84479c6d4df19229f",
+  "merkle": {
+    "extra_cases": [
+      {
+        "entries": [],
+        "root": null
+      },
+      {
+        "entries": [
+          [
+            "a.json",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ]
+        ],
+        "root": "31759ef6ebccc6cb0e019e2cdb289ccb59a992268bd18f547c541ae0a70be17e"
+      },
+      {
+        "entries": [
+          [
+            "a.json",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "b.json",
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          ],
+          [
+            "c.json",
+            "3333333333333333333333333333333333333333333333333333333333333333"
+          ]
+        ],
+        "root": "1f00f6fc41695828dba8b215b373f5d3e257037fda0121ebbbfb4a022d54465c"
+      }
+    ],
+    "leaf_rule": "SHA256(0x00 || utf8(path) || 0x1F || ascii(lower(sha256_hex)))",
+    "leaves": [
+      {
+        "leaf_hash": "4a0e56498437b286fad8bf8599232f87af1ef9b5a1044e915386140dfbf57c61",
+        "path": "alerts.json",
+        "sha256": "28381b5c6f8bbb7dd271a0fa6a5971d7a3e2f1f7b31c09647f587d7fdb6e8399"
+      },
+      {
+        "leaf_hash": "46817d8c9a76492bb745b75950a5b62772a8c275a53a7d0e0baba95aa5023173",
+        "path": "audit_log.json",
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "leaf_hash": "de1f33a4d48932e50a83b96b2abc59cfb3715a4af353bc49211e029087230dc3",
+        "path": "incidents.json",
+        "sha256": "7e7837d3f309b2190a30d87bab6f0cad38ea29416f70eb438ee3aa3c5e5c1196"
+      },
+      {
+        "leaf_hash": "5796374bc9efc2a1a2a7bb37660d2e6ac2416864a2e321625895a0a5fd8a2968",
+        "path": "summary.json",
+        "sha256": "4eda4c5934d2a2e2e4397303d830c5818371de18e2c2b09a45f7ca1d583fc354"
+      }
+    ],
+    "node_rule": "SHA256(0x01 || left || right)",
+    "odd_rule": "an unpaired last node is promoted unchanged, never duplicated",
+    "order": "leaves sorted ascending by the UTF-8 bytes of path",
+    "root": "5611bda9a0aa0d785c4aa47c456381de0e0b5c70658ccc6910e10bf20a1457dd",
+    "scheme": "decoda-merkle-v1"
+  },
+  "schema_version": 1,
+  "signature": {
+    "algorithm": "Ed25519",
+    "key_id": "decoda-evidence-test-0001",
+    "public_key": "usHPtDYfVDQgRGAYe49ObvMcrQ/XzOBXo9dw7POqcU4=",
+    "signature": "YqtKxJU2UMjC9KJW3GvGhcOQAhVMCBHCFwJ0zLywx4C7/MLn7EElA6+lTFfABrIUpXrqe/4tRpl47xEpvNtNAg==",
+    "signature_format": "decoda-evidence-signature-v1",
+    "signed_object": "manifest_sha256",
+    "signed_payload_hex": "4445434f44412d45564944454e43452d4d414e49464553542d5631002a92a397ba67f8288c0e43d6288f1ddd84a3bfdb4c0ddcc84479c6d4df19229f",
+    "signed_payload_rule": "b'DECODA-EVIDENCE-MANIFEST-V1' + b'\\x00' + bytes.fromhex(manifest_sha256)",
+    "signing_domain": "DECODA-EVIDENCE-MANIFEST-V1",
+    "test_key_derivation": "Ed25519 seed = SHA-256(b\"decoda-evidence-test-vector-seed-v1\"). PUBLISHED, NON-SECRET, TEST ONLY. Not a Decoda signing key; anything it signs is a fixture, never evidence."
+  }
+}

@@ -30355,6 +30355,11 @@ def download_evidence_package_archive(export_id: str, request: Request) -> tuple
                 generated_at=utc_now_iso(),
                 # Catch an accidental inclusion BY VALUE, not only by variable name.
                 secret_denylist=_evidence_secret_denylist(),
+                # PUBLIC verification keys only, so the download carries everything
+                # an auditor needs to verify offline. Bundled as a convenience and
+                # labelled as such: a key inside the package it verifies is not a
+                # trust anchor, and the verifier accepts an externally pinned one.
+                public_keyring=_evidence_public_keyring(),
             )
         except _archive.ArchiveSafetyError as exc:
             # A safety violation is a defect, never a warning. Refuse to emit the
@@ -30379,6 +30384,23 @@ def download_evidence_package_archive(export_id: str, request: Request) -> tuple
         )
         _ = filters_val  # row filters are read through _resolve_package_manifest
         return archive_bytes, f'{_archive.safe_archive_segment(package_number)}.zip'
+
+
+def _evidence_public_keyring() -> dict[str, Any] | None:
+    """The PUBLIC Ed25519 verification keyring, or ``None`` when none is provisioned.
+
+    Public material only — it never touches the private seed. A deployment with
+    no Ed25519 key returns ``None`` and the archive simply omits the keyring
+    rather than shipping an empty or placeholder one.
+    """
+    try:
+        from services.api.app import evidence_ed25519
+
+        keyring = evidence_ed25519.public_keyring()
+        return keyring if keyring.get('keys') else None
+    except Exception:  # noqa: BLE001 - a missing keyring never blocks a download
+        logger.warning('evidence_public_keyring_unavailable')
+        return None
 
 
 def _evidence_secret_denylist() -> tuple[bytes, ...]:
