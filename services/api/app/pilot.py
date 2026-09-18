@@ -31028,6 +31028,18 @@ def update_workspace_retention_policies(payload: dict[str, Any], request: Reques
             data_class = str(item.get('data_class') or '').strip().lower()
             if data_class not in _RETENTION_DATA_CLASSES:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f'Unsupported data_class: {data_class}')
+            if data_class == 'alerts' and not columns_ready:
+                # The 'alerts' class arrives with migration 0154, which also widens
+                # the data_class CHECK constraint. During a rolling deploy the API
+                # can be ahead of it; refusing with the reason beats a 500 from a
+                # constraint violation, and beats silently dropping the row.
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        'code': 'RETENTION_SCHEMA_NOT_MIGRATED',
+                        'message': 'Alert retention is unavailable until this deployment finishes migrating.',
+                    },
+                )
             retention_days = int(item.get('retention_days') or 0)
             if retention_days < 1 or retention_days > 3650:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='retention_days must be between 1 and 3650.')

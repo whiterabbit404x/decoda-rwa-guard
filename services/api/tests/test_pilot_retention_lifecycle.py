@@ -347,6 +347,37 @@ def test_8b_alerts_is_a_real_retention_data_class_end_to_end():
     ) == 2, 'both data_class CHECK constraints must accept the new class'
 
 
+def test_8c_the_alerts_class_is_refused_until_its_migration_has_run(monkeypatch):
+    """A rolling deploy can put the API ahead of 0154, which widens the CHECK
+    constraint. Refusing with the reason beats a 500 from a constraint violation."""
+    from fastapi import HTTPException
+
+    from services.api.app import pilot
+
+    connection = RecordingConnection(lambda sql, params: Result(row={'present': 0}))
+
+    @contextmanager
+    def fake_connection():
+        yield connection
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', fake_connection)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        pilot, '_require_workspace_permission',
+        lambda *a, **k: ({'id': 'user-a'}, {'workspace_id': WORKSPACE}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        pilot.update_workspace_retention_policies(
+            {'policies': [{'data_class': 'alerts', 'retention_days': 180}]}, _Request(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail['code'] == 'RETENTION_SCHEMA_NOT_MIGRATED'
+    assert connection.sql_containing('INSERT INTO workspace_retention_policies') == []
+
+
 def test_9_incidents_are_deleted_with_their_response_history():
     connection, _ = _execute(['incidents'], {'incidents': 'hard_delete'})
     assert {'incidents', 'response_actions', 'action_history'} <= _deleted_tables(connection)
