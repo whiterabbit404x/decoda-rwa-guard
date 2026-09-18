@@ -77,7 +77,7 @@ The default Pilot periods and the one place they are defined are in `services/ap
 |---|---:|---|
 | telemetry | 90 days | hard delete |
 | detections | 180 days | hard delete |
-| alerts (carries findings) | 180 days | hard delete |
+| alerts (carries findings and their on-chain evidence rows) | 180 days | hard delete |
 | incidents | 365 days | hard delete |
 | exports (evidence packages + object) | 365 days | hard delete |
 | audit_logs | 365 days | anonymize |
@@ -104,7 +104,7 @@ Deletion is two-step and auditable:
 2. A fresh legal-hold query occurs both at request time and immediately before approval/execution.
 3. A reauthenticated administrator calls the approve-and-execute endpoint. Each class writes a `data_deletion_events` record with counts and chain anchors, and the response carries `deletion_report_sha256` — the deletion receipt. The report holds ids, counts, timestamps and hashes only; it contains none of the deleted content, so it can be handed to a customer as proof.
 4. User data is anonymized and sessions are revoked. Evidence/audit retention is independently controlled; legal holds take precedence.
-5. Release of a legal hold requires reauthentication and a release reason. Releasing a hold does not automatically execute previously blocked requests; create or explicitly re-review a request.
+5. Release of a legal hold requires reauthentication and a release reason. Releasing a hold does not automatically execute a previously blocked CUSTOMER request; create or explicitly re-review it. A blocked end-of-Pilot purge (`request_type = 'pilot_end_purge'`) IS resumed, because it is a scheduled policy rather than a human decision — a hold must defer a scheduled deletion, not cancel it permanently. The engine re-checks holds at execution, so a request still covered by another hold simply parks again.
 
 Review deletion events weekly and reconcile exported-object tombstones with provider inventory. Never report physical deletion while provider Object Lock or replication still retains a version. Every `storage_delete` event now records the backend's object-lock state in `details.storage`, so a receipt written against a COMPLIANCE-mode bucket says that a locked version may persist rather than implying the bytes are gone.
 

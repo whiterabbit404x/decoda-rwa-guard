@@ -31122,8 +31122,12 @@ def release_workspace_legal_hold(hold_id: str, payload: dict[str, Any], request:
         ).fetchone()
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Active legal hold not found.')
-        log_audit(connection, action='legal_hold.release', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'reason': reason})
-    return {'id': hold_id, 'status': 'released'}
+        # A scheduled end-of-Pilot purge resumes; a customer's own deletion
+        # request does not. The engine re-checks holds at execution, so a request
+        # still covered by another hold simply parks again.
+        resumed = pilot_retention.resume_blocked_pilot_purges(connection, workspace_id=workspace['workspace_id'])
+        log_audit(connection, action='legal_hold.release', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'reason': reason, 'resumed_pilot_purges': resumed})
+    return {'id': hold_id, 'status': 'released', 'resumed_pilot_purges': resumed}
 
 
 #: Typed by the customer to confirm an immediate deletion. A checkbox or a bare

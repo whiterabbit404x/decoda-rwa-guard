@@ -475,7 +475,46 @@ def schedule_pilot_end_deletions(
             idempotency_suffix='security-record',
         ):
             queued['security_record'] += 1
+    if queued['operational'] < queued['workspaces']:
+        # A workspace with no members has no actor to attribute the request to,
+        # and data_deletion_requests.requested_by_user_id is NOT NULL. Say so — a
+        # workspace silently left off the schedule is exactly the failure mode
+        # this module exists to prevent.
+        logger.warning(
+            'pilot_end_purge_not_queued_for_every_workspace organization_id=%s workspaces=%s queued=%s',
+            organization_id, queued['workspaces'], queued['operational'],
+        )
     return queued
+
+
+def resume_blocked_pilot_purges(connection: Any, *, workspace_id: str) -> int:
+    """Re-queue end-of-Pilot purges that a now-released legal hold was blocking.
+
+    ``execute_request`` parks a held request in ``blocked_by_legal_hold``, and
+    ``claim_request`` only ever claims ``approved`` or ``running``. Without this,
+    a hold placed during a Pilot's grace window would CANCEL its deletion
+    permanently rather than defer it, and the product would keep data it had told
+    the customer it would delete.
+
+    A customer's OWN deletion request is deliberately not resumed here: that one
+    is a human decision and a human re-makes it. A scheduled policy is not.
+
+    The engine re-checks holds at execution, so this cannot outrun a hold that is
+    still in force — such a request simply parks again. ``attempt_count`` is
+    reset because being blocked is a clean answer, not a failed attempt, and must
+    not consume the retry budget.
+    """
+    cursor = connection.execute(
+        """UPDATE data_deletion_requests
+           SET status = 'approved', attempt_count = 0, error_message = NULL,
+               lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
+           WHERE workspace_id = %s AND request_type = %s AND status = 'blocked_by_legal_hold'""",
+        (str(workspace_id), REQUEST_TYPE_PILOT_PURGE),
+    )
+    resumed = max(int(getattr(cursor, 'rowcount', 0) or 0), 0)
+    if resumed:
+        logger.info('pilot_end_purges_resumed workspace_id=%s resumed=%s', workspace_id, resumed)
+    return resumed
 
 
 def cancel_pilot_end_deletions(connection: Any, *, organization_id: str) -> int:

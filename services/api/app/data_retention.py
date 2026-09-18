@@ -47,13 +47,17 @@ DATA_TARGETS = {
 CASCADE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     'telemetry': (
         ('detection_events', 'created_at'),
-        ('evidence', 'observed_at'),
         ('monitoring_polls', 'poll_started_at'),
     ),
     'detections': (
         ('threat_detections', 'detected_at'),
     ),
     'alerts': (
+        # `evidence` holds the raw on-chain records an alert is raised FROM. It
+        # belongs with the alert rather than with raw telemetry: an alert that
+        # outlived its own evidence would read as "no evidence found" rather than
+        # "evidence expired", which is the more dangerous of the two readings.
+        ('evidence', 'observed_at'),
         ('asset_risk_findings', 'created_at'),
         ('alert_clusters', 'created_at'),
         ('alert_cluster_history', 'created_at'),

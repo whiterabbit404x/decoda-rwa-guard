@@ -970,10 +970,11 @@ def reconcile_pilot_retention(connection: Any, organization: Mapping[str, Any]) 
     else:
         expiry = None
     moment = _utc_now()
-    ended_at = expiry if (expiry is not None and expiry <= moment) else moment
+    reached_its_own_deadline = expiry is not None and expiry <= moment
+    ended_at = expiry if reached_its_own_deadline else moment
     reason = (
         pilot_retention.END_REASON_EVALUATION_EXPIRED
-        if ended_at is expiry else 'ended_by_internal_admin'
+        if reached_its_own_deadline else 'ended_by_internal_admin'
     )
     return pilot_retention.record_pilot_end(
         connection, organization_id=organization_id, ended_at=ended_at, reason=reason,

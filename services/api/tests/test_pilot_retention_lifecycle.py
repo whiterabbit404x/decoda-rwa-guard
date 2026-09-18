@@ -329,8 +329,12 @@ def test_8_alerts_findings_and_detections_are_deleted():
     deleted = _deleted_tables(connection)
     # `alerts` carries findings in this schema: finding_actions.finding_id and
     # finding_decisions.finding_id both reference alerts.id and cascade.
-    assert {'alerts', 'asset_risk_findings', 'detections', 'threat_detections'} <= deleted
+    assert {'alerts', 'evidence', 'asset_risk_findings', 'detections', 'threat_detections'} <= deleted
     assert result['operations']['alerts']['tables']['asset_risk_findings'] == 1
+    # `evidence` expires WITH its alert, not with raw telemetry: an alert that
+    # outlived its own evidence would read as "no evidence found".
+    assert 'evidence' not in dict(data_retention.CASCADE_TABLES['telemetry'])
+    assert 'evidence' in dict(data_retention.CASCADE_TABLES['alerts'])
 
 
 def test_8b_alerts_is_a_real_retention_data_class_end_to_end():
@@ -492,6 +496,47 @@ def test_14_releasing_the_hold_lets_the_same_request_complete():
     connection, result = _execute(['telemetry'], {'telemetry': 'hard_delete'})
     assert result['status'] == 'completed'
     assert 'telemetry_events' in _deleted_tables(connection)
+
+
+def test_14b_releasing_a_hold_resumes_a_blocked_end_of_pilot_purge(monkeypatch):
+    """A hold placed during the grace window must DEFER the purge, not cancel it."""
+    from services.api.app import pilot
+
+    connection = RecordingConnection(
+        lambda sql, params: Result(row={'id': 'hold-1'}, rowcount=1)
+        if 'workspace_legal_holds' in sql else Result(rowcount=2)
+    )
+
+    @contextmanager
+    def fake_connection():
+        yield connection
+
+    monkeypatch.setattr(pilot, 'require_live_mode', lambda: None)
+    monkeypatch.setattr(pilot, 'pg_connection', fake_connection)
+    monkeypatch.setattr(pilot, 'ensure_pilot_schema', lambda _c: None)
+    monkeypatch.setattr(
+        pilot, '_require_workspace_permission',
+        lambda *a, **k: ({'id': 'user-a'}, {'workspace_id': WORKSPACE}),
+    )
+    audited: dict = {}
+    monkeypatch.setattr(pilot, 'log_audit', lambda *a, **k: audited.update(k))
+
+    result = pilot.release_workspace_legal_hold('hold-1', {'reason': 'matter closed'}, _Request())
+
+    assert result == {'id': 'hold-1', 'status': 'released', 'resumed_pilot_purges': 2}
+    resume = connection.sql_containing("status = 'approved', attempt_count = 0")[0]
+    assert resume[1] == (WORKSPACE, pilot_retention.REQUEST_TYPE_PILOT_PURGE)
+    assert "status = 'blocked_by_legal_hold'" in resume[0]
+    assert audited['metadata']['resumed_pilot_purges'] == 2
+
+
+def test_14c_a_customers_own_blocked_request_is_not_auto_resumed():
+    """Only the scheduled policy resumes. A human decision is re-made by a human."""
+    connection = RecordingConnection(lambda sql, params: Result(rowcount=0))
+    pilot_retention.resume_blocked_pilot_purges(connection, workspace_id=WORKSPACE)
+    resume = connection.calls[0]
+    assert resume[1][1] == pilot_retention.REQUEST_TYPE_PILOT_PURGE
+    assert 'workspace_data' not in resume[0] and 'user_data' not in resume[0]
 
 
 # ── 15. continuing cancels the schedule ──────────────────────────────────────
