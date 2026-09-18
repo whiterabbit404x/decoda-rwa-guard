@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from services.api.app import entitlements as ent
+from services.api.app import pilot_retention
 
 try:  # fastapi is stubbed in the offline test runner
     from fastapi import HTTPException, status
@@ -767,7 +768,9 @@ def extend_evaluation(
         ''',
         (new_expiry, moment, ent.STATUS_EXPIRED, ent.STATUS_ACTIVE, str(organization_id)),
     )
-    return _require_organization(connection, organization_id)
+    updated = _require_organization(connection, organization_id)
+    reconcile_pilot_retention(connection, updated)
+    return updated
 
 
 def set_evaluation_expiry(
@@ -817,7 +820,12 @@ def set_evaluation_expiry(
             ''',
             (moment, str(organization_id)),
         )
-        return _require_organization(connection, organization_id)
+        # Clearing a deadline does NOT reactivate a Pilot a founder ended (see
+        # above), so this may leave the tenant expired — reconcile decides from
+        # the row that resulted, not from the direction of the edit.
+        updated = _require_organization(connection, organization_id)
+        reconcile_pilot_retention(connection, updated)
+        return updated
 
     if not isinstance(expires_at, datetime):
         raise _http_error(
@@ -839,7 +847,9 @@ def set_evaluation_expiry(
         ''',
         (deadline, moment, ent.STATUS_EXPIRED, ent.STATUS_ACTIVE, str(organization_id)),
     )
-    return _require_organization(connection, organization_id)
+    updated = _require_organization(connection, organization_id)
+    reconcile_pilot_retention(connection, updated)
+    return updated
 
 
 def set_status(connection: Any, *, organization_id: str, status_value: str) -> dict[str, Any]:
@@ -855,7 +865,9 @@ def set_status(connection: Any, *, organization_id: str, status_value: str) -> d
         'UPDATE organizations SET status = %s, updated_at = NOW() WHERE id = %s',
         (key, str(organization_id)),
     )
-    return _require_organization(connection, organization_id)
+    updated = _require_organization(connection, organization_id)
+    reconcile_pilot_retention(connection, updated)
+    return updated
 
 
 def set_plan(
@@ -908,7 +920,64 @@ def set_plan(
             ''',
             (key, ent.STATUS_EXPIRED, ent.STATUS_ACTIVE, str(organization_id)),
         )
-    return _require_organization(connection, organization_id)
+    updated = _require_organization(connection, organization_id)
+    # An upgrade off Pilot cancels any queued end-of-Pilot deletion: the tenant
+    # continued, so the schedule that assumed they were leaving is void.
+    reconcile_pilot_retention(connection, updated)
+    return updated
+
+
+# ── Pilot data lifecycle (Phase 5) ───────────────────────────────────────────
+def reconcile_pilot_retention(connection: Any, organization: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the recorded end-of-Pilot facts in step with the live lifecycle.
+
+    Called after every lifecycle write in this module, so there is ONE rule
+    rather than four hand-maintained branches:
+
+        the evaluation has ended  →  record the end, start the grace window,
+                                     queue the deletions
+        it has not (any more)     →  clear the recorded end and CANCEL every
+                                     queued deletion that has not started
+
+    The second direction is what makes "upgrade before the deadline and nothing
+    is deleted" true rather than a promise. Reactivating, extending, giving a
+    future deadline, and moving to Scale or Enterprise all land here and all
+    cancel the schedule, because deletion eligibility is a consequence of the
+    tenant's current state and not a latch that trips once.
+
+    SUSPENSION is deliberately NOT an end. A suspended tenant keeps every
+    record — that is what the product tells them — so it must not start a
+    deletion clock.
+
+    Both directions are idempotent: re-recording an end does not move a deadline
+    the customer was already given, and clearing an end that was never recorded
+    does nothing.
+    """
+    organization_id = str(organization.get('id') or '')
+    if not organization_id:
+        return {'reconciled': False, 'reason': 'missing_organization_id'}
+    plan = ent.normalize_plan(organization.get('plan'))
+    status_value = ent.normalize_status(organization.get('status'))
+    if plan not in ent.EVALUATION_PLANS or status_value == ent.STATUS_SUSPENDED:
+        return pilot_retention.clear_pilot_end(connection, organization_id=organization_id)
+    if not ent.evaluation_expired(organization):
+        return pilot_retention.clear_pilot_end(connection, organization_id=organization_id)
+    # Prefer the deadline the customer was actually given over "now": a dated
+    # evaluation ended when its date passed, not when this code noticed.
+    expires_at = organization.get('evaluation_expires_at')
+    if hasattr(expires_at, 'tzinfo'):
+        expiry = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    else:
+        expiry = None
+    moment = _utc_now()
+    ended_at = expiry if (expiry is not None and expiry <= moment) else moment
+    reason = (
+        pilot_retention.END_REASON_EVALUATION_EXPIRED
+        if ended_at is expiry else 'ended_by_internal_admin'
+    )
+    return pilot_retention.record_pilot_end(
+        connection, organization_id=organization_id, ended_at=ended_at, reason=reason,
+    )
 
 
 # ── pilot feedback (Phase 8) ─────────────────────────────────────────────────
@@ -1386,6 +1455,11 @@ def _customer_row(row: dict[str, Any], *, now: datetime | None = None) -> dict[s
         'status': ent.normalize_status(row.get('status')),
         'lifecycle_state': ent.lifecycle_state(row, now=now),
         'evaluation': ent.evaluation_payload(row, now=now),
+        # NOTE: the listing deliberately carries no deletion schedule. The
+        # end-of-Pilot dates are not in this query, and deriving them from the
+        # plan default would put a date on the console that no queued deletion
+        # request matches. GET /admin/customers/{id} reads the recorded facts and
+        # reports them there.
         'created_at': _iso(row.get('created_at')),
         'last_activity_at': _iso(row.get('last_activity_at')),
         # The ONLY personal field on this row, and only ever an address: it tells

@@ -56,6 +56,7 @@ from typing import Any
 
 from services.api.app import entitlements as ent
 from services.api.app import organizations as org_service
+from services.api.app import pilot_retention
 from services.api.app import pilot
 from services.api.app import pilot_access
 
@@ -98,6 +99,7 @@ def get_account_plan(request: Any) -> dict[str, Any]:
                 'status': None,
                 'lifecycle_state': None,
                 'evaluation': None,
+                'data_lifecycle': None,
                 'usage': None,
                 'entitlements': None,
                 'workspace': {'id': workspace_id, 'role': workspace_context.get('role')},
@@ -105,6 +107,14 @@ def get_account_plan(request: Any) -> dict[str, Any]:
         organization = context['organization']
         entitlements = context['entitlements']
         usage = org_service.usage_summary(connection, organization)
+        holds = connection.execute(
+            """SELECT COUNT(*) AS count FROM workspace_legal_holds
+               WHERE workspace_id = %s AND status = 'active'""",
+            (workspace_id,),
+        ).fetchone()
+        data_lifecycle = pilot_retention.lifecycle_for_organization(
+            connection, organization, legal_hold_active=int((holds or {}).get('count') or 0) > 0,
+        )
         connection.commit()
         return {
             'state': PLAN_STATE_ACTIVE,
@@ -120,6 +130,11 @@ def get_account_plan(request: Any) -> dict[str, Any]:
             'lifecycle_state': context['lifecycle_state'],
             'lifecycle_label': ent.LIFECYCLE_LABELS.get(context['lifecycle_state']),
             'evaluation': ent.evaluation_payload(organization),
+            # What is scheduled to happen to this tenant's DATA, which is a
+            # different question from what the tenant is allowed to do. An
+            # active open-ended Pilot reports every date as null, so the screen
+            # has no countdown to render for one.
+            'data_lifecycle': data_lifecycle,
             'usage': usage,
             'entitlements': entitlements,
             'workspace': {'id': workspace_id, 'role': workspace_context.get('role')},
@@ -230,6 +245,7 @@ def _organization_detail(connection: Any, organization_id: str) -> dict[str, Any
             ),
         },
         'evaluation': ent.evaluation_payload(organization),
+        'data_lifecycle': pilot_retention.lifecycle_for_organization(connection, organization),
         'entitlements': entitlements,
         'usage': org_service.usage_summary(connection, organization),
         'workspaces': org_service.organization_workspaces(connection, str(organization['id'])),

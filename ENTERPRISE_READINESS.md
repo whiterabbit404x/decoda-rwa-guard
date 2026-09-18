@@ -91,10 +91,12 @@ All HTTP responses from the Next.js frontend include:
 
 **Data retention:**
 - Personal data: Deleted/anonymized immediately on account deletion
-- Security evidence (audit logs): Retained in anonymized form (legally required)
+- Security evidence (audit logs): Retained in anonymized form, then removed — 365 days for a Pilot workspace, per `services/api/app/pilot_retention.py`
 - Sessions: Immediately revoked
 
-**Known gap:** A TTL cleanup job for old soft-deleted records and stale audit logs is not yet implemented. Add a scheduled task using `RETENTION_DAYS` env var (default: 365).
+**Scheduled retention:** every Pilot workspace is provisioned with a retention policy (migration 0154) and the `retention-worker` process applies it to telemetry, detections, alerts, incidents, evidence exports, audit logs and user data. Ending a Pilot queues an operational purge at +30 days and removal of the anonymized audit record at +365 days. See [Disaster Recovery, Data Governance, and Key Rotation](./docs/DISASTER_RECOVERY_AND_DATA_GOVERNANCE.md).
+
+**Known gap:** soft-deleted rows outside those seven data classes — `users.deleted_at`, and the `deleted_at` tombstones on assets/targets/export jobs — still accumulate; the retention engine removes the record contents, not the tombstone. Periods are per workspace, not a `RETENTION_DAYS` environment variable, so a deployment cannot change what `/privacy` publishes.
 
 ---
 
@@ -150,7 +152,7 @@ Secret scrubbing: any key containing `password`, `secret`, `token`, `key`, `auth
 
 1. **SSE in multi-instance deployments**: In-process queue registry. Redis pub/sub required for horizontal scaling.
 2. **CSP unsafe-inline**: Required by Next.js. Nonce-based CSP planned.
-3. **Data retention job**: Soft-deleted records accumulate. Scheduled cleanup job needed.
+3. **Data retention job**: the `retention-worker` applies the seven configured data classes (telemetry, detections, alerts, incidents, exports, audit logs, user data) and the end-of-Pilot purge. Soft-delete tombstones outside those classes still accumulate. Retention is NOT applied if that worker is not deployed.
 4. **/metrics auth**: Unauthenticated by design (Prometheus standard). Must be network-isolated in production.
 5. **API key enforcement scope**: Only covers `/api/v1/*` routes. Legacy unversioned routes use JWT-only auth.
 6. **TOTP secret in MFA enrollment response**: Returns `null` now that debug exposure is removed. Clients must parse from `otpauth_uri` instead (standard practice).

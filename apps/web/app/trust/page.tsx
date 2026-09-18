@@ -46,6 +46,26 @@ const dataProtectionItems = [
 
 const disclosureFaqs = [
   {
+    q: 'What happens to our data when the Pilot ends?',
+    a: 'Your workspace stays readable and your evidence stays exportable for 30 days after the Pilot ends. After that, '
+      + 'telemetry, detections, alerts, findings, incidents and evidence exports \u2014 including the stored export files \u2014 '
+      + 'are permanently deleted, and audit logs are anonymized. The remaining anonymized audit record is deleted 365 days '
+      + 'after the Pilot ended. Upgrading or continuing before the deletion runs cancels it. An active Pilot has no deletion '
+      + 'schedule at all. Exact per-class periods are in the Privacy Policy.',
+  },
+  {
+    q: 'Can we have our data deleted sooner?',
+    a: 'Yes. A workspace owner or administrator can request immediate deletion from Settings \u2192 Security. It requires a '
+      + 'recent re-authentication and a typed confirmation, is recorded in the audit log, and returns a deletion receipt \u2014 '
+      + 'a hash of the report listing what was removed, containing none of the deleted content. A legal hold overrides it.',
+  },
+  {
+    q: 'Is deleted data really gone, including backups?',
+    a: 'Deleted data is removed from our active systems on the stated schedule and cannot be restored through any Decoda API. '
+      + 'Residual encrypted copies may remain in our infrastructure providers\u2019 backups until their normal backup-retention '
+      + 'cycle completes, after which they are overwritten. We do not claim zero residual data, because we cannot prove it.',
+  },
+  {
     q: 'Is Decoda SOC 2 certified?',
     a: 'Not yet. We are an early-access production SaaS. SOC 2 Type II audit is on our roadmap. We will not claim certification until it is achieved.',
   },

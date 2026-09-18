@@ -67,17 +67,55 @@ Check Redis connectivity, latency, evictions, memory pressure, replication lag, 
 
 ## Workspace retention, deletion, and legal holds
 
-Workspace administrators configure retention through `/workspace/retention-policies`. Supported classes are telemetry, detections, incidents, audit logs, exports, and user data. Policies persist in PostgreSQL and are not inferred from frontend state.
+Workspace administrators configure retention through `/workspace/retention-policies`. Supported classes are telemetry, detections, alerts, incidents, audit logs, exports, and user data. Policies persist in PostgreSQL and are not inferred from frontend state.
+
+Retention is provisioned, not opted into. Every Pilot workspace receives the default policy on creation (`pilot_retention.ensure_workspace_retention_policies`), migration 0154 backfills existing Pilot workspaces, and the worker heals any that are still missing one. A policy seeded onto a workspace that already held records carries `effective_from`, so the sweep cannot act on it until that date — seeding a policy is never itself a bulk deletion. `GET /workspace/retention-policies` reports `enforced` separately from `enabled` for exactly this reason; a period that has not started is not a period in force. Scale and Enterprise workspaces are deliberately not seeded: their retention is a contract term.
+
+The default Pilot periods and the one place they are defined are in `services/api/app/pilot_retention.py`:
+
+| Class | Retained | Mode |
+|---|---:|---|
+| telemetry | 90 days | hard delete |
+| detections | 180 days | hard delete |
+| alerts (carries findings) | 180 days | hard delete |
+| incidents | 365 days | hard delete |
+| exports (evidence packages + object) | 365 days | hard delete |
+| audit_logs | 365 days | anonymize |
+| user_data | 30 days | anonymize |
+
+### End-of-Pilot lifecycle
+
+A Pilot is open-ended by default: no deadline, no grace window, no deletion schedule. The clock starts only when the end is RECORDED — a founder calling `POST /admin/customers/{id}/status` with `expired`, or the worker observing that a dated evaluation passed its own `evaluation_expires_at` (recorded at that deadline, not at the moment it was noticed).
+
+Recording the end writes `organizations.pilot_ended_at` / `pilot_grace_ends_at` and queues two deletion requests per workspace, both `request_type = 'pilot_end_purge'`, both waiting on `next_attempt_at`:
+
+1. at `pilot_ended_at + 30 days` — telemetry, detections, alerts, incidents and exports hard-deleted; audit logs anonymized in the same operation.
+2. at `pilot_ended_at + 365 days` — the remaining anonymized audit skeleton hard-deleted.
+
+Reactivating, extending, setting a future deadline, suspending, or upgrading to Scale/Enterprise all route through `organizations.reconcile_pilot_retention`, which clears the recorded end and cancels every queued purge still in `approved`. A request already leased or completed is never rewritten.
+
+An organization that is `expired` with NO `evaluation_expires_at` has no recorded end date. Nothing invents one: no grace window starts and no deletion is ever queued for it. The founder console reports "Pilot end date not recorded"; ending the Pilot explicitly is what starts the clock.
+
+**The retention worker is what performs all of this.** If `retention-worker` is not deployed, the periods published on `/privacy` and shown in Settings → Security are not applied and a queued end-of-Pilot deletion never executes. `/ops` readiness reports worker freshness; a stale worker is reported as stale, never assumed healthy.
 
 Deletion is two-step and auditable:
 
-1. Create `/workspace/deletion-requests` with classes, cutoff, subject (for user data), and reason.
+1. Create `/workspace/deletion-requests` with classes, cutoff, subject (for user data), a reason, and `confirm: "DELETE"`. The typed confirmation is required for every request type and is checked before any connection is opened, so a mis-click, a replayed body, or an integration calling the endpoint by accident cannot destroy a workspace's records.
 2. A fresh legal-hold query occurs both at request time and immediately before approval/execution.
-3. A reauthenticated administrator calls the approve-and-execute endpoint. Each class writes a `data_deletion_events` record with counts and chain anchors.
+3. A reauthenticated administrator calls the approve-and-execute endpoint. Each class writes a `data_deletion_events` record with counts and chain anchors, and the response carries `deletion_report_sha256` — the deletion receipt. The report holds ids, counts, timestamps and hashes only; it contains none of the deleted content, so it can be handed to a customer as proof.
 4. User data is anonymized and sessions are revoked. Evidence/audit retention is independently controlled; legal holds take precedence.
 5. Release of a legal hold requires reauthentication and a release reason. Releasing a hold does not automatically execute previously blocked requests; create or explicitly re-review a request.
 
-Review deletion events weekly and reconcile exported-object tombstones with provider inventory. Never report physical deletion while provider Object Lock or replication still retains a version.
+Review deletion events weekly and reconcile exported-object tombstones with provider inventory. Never report physical deletion while provider Object Lock or replication still retains a version. Every `storage_delete` event now records the backend's object-lock state in `details.storage`, so a receipt written against a COMPLIANCE-mode bucket says that a locked version may persist rather than implying the bytes are gone.
+
+### Backups — DEPLOYMENT-DEPENDENT
+
+Nothing in this repository can prove backup retention, and no customer-facing surface may state a backup deletion timeline. Deletion removes data from the ACTIVE database and from the configured export object store only. Residual copies live in:
+
+* the PostgreSQL provider's PITR window and snapshot retention (Neon or equivalent) — see "Service objectives" above for the RPO the window is sized to; and
+* the export bucket's versioning, Object Lock and lifecycle configuration (`EXPORT_S3_BUCKET`).
+
+Confirm both against the settings actually in use before publishing any statement about backup timing. The published wording is deliberately limited to what is verifiable: data is removed from active systems on the stated schedule, and residual encrypted copies may remain until the provider's normal backup-retention cycle completes.
 
 ## Managed keys and rotation
 

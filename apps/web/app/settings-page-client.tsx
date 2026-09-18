@@ -10,6 +10,18 @@ import { containsDiagnosticEnvVars } from './diagnostic-message';
 import { GovernanceDialog } from './components/governance-dialog';
 import SettingsPoliciesPanel from './settings-policies-panel';
 import {
+  BACKUP_DISCLOSURE,
+  RetentionPoliciesResponse,
+  RetentionPolicyRow,
+  dataClassLabel,
+  deletionModeLabel,
+  formatRetentionDate,
+  pilotLifecycleNotice,
+  retentionPeriodLabel,
+  retentionPolicyTone,
+  retentionSourceLabel,
+} from './pilot-retention';
+import {
   Approval,
   ChangeLogItem,
   GovernanceAnomaly,
@@ -177,6 +189,12 @@ export default function SettingsPageClient() {
   const [billingRuntime, setBillingRuntime] = useState<BillingRuntime>({ provider: 'none', available: false });
   const [seatSummary, setSeatSummary] = useState<SeatSummary | null>(null);
   const [readiness, setReadiness] = useState<WorkspaceReadiness | null>(null);
+  // Retention is READ here, never invented. A failed or forbidden read leaves this
+  // null and the card says the policy could not be read — it never falls back to a
+  // default period, because a period nothing enforces is the misreport this card
+  // exists to replace.
+  const [retention, setRetention] = useState<RetentionPoliciesResponse | null>(null);
+  const [retentionState, setRetentionState] = useState<'idle' | 'loaded' | 'denied' | 'error'>('idle');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteEmailError, setInviteEmailError] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
@@ -203,6 +221,14 @@ export default function SettingsPageClient() {
   const [govMessage, setGovMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   // Proposed security-policy change awaiting confirmation (critical-change flow).
   const [securityDraft, setSecurityDraft] = useState<{ mfa_enforcement: string; reauthentication_minutes: number } | null>(null);
+
+  // Derived from what the backend actually reported. `auditRetentionLabel` states
+  // the policy in force for audit_logs — or says it is unknown. It never falls
+  // back to a hard-coded number. The fixed default period this row used to print
+  // was a claim no code enforced, which is exactly what this screen must not make.
+  const retentionNotice = pilotLifecycleNotice(retention?.pilot_lifecycle ?? null);
+  const auditPolicy = retention?.policies?.find((policy) => policy.data_class === 'audit_logs') ?? null;
+  const auditRetentionLabel = auditPolicy ? retentionPeriodLabel(auditPolicy) : 'Not available';
 
   const fallbackWorkspace = user?.memberships?.[0]?.workspace ?? null;
   const resolvedWorkspace = user?.current_workspace ?? fallbackWorkspace;
@@ -233,13 +259,14 @@ export default function SettingsPageClient() {
   async function loadAll() {
     if (!resolvedWorkspace?.id) return;
     try {
-      const [membersRes, inviteRes, seatsRes, subscriptionRes, plansRes, readinessRes] = await Promise.all([
+      const [membersRes, inviteRes, seatsRes, subscriptionRes, plansRes, readinessRes, retentionRes] = await Promise.all([
         call('/workspace/members'),
         call('/workspace/invitations'),
         call('/team/seats'),
         call('/billing/subscription'),
         call('/billing/plans'),
         call('/system/readiness'),
+        call('/workspace/retention-policies'),
       ]);
       if (membersRes.ok) setMembers((await membersRes.json()).members ?? []);
       if (inviteRes.ok) setInvitations((await inviteRes.json()).invitations ?? []);
@@ -251,7 +278,27 @@ export default function SettingsPageClient() {
       }
       if (plansRes.ok) setPlans((await plansRes.json()).plans ?? []);
       if (readinessRes.ok) setReadiness(await readinessRes.json());
+      if (retentionRes.ok) {
+        // A 200 is not on its own a policy. A payload without a `policies` array
+        // is an unreadable answer, not an empty one, and is reported as such —
+        // rendering it would either crash the tab or, worse, show "no retention
+        // configured" for a workspace that has a policy.
+        const payload = (await retentionRes.json()) as Partial<RetentionPoliciesResponse> | null;
+        if (payload && Array.isArray(payload.policies)) {
+          setRetention(payload as RetentionPoliciesResponse);
+          setRetentionState('loaded');
+        } else {
+          setRetention(null);
+          setRetentionState('error');
+        }
+      } else {
+        // 401/403 is "you may not see this", not "there is no policy". Keep the
+        // two apart so the card never reports an unread policy as absent.
+        setRetention(null);
+        setRetentionState(retentionRes.status === 401 || retentionRes.status === 403 ? 'denied' : 'error');
+      }
     } catch {
+      setRetentionState('error');
       // Transport failure: leave the per-section empty states ("No team members loaded",
       // "Not Configured") in place rather than fabricating data. Never throws out of the effect.
     }
@@ -1113,10 +1160,78 @@ export default function SettingsPageClient() {
               </div>
             </SectionCard>
 
+            {/* Data Retention & Deletion */}
+            <SectionCard title="Data Retention &amp; Deletion">
+              {retentionState === 'denied' ? (
+                <FieldRow label="Retention policy" value={<StatusPill status="Not Available" />} note="Your role cannot read the workspace retention policy." />
+              ) : null}
+              {retentionState === 'error' ? (
+                <FieldRow label="Retention policy" value={<StatusPill status="Not Available" />} note="The retention policy could not be read. No period is shown rather than an assumed one." />
+              ) : null}
+              {retentionState === 'loaded' && retention ? (
+                <>
+                  {retentionNotice ? (
+                    <div
+                      className={retentionNotice.tone === 'danger' ? 'pill pill-danger' : 'pill pill-warning'}
+                      style={{ display: 'block', padding: '0.6rem 0.75rem', marginBottom: '0.75rem', whiteSpace: 'normal', lineHeight: 1.45 }}
+                    >
+                      <strong>{retentionNotice.title}</strong>
+                      <div style={{ marginTop: '0.3rem' }}>{retentionNotice.body}</div>
+                      {retentionNotice.scheduledDeletionDate ? (
+                        <div style={{ marginTop: '0.3rem' }}>Scheduled deletion: {retentionNotice.scheduledDeletionDate}</div>
+                      ) : null}
+                      {retentionNotice.showExportAction ? (
+                        <div style={{ marginTop: '0.5rem' }}>
+                          <Link className="btn btn-secondary" href="/evidence" prefetch={false} style={{ textDecoration: 'none' }}>
+                            Export evidence
+                          </Link>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {(retention.policies ?? []).map((policy: RetentionPolicyRow) => (
+                    <FieldRow
+                      key={policy.data_class}
+                      label={dataClassLabel(policy.data_class)}
+                      value={
+                        <span style={{ color: retentionPolicyTone(policy) === 'ok' ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                          {retentionPeriodLabel(policy)}
+                        </span>
+                      }
+                      note={`${deletionModeLabel(policy)} · ${retentionSourceLabel(policy)}`}
+                    />
+                  ))}
+                  <FieldRow
+                    label="End-of-Pilot grace period"
+                    value={
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        {typeof retention.grace_period_days === 'number'
+                          ? `${retention.grace_period_days} days of read and export access`
+                          : 'Not available'}
+                      </span>
+                    }
+                    note="Applies only once a Pilot has been ended. An active Pilot has no deletion schedule."
+                  />
+                  <p style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {BACKUP_DISCLOSURE}
+                  </p>
+                  <div style={{ marginTop: '0.85rem' }}>
+                    <Link className="btn btn-secondary" href="/privacy" prefetch={false} style={{ textDecoration: 'none' }}>
+                      Retention &amp; deletion policy
+                    </Link>
+                  </div>
+                </>
+              ) : null}
+            </SectionCard>
+
             {/* Audit Logging */}
             <SectionCard title="Audit Logging">
               <FieldRow label="Audit Logging Status" value={<StatusPill status={readiness?.status === 'pass' ? 'Enabled' : 'Not Configured'} />} />
-              <FieldRow label="Retention Period" value={<span style={{ color: 'var(--text-secondary)' }}>90 days (default)</span>} />
+              <FieldRow
+                label="Retention Period"
+                value={<span style={{ color: 'var(--text-secondary)' }}>{auditRetentionLabel}</span>}
+                note="From the workspace retention policy the retention worker applies."
+              />
               <FieldRow label="Last Readiness Check" value={<span style={{ color: 'var(--text-secondary)' }}>{readiness?.checked_at ? new Date(readiness.checked_at).toLocaleString() : 'Not available'}</span>} />
               <FieldRow label="Blocking Issues" value={<span style={{ color: readiness && readiness.blocking_failures?.length > 0 ? 'var(--danger-fg)' : 'var(--success-fg)' }}>{readiness?.blocking_failures?.length ?? 0} issues</span>} />
               {readiness?.checks && readiness.checks.length > 0 ? (
