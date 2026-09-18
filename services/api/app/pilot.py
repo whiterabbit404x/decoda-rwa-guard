@@ -57,6 +57,7 @@ from services.api.app import execution_authorization as execution_authz
 from services.api.app import mfa_authorization as mfa_authz
 from services.api.app import organizations as organization_service
 from services.api.app import pilot_retention
+from services.api.app import staff_access as _staff_access
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
     automation_batch_size,
@@ -2644,7 +2645,13 @@ def log_audit(
     user_id: str | None,
     workspace_id: str | None,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> str:
+    """Append one hash-chained audit row and return its id.
+
+    The id is returned so a caller that writes a related row (the customer mirror
+    in ``staff_access``) can record which row it came from. Nothing about the
+    insert changed; callers that ignore the return value are unaffected.
+    """
     from services.api.app.evidence_signing import compute_audit_row_hash, canonical_json as _cj
     import hashlib as _hl
 
@@ -2717,6 +2724,7 @@ def log_audit(
             now if row_hash else None,
         ),
     )
+    return row_id
 
 
 def _generate_workspace_api_key_secret() -> str:
@@ -29401,6 +29409,21 @@ def list_audit_events(request: Request) -> dict[str, Any]:
             item['result'] = meta.get('result') or 'success'
             item['source_ip'] = item.get('ip_address')
             item['timestamp'] = item.get('created_at')
+            # WHO kind of actor this was, so the customer's audit history can
+            # distinguish their own members from authorized Decoda personnel
+            # rather than rendering a staff action as an anonymous "system" one.
+            # Only a row written by staff_access can carry 'decoda_staff'.
+            item['actor_type'] = _staff_access.audit_actor_type(meta, item.get('user_id'))
+            item['actor_type_label'] = _staff_access.ACTOR_TYPE_LABELS.get(
+                item['actor_type'], 'System',
+            )
+            access_mode = str(meta.get('access_mode') or '')
+            if access_mode in _staff_access.ACCESS_MODES:
+                item['access_mode'] = access_mode
+                item['access_mode_label'] = _staff_access.ACCESS_MODE_LABELS[access_mode]
+            staff_summary = _staff_access.describe_staff_event(meta, item.get('action'))
+            if staff_summary:
+                item['summary'] = staff_summary
             # Resolve a truthful evidence source so audit rows for AI recommendation
             # decisions no longer render as "Unknown source". Never claims live-chain
             # evidence — it only names where the decision's evidence actually came from.

@@ -77,7 +77,12 @@ _SCHEMA = '''
     CREATE TABLE assets (id TEXT PRIMARY KEY, workspace_id TEXT, deleted_at TEXT);
     CREATE TABLE targets (id TEXT PRIMARY KEY, workspace_id TEXT, deleted_at TEXT);
     CREATE TABLE export_jobs (id TEXT PRIMARY KEY, workspace_id TEXT, export_type TEXT);
-    CREATE TABLE audit_logs (id TEXT PRIMARY KEY, workspace_id TEXT, created_at TEXT);
+    CREATE TABLE audit_logs (
+        id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, action TEXT,
+        entity_type TEXT, entity_id TEXT, ip_address TEXT, metadata TEXT,
+        created_at TEXT, row_hash TEXT, previous_row_hash TEXT,
+        hash_algorithm TEXT, sealed_at TEXT
+    );
     CREATE TABLE organization_feedback (id TEXT PRIMARY KEY, organization_id TEXT);
 '''
 
@@ -111,7 +116,10 @@ class SqliteConnection:
         self.queries.append(sql)
         if 'information_schema' in sql.lower():
             return _SchemaProbeResult()
-        return self._db.execute(sql.replace('%s', '?'), tuple(params or ()))
+        # The staff-access record writes JSON metadata through a PostgreSQL cast
+        # SQLite has no syntax for. The column is TEXT here, so dropping the cast
+        # stores the same canonical JSON string the production row carries.
+        return self._db.execute(sql.replace('%s::jsonb', '%s').replace('%s', '?'), tuple(params or ()))
 
     def commit(self) -> None:
         self._db.commit()

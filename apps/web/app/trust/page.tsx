@@ -66,6 +66,18 @@ const disclosureFaqs = [
       + 'cycle completes, after which they are overwritten. We do not claim zero residual data, because we cannot prove it.',
   },
   {
+    q: 'Can Decoda staff see our data?',
+    a: 'Not your monitored data. Decoda personnel cannot read your telemetry, detections, alerts, incidents or '
+      + 'evidence without ordinary membership of your workspace, and there is no impersonation or log-in-as '
+      + 'mechanism \u2014 no Decoda tool can sign in as one of your users. Authorized Decoda personnel can see '
+      + 'account-level information about your organization \u2014 plan, status, usage, workspace and member '
+      + 'metadata, and the evaluation feedback you submitted \u2014 through an internal console. Customer-specific '
+      + 'access there is recorded with the staff actor, the organization and workspace context, the operation and '
+      + 'the timestamp, and those events appear in your own workspace audit history as \u201cDecoda staff\u201d, '
+      + 'marked read-only or change. Cross-tenant listings \u2014 an internal directory spanning all customers '
+      + '\u2014 are recorded internally and are not shown in any one customer\u2019s history.',
+  },
+  {
     q: 'Is Decoda SOC 2 certified?',
     a: 'Not yet. We are an early-access production SaaS. SOC 2 Type II audit is on our roadmap. We will not claim certification until it is achieved.',
   },

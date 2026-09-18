@@ -705,7 +705,13 @@ def require_internal_admin(connection: Any, request: Any) -> dict[str, Any]:
 
     user = pilot.authenticate_with_connection(connection, request)
     if not is_internal_admin(connection, str(user['id'])):
+        # Security telemetry, deliberately NOT an audit row: a refusal reached no
+        # customer data, so recording it as a staff ACCESS would make the access
+        # trail describe something that never happened — and a refusal costs the
+        # caller nothing to repeat, so a row per attempt would let a loop flood
+        # the hash-chained trail. Same reasoning as mfa_authorization.
         logger.warning('internal_admin_denied user_id=%s', user.get('id'))
+        pilot.increment('decoda_internal_admin_denied_total')
         raise _http_error(
             403,
             {

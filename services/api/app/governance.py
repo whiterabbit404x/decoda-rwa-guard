@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 
 from services.api.app import pilot
+from services.api.app import staff_access
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,13 @@ _ACTION_RISK: dict[str, str] = {
     'workspace.scim_token_revoked': RISK_HIGH,
     'credential.rotate': RISK_HIGH,
     'credential.revoke': RISK_HIGH,
+    # Decoda staff writes on the customer's own account. Classified explicitly
+    # rather than left to the LOW default: a suspension stops the tenant and a
+    # Pilot end date moves their deletion clock, so neither may be buried in a
+    # change log as routine.
+    'staff.plan_changed': RISK_HIGH,
+    'staff.status_changed': RISK_HIGH,
+    'staff.pilot_deadline_changed': RISK_HIGH,
     # MEDIUM
     'invitation.create': RISK_MEDIUM,
     'invitation.revoke': RISK_MEDIUM,
@@ -132,6 +140,10 @@ _ACTION_RISK: dict[str, str] = {
     'webhook.rotate_secret': RISK_MEDIUM,
     'retention.policy.update': RISK_MEDIUM,
     # LOW
+    # Decoda staff READS. Named here so the LOW is a decision rather than a
+    # default: a read changes nothing, and the event is carried for visibility.
+    'staff.customer_detail_viewed': RISK_LOW,
+    'staff.feedback_viewed': RISK_LOW,
     'workspace.settings_updated': RISK_LOW,
     'auth.signin': RISK_LOW,
     'auth.signout': RISK_LOW,
@@ -1308,16 +1320,27 @@ def list_governance_changes(request: Request) -> dict[str, Any]:
             meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
             action = str(item.get('action') or '')
             actor = actor_lookup.get(str(item.get('user_id'))) if item.get('user_id') else None
+            # A Decoda staff row carries no user_id — by design, so the customer's
+            # chain holds no internal employee identity — which would otherwise
+            # fall through to 'system' and report staff activity as the platform's
+            # own. Name it for what it is instead.
+            actor_type = staff_access.audit_actor_type(meta, item.get('user_id'))
+            staff_actor = (
+                str(meta.get('actor') or staff_access.STAFF_ACTOR_DISPLAY)
+                if actor_type == staff_access.ACTOR_TYPE_DECODA_STAFF else None
+            )
             changes.append({
                 'id': str(item.get('id')),
                 'action': action,
-                'change': _describe_change(action, meta),
+                'change': staff_access.describe_staff_event(meta, action) or _describe_change(action, meta),
+                'actor_type': actor_type,
+                'actor_type_label': staff_access.ACTOR_TYPE_LABELS.get(actor_type, 'System'),
                 'target': item.get('entity_id'),
                 'target_type': item.get('entity_type'),
                 'risk_level': classify_audit_action(action, meta),
                 'approval': _approval_label(action, meta),
                 'result': meta.get('result') or 'completed',
-                'actor': (actor or {}).get('full_name') or (actor or {}).get('email') or (str(item.get('user_id')) if item.get('user_id') else 'system'),
+                'actor': staff_actor or (actor or {}).get('full_name') or (actor or {}).get('email') or (str(item.get('user_id')) if item.get('user_id') else 'system'),
                 'actor_user_id': str(item.get('user_id')) if item.get('user_id') else None,
                 'source_ip': item.get('ip_address'),
                 'timestamp': item.get('created_at'),
