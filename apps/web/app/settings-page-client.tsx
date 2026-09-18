@@ -1187,6 +1187,17 @@ export default function SettingsPageClient() {
                           </Link>
                         </div>
                       ) : null}
+                      {retentionNotice.showRequestDeletionAction ? (
+                        // Deliberately a route to a real, audited workflow rather than a
+                        // button: immediate deletion needs the typed confirmation and a
+                        // recent re-authentication that the API enforces, and a one-click
+                        // control that skipped either would be worse than none.
+                        <div style={{ marginTop: '0.4rem', fontSize: '0.82rem' }}>
+                          Want this deleted sooner? Contact{' '}
+                          <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a> to request immediate
+                          deletion. It is confirmed, audited, and produces a deletion receipt.
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   {(retention.policies ?? []).map((policy: RetentionPolicyRow) => (

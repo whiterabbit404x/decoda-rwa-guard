@@ -223,6 +223,16 @@ test('a 200 that is not a policy payload is treated as unreadable, not as no pol
   expect(settings).toContain("typeof retention.grace_period_days === 'number'");
 });
 
+test('every flag the notice exposes drives something the screen actually renders', () => {
+  const settings = read(APP_DIR, 'settings-page-client.tsx');
+
+  // A presenter flag that nothing renders is its own small untruth: it says a
+  // control exists. Both flags reach the DOM.
+  expect(settings).toContain('retentionNotice.showExportAction');
+  expect(settings).toContain('retentionNotice.showRequestDeletionAction');
+  expect(settings).toContain('retentionNotice.scheduledDeletionDate');
+});
+
 test('the public policy pages state the schedule and the backup limitation', () => {
   const privacy = read(APP_DIR, 'privacy', 'page.tsx');
 
