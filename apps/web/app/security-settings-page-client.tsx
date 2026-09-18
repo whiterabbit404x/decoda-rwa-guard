@@ -22,6 +22,10 @@ export default function SecuritySettingsPageClient() {
   // return_to back to the SAME response action (with the Review All filter + incident
   // scope preserved). Surface a clear way back once MFA is satisfied.
   const returnTo = safeInternalReturnTo(searchParams.get('return_to'));
+  // Mandatory MFA, as the BACKEND reports it on /auth/me. Stated on the page the
+  // operator is sent to, so the requirement never reads as one more optional
+  // hardening step they can skip.
+  const mfaRequired = Boolean(user?.mfa?.required) && user?.mfa?.satisfied === false;
   const resolvedWorkspace = user?.current_workspace ?? user?.memberships?.[0]?.workspace ?? null;
 
   const [submitting, setSubmitting] = useState(false);
@@ -284,14 +288,30 @@ export default function SecuritySettingsPageClient() {
         <div className="buttonRow">
           <Link href="/settings" prefetch={false}>← Back to workspace settings</Link>
         </div>
+        {mfaRequired ? (
+          <article className="dataCard" style={{ marginTop: '0.75rem' }} data-testid="mfa-mandatory-notice">
+            <p style={{ margin: '0 0 0.5rem' }}>
+              <strong>Multi-factor authentication is required for Pilot access.</strong>
+            </p>
+            <p className="muted" style={{ margin: 0 }}>
+              {user?.mfa?.enrolled
+                ? 'Verify your authenticator to continue in this session. Pilot monitoring, evidence, and audit data stay unavailable until you do.'
+                : 'Set up an authenticator before accessing this workspace. Pilot monitoring, evidence, and audit data stay unavailable until you do.'}
+            </p>
+          </article>
+        ) : null}
         {returnTo ? (
           <article className="dataCard" style={{ marginTop: '0.75rem' }}>
             <p className="muted" style={{ margin: '0 0 0.5rem' }}>
-              You were sent here to complete MFA before approving a response action.
+              {mfaRequired
+                ? 'Once this session satisfies MFA you can pick up where you left off.'
+                : 'You were sent here to complete MFA before approving a response action.'}
               {user?.mfa_enabled ? ' Once this session is MFA-verified you can return and approve it.' : ' Enroll MFA below, then return to approve it.'}
             </p>
             <div className="buttonRow">
-              <Link href={returnTo} prefetch={false} className="btn btn-primary">Return to the response action</Link>
+              <Link href={returnTo} prefetch={false} className="btn btn-primary">
+                {mfaRequired ? 'Return to where you were' : 'Return to the response action'}
+              </Link>
             </div>
           </article>
         ) : null}
@@ -354,6 +374,18 @@ export default function SecuritySettingsPageClient() {
             </div>
           ) : null}
           {recoveryCodesAcknowledged ? <p className="statusLine">Recovery codes acknowledged and cleared from this screen.</p> : null}
+          {/*
+            Back to where the operator was going — offered, never automatic. MFA
+            confirmation also returns the one-time recovery codes, and navigating
+            away on their behalf would destroy the only copy they will ever see.
+          */}
+          {recoveryCodesAcknowledged && returnTo ? (
+            <div className="buttonRow">
+              <Link href={returnTo} prefetch={false} className="btn btn-primary" data-testid="mfa-return-to">
+                Continue to where you were
+              </Link>
+            </div>
+          ) : null}
           {mfaError ? <p className="statusLine" role="alert">{mfaError}</p> : null}
           {mfaStatus ? <p className="statusLine">{mfaStatus}</p> : null}
         </article>

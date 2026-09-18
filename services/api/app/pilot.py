@@ -54,6 +54,7 @@ from services.api.app import dashboard_timing
 from services.api.app.recovery_drills import RUN_TYPES as RECOVERY_DRILL_RUN_TYPES, recovery_drill_readiness
 from services.api.app import entitlements as plan_entitlement_engine
 from services.api.app import execution_authorization as execution_authz
+from services.api.app import mfa_authorization as mfa_authz
 from services.api.app import organizations as organization_service
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
@@ -2496,14 +2497,20 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return payload
 
 
-def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> None:
+def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the bearer session and return its server-side security record.
+
+    The returned row carries the session's own MFA facts (``mfa_verified_at`` and
+    ``authentication_methods``) so the Pilot MFA boundary can decide without a
+    second round trip. Callers that only need the 401 behaviour may ignore it.
+    """
     session_hash = _auth_token_hash(token)
     # Fast-path: Redis blacklist check for immediate revocation
     if _is_session_blacklisted(session_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
     session = connection.execute(
         '''
-        SELECT revoked_at, expires_at
+        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods
         FROM auth_sessions
         WHERE session_token_hash = %s
         ''',
@@ -2520,6 +2527,13 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> N
         'UPDATE auth_sessions SET last_seen_at = NOW(), updated_at = NOW() WHERE session_token_hash = %s',
         (session_hash,),
     )
+    try:
+        return dict(session)
+    except Exception:
+        # A row shape this function cannot materialise is not evidence of a
+        # completed MFA challenge: the empty record reads as "no second factor",
+        # which is the fail-closed direction for the Pilot MFA boundary.
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -3516,6 +3530,344 @@ def update_onboarding_state(payload: dict[str, Any], request: Request) -> dict[s
         connection.commit()
         return response
 
+# ---------------------------------------------------------------------------
+# Mandatory Pilot MFA — the single authenticated chokepoint
+# ---------------------------------------------------------------------------
+# Every authenticated customer-facing route in this service resolves its caller
+# through `authenticate_with_connection` (or its connection-opening twin
+# `authenticate_request`). That makes those two functions the ONE place where a
+# human identity exists, a workspace can be resolved, and the session's own MFA
+# record is in hand — so that is where the boundary lives, rather than in 400+
+# individual handlers that a new route could forget to copy.
+#
+# The rule is DEFAULT-DENY by request path: a path that is not on the bootstrap
+# allowlist below is a protected path. A route added tomorrow is therefore
+# protected the moment it authenticates, with no further change here.
+
+#: Endpoints an authenticated human may reach BEFORE satisfying the Pilot MFA
+#: boundary. Every entry is either unauthenticated by nature, part of completing
+#: MFA, part of ending the session, or returns nothing but the caller's OWN
+#: identity/access state. None of them returns workspace-scoped customer data.
+PILOT_MFA_BOOTSTRAP_PATHS: frozenset[str] = frozenset({
+    # Liveness / diagnostics — unauthenticated by definition.
+    '/health', '/health/details', '/health/diagnostics', '/health/readiness',
+    '/metrics', '/auth/health', '/auth/csrf-token',
+    # Establishing or ending a session.
+    '/auth/signin', '/auth/signup', '/auth/signout', '/auth/signout-all',
+    '/auth/oidc/start', '/auth/oidc/callback',
+    # Proving control of the address, and password recovery.
+    '/auth/verify-email', '/auth/resend-verification',
+    '/auth/forgot-password', '/auth/reset-password', '/auth/reset-password/validate',
+    # Completing MFA. Without these the boundary would be a lockout, not a gate.
+    '/auth/mfa/enroll', '/auth/mfa/confirm', '/auth/mfa/complete-signin',
+    '/auth/mfa/recovery-codes/regenerate', '/auth/session/step-up',
+    '/auth/reauthenticate',
+    # The caller's OWN identity and access state. `/auth/me` is what tells the
+    # client which workspace it is being asked to enroll for, and
+    # `/account/pilot-access` is read from the caller's session only.
+    '/auth/me', '/account/pilot-access',
+    # Choosing which workspace this session is pointed at. Switching selects no
+    # data: every data route re-resolves the workspace and re-applies this
+    # boundary, so a non-MFA session gains nothing by switching.
+    '/auth/select-workspace',
+    # Approval-only Pilot onboarding. Applying, reading an invitation, creating
+    # the invited account, and accepting the invitation all happen BEFORE the
+    # person can enroll, and none of them returns tenant data.
+    '/pilot-requests', '/pilot-invitations', '/pilot-invitations/signup',
+    '/pilot-invitations/accept',
+    # Joining a workspace one was invited to. Grants membership, returns no
+    # workspace data — the next data request is still refused until MFA.
+    '/workspace/invitations/accept',
+})
+
+#: Path prefixes treated as bootstrap. Kept deliberately tiny: a prefix is a
+#: standing invitation to accidentally expose a future sibling route, so only
+#: the unauthenticated health surface uses one.
+PILOT_MFA_BOOTSTRAP_PREFIXES: tuple[str, ...] = ('/health/',)
+
+#: Purpose label recorded on a refusal. Names WHERE the boundary ran, never what
+#: the caller was trying to read.
+MFA_PURPOSE_API = 'authenticated_api'
+
+
+def _request_path(request: Any) -> str:
+    """The routed path of this request, or '' when it cannot be determined.
+
+    An empty answer is NOT a bootstrap path (see `_is_mfa_bootstrap_path`), so a
+    request whose path cannot be read fails closed.
+    """
+    scope = getattr(request, 'scope', None)
+    if isinstance(scope, dict):
+        candidate = scope.get('path')
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    try:
+        return str(request.url.path)
+    except Exception:
+        return ''
+
+
+def _is_mfa_bootstrap_path(path: str) -> bool:
+    """Whether this exact path may be reached before the Pilot MFA boundary.
+
+    Default-deny: anything not listed is protected. A single trailing slash is
+    tolerated because Starlette normalises it before routing; nothing else is.
+    """
+    candidate = str(path or '')
+    if not candidate:
+        return False
+    if len(candidate) > 1 and candidate.endswith('/'):
+        candidate = candidate.rstrip('/') or '/'
+    if candidate in PILOT_MFA_BOOTSTRAP_PATHS:
+        return True
+    return candidate.startswith(PILOT_MFA_BOOTSTRAP_PREFIXES)
+
+
+def _mfa_request_cache(request: Any) -> dict[str, Any] | None:
+    """A per-request memo for tenant reads, or None when the request cannot hold
+    one (a stub request in a test, a non-Starlette caller)."""
+    try:
+        state = request.state
+        cache = getattr(state, 'mfa_policy_cache', None)
+        if not isinstance(cache, dict):
+            cache = {}
+            state.mfa_policy_cache = cache
+        return cache
+    except Exception:
+        return None
+
+
+def _workspace_role_for_user(user: dict[str, Any], workspace_id: str) -> str | None:
+    """The caller's role in one workspace, read from the membership payload the
+    session already hydrated. Returns None when it is not a membership — which
+    `mfa_authorization.role_is_covered` treats as covered."""
+    for membership in (user.get('memberships') or []):
+        if isinstance(membership, dict) and str(membership.get('workspace_id')) == str(workspace_id):
+            return str(membership.get('role') or '') or None
+    return None
+
+
+def _mfa_candidate_workspace_ids(request: Any, user: dict[str, Any]) -> list[str]:
+    """Every workspace whose MFA policy this SESSION must satisfy.
+
+    The session — not one request's header — is the thing being protected: a
+    bearer token that can reach a Pilot workspace by sending one header must not
+    become MFA-free by sending a different one. So the answer is the union of the
+    workspace this request names (only when the caller is genuinely a member of
+    it), the session's selected workspace, and every workspace the account
+    belongs to. The named workspace comes FIRST so the common single-tenant
+    request short-circuits on its own tenant.
+    """
+    membership_ids = [
+        str(membership.get('workspace_id'))
+        for membership in (user.get('memberships') or [])
+        if isinstance(membership, dict) and membership.get('workspace_id')
+    ]
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or '').strip()
+        if text and text not in seen:
+            seen.add(text)
+            ordered.append(text)
+
+    try:
+        requested = normalize_workspace_header_value(request.headers.get('x-workspace-id'))
+    except Exception:
+        # A malformed header is not a policy choice. The route's own
+        # `resolve_workspace` still rejects it; here it simply names nothing.
+        requested = None
+    if requested and requested in set(membership_ids):
+        _add(requested)
+    _add(user.get('current_workspace_id'))
+    for workspace_id in membership_ids:
+        _add(workspace_id)
+    return ordered
+
+
+def workspace_effective_mfa_enforcement(
+    connection: Any, workspace_id: str, *, cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The MFA enforcement that ACTUALLY governs one workspace.
+
+    The ONE function that answers "does this workspace require MFA, and why" —
+    the configurable `workspace_auth_policies.mfa_enforcement` raised to the
+    floor its PLAN imposes. A Pilot workspace whose row still says ``optional``
+    is reported as ``all_members`` here; a Scale or Enterprise workspace is
+    reported exactly as its owner configured it.
+
+    Reading the plan floor first lets the Pilot case skip the policy query
+    entirely: nothing a customer can configure is stronger than ``all_members``.
+    """
+    floor = mfa_authz.resolve_plan_floor(connection, workspace_id, cache=cache)
+    if mfa_authz.normalize_enforcement(floor['enforcement']) == mfa_authz.ENFORCEMENT_ALL_MEMBERS:
+        return {
+            'enforcement': mfa_authz.ENFORCEMENT_ALL_MEMBERS,
+            'configured': None,
+            'floor': mfa_authz.ENFORCEMENT_ALL_MEMBERS,
+            'floor_reason': floor['reason'],
+            'plan': floor['plan'],
+        }
+    configured = _workspace_auth_policy(connection, workspace_id)['mfa_enforcement']
+    return {
+        'enforcement': mfa_authz.strongest(configured, floor['enforcement']),
+        'configured': mfa_authz.normalize_enforcement(configured),
+        'floor': mfa_authz.normalize_enforcement(floor['enforcement']),
+        'floor_reason': floor['reason'],
+        'plan': floor['plan'],
+    }
+
+
+def evaluate_pilot_mfa(
+    connection: Any,
+    request: Any,
+    user: dict[str, Any],
+    *,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The MFA facts for this human on this session. FACTS ONLY — never raises.
+
+    Returns ``{'required', 'enrolled', 'session_verified', 'satisfied', 'code',
+    'reason', 'enforcement', 'plan', 'workspace_id'}``. Both the enforcement
+    point and the state `/auth/me` publishes read this one evaluation, so the
+    screen the operator sees and the refusal the API returns can never disagree.
+
+    No role is an input to the Pilot case: `mfa_authorization` resolves the floor
+    from the tenant's own plan row, and ``all_members`` covers Founder, Owner,
+    Admin, Analyst and Viewer identically. Decoda internal staff get the same
+    answer — entering a customer's Pilot workspace is customer access, and
+    elevated privilege is not a second factor.
+    """
+    enrolled = bool(user.get('mfa_enabled'))
+    session_record = session if session is not None else _session_security_record(connection, request)
+    session_verified = mfa_authz.session_completed_mfa(session_record)
+    state = {
+        'required': False,
+        'enrolled': enrolled,
+        'session_verified': session_verified,
+        'satisfied': True,
+        'code': None,
+        'reason': None,
+        'enforcement': mfa_authz.ENFORCEMENT_OPTIONAL,
+        'plan': None,
+        'workspace_id': None,
+    }
+    cache = _mfa_request_cache(request)
+    candidates = _mfa_candidate_workspace_ids(request, user)
+    if enrolled and session_verified:
+        # A session that has completed a second factor satisfies EVERY enforcement
+        # level, so no further workspace can change the answer. Only the workspace
+        # this request is about — the first candidate — is resolved, and only so
+        # `required` is reported truthfully. This is what keeps the steady-state
+        # request at one cached tenant read rather than one per membership.
+        candidates = candidates[:1]
+    for workspace_id in candidates:
+        policy = workspace_effective_mfa_enforcement(connection, workspace_id, cache=cache)
+        role = _workspace_role_for_user(user, workspace_id)
+        if not mfa_authz.role_is_covered(policy['enforcement'], role):
+            continue
+        decision = mfa_authz.decide_access(
+            enforcement=policy['enforcement'],
+            role=role,
+            mfa_enrolled=enrolled,
+            session_mfa_completed=session_verified,
+        )
+        state.update({
+            'required': True,
+            'enforcement': policy['enforcement'],
+            'plan': policy['plan'],
+            'workspace_id': workspace_id,
+        })
+        if not decision['allowed']:
+            state.update({
+                'satisfied': False,
+                'code': decision['code'],
+                'reason': decision['reason'],
+            })
+            return state
+    return state
+
+
+def public_pilot_mfa_state(state: dict[str, Any]) -> dict[str, Any]:
+    """The MFA facts a client may see. Machine facts only — no session hash, no
+    secret, no token. Published on `/auth/me` so the app can render the
+    required-enrollment screen from a BACKEND fact rather than a guess."""
+    return {
+        'required': bool(state.get('required')),
+        'enrolled': bool(state.get('enrolled')),
+        'session_verified': bool(state.get('session_verified')),
+        'satisfied': bool(state.get('satisfied')),
+        'code': state.get('code'),
+        'enforcement': state.get('enforcement'),
+        'plan': state.get('plan'),
+        'workspace_id': state.get('workspace_id'),
+    }
+
+
+def require_pilot_mfa(
+    connection: Any,
+    request: Any,
+    user: dict[str, Any],
+    *,
+    session: dict[str, Any] | None = None,
+    purpose: str = MFA_PURPOSE_API,
+) -> dict[str, Any]:
+    """Refuse this authenticated human unless MFA is satisfied for this session.
+
+    The canonical enforcement point for mandatory Pilot MFA. Raises 403 with
+    ``MFA_ENROLLMENT_REQUIRED`` when the account holds no second factor, or
+    ``MFA_CHALLENGE_REQUIRED`` when it is enrolled but THIS session never
+    completed a challenge. Returns the evaluated state so a caller that must
+    also PUBLISH it does not evaluate twice.
+
+    Machine identities never reach here: SCIM directory-sync tokens authenticate
+    through `_authenticate_scim`, which resolves no user and calls nothing in
+    this path, so an interactive TOTP challenge is never demanded of one.
+    """
+    state = evaluate_pilot_mfa(connection, request, user, session=session)
+    if state['satisfied']:
+        return state
+    if _is_mfa_bootstrap_path(_request_path(request)):
+        # The endpoints that COMPLETE MFA (and the ones that end the session) stay
+        # reachable, or the boundary would be a lockout rather than a gate. The
+        # unsatisfied state is still returned, so `/auth/me` reports it truthfully.
+        return state
+    refusal = mfa_authz.PilotMfaRequired(
+        code=str(state['code']),
+        reason=str(state['reason']),
+        workspace_id=state['workspace_id'],
+        plan=state['plan'],
+        enforcement=state['enforcement'],
+        purpose=purpose,
+    )
+    logger.warning(
+        'pilot_mfa_blocked code=%s reason=%s plan=%s enforcement=%s user_id=%s workspace_id=%s',
+        refusal.code, refusal.reason, refusal.plan, refusal.enforcement,
+        user.get('id'), state['workspace_id'],
+    )
+    increment('decoda_pilot_mfa_blocked_total', code=refusal.code, reason=refusal.reason)
+    raise mfa_authz.as_http_exception(refusal)
+
+
+def _session_security_record(connection: Any, request: Any) -> dict[str, Any]:
+    """The current session's MFA record, read without raising.
+
+    Used only when a caller could not hand the row over from `_validate_session`.
+    Fails CLOSED: an unreadable session reports no completed factor.
+    """
+    try:
+        row = connection.execute(
+            '''SELECT mfa_verified_at, authentication_methods
+               FROM auth_sessions WHERE session_token_hash = %s AND revoked_at IS NULL''',
+            (_current_session_hash(request),),
+        ).fetchone()
+    except Exception:
+        logger.warning('pilot_mfa_session_read_failed', exc_info=True)
+        return {}
+    return dict(row) if row else {}
+
+
 def authenticate_request(request: Request) -> dict[str, Any]:
     require_live_mode()
     authorization = request.headers.get('authorization', '')
@@ -3528,8 +3880,15 @@ def authenticate_request(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token payload missing subject.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        _validate_session(connection, token, payload)
+        session = _validate_session(connection, token, payload)
         user = build_user_response(connection, user_id)
+        # `/auth/me` is served from here, and it is a bootstrap endpoint: it must
+        # answer an operator who has NOT yet satisfied MFA, and tell them so.
+        # Publishing the evaluated state is what lets the app render the
+        # required-enrollment screen from a backend fact instead of a guess.
+        user['mfa'] = public_pilot_mfa_state(
+            require_pilot_mfa(connection, request, user, session=session)
+        )
     return user
 
 
@@ -3542,8 +3901,12 @@ def authenticate_with_connection(connection: psycopg.Connection, request: Reques
     user_id = str(payload.get('sub') or '')
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token payload missing subject.')
-    _validate_session(connection, token, payload)
-    return build_user_response(connection, user_id)
+    session = _validate_session(connection, token, payload)
+    user = build_user_response(connection, user_id)
+    user['mfa'] = public_pilot_mfa_state(
+        require_pilot_mfa(connection, request, user, session=session)
+    )
+    return user
 
 
 def normalize_workspace_header_value(requested_workspace_id: str | None, *, allow_non_uuid: bool = True) -> str | None:
@@ -4082,6 +4445,20 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
                 (token_row['user_id'], _auth_token_hash(code)),
             ).fetchone()
             if recovery is None:
+                # A failed challenge is recorded and COMMITTED before the refusal:
+                # brute-force evidence must survive the rejected request. The
+                # submitted value is never written — only the fact of a failure.
+                # An audit write that fails must never turn a REFUSAL into a 500,
+                # which a client could read as a transient error worth retrying.
+                try:
+                    log_audit(
+                        connection, action='auth.mfa_challenge_failed', entity_type='user',
+                        entity_id=str(user['id']), request=request, user_id=str(user['id']),
+                        workspace_id=None, metadata={'method': 'signin_challenge'},
+                    )
+                    connection.commit()
+                except Exception:
+                    logger.warning('mfa_challenge_failed_audit_write_failed', exc_info=True)
                 raise HTTPException(status_code=401, detail='Invalid MFA code.')
             connection.execute('UPDATE mfa_recovery_codes SET consumed_at = NOW() WHERE id = %s', (recovery['id'],))
             used_recovery_code = True
@@ -4093,6 +4470,25 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
             "UPDATE auth_sessions SET mfa_verified_at = NOW(), authentication_methods = %s::jsonb WHERE session_token_hash = %s",
             (_json_dumps(['password', 'recovery_code' if used_recovery_code else 'totp']), _auth_token_hash(access_token)),
         )
+        # Which factor satisfied the challenge is the security-relevant fact; the
+        # code itself (TOTP or recovery) is never part of the record.
+        log_audit(
+            connection, action='auth.mfa_challenge_success', entity_type='user',
+            entity_id=str(user['id']), request=request, user_id=str(user['id']),
+            workspace_id=hydrated_user.get('current_workspace_id'),
+            metadata={'method': 'recovery_code' if used_recovery_code else 'totp'},
+        )
+        if used_recovery_code:
+            remaining = connection.execute(
+                'SELECT COUNT(*) AS count FROM mfa_recovery_codes WHERE user_id = %s AND consumed_at IS NULL',
+                (str(user['id']),),
+            ).fetchone()
+            log_audit(
+                connection, action='auth.mfa_recovery_used', entity_type='user',
+                entity_id=str(user['id']), request=request, user_id=str(user['id']),
+                workspace_id=hydrated_user.get('current_workspace_id'),
+                metadata={'remaining_codes': int((remaining or {}).get('count') or 0)},
+            )
         connection.commit()
         return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
@@ -4431,12 +4827,26 @@ def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'] if row else None)
         if not row or not row['mfa_enabled_at'] or not secret or not _verify_totp(secret, code):
             raise HTTPException(status_code=400, detail='Valid MFA code is required to disable MFA.')
-        if user.get('current_workspace_id'):
-            workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
-            policy = _workspace_auth_policy(connection, workspace_context['workspace_id'])
-            role = _normalize_workspace_role(str(workspace_context['role']))
-            if policy['mfa_enforcement'] == 'all_members' or (policy['mfa_enforcement'] == 'administrators' and role in {'owner', 'admin'}):
-                raise HTTPException(status_code=409, detail={'code': 'MFA_REQUIRED_BY_WORKSPACE', 'message': 'Workspace policy requires MFA for this account.'})
+        # Disabling MFA is refused while ANY workspace this account belongs to
+        # requires it — a Pilot workspace always does. Checking only the selected
+        # workspace would let a member of a Pilot and a non-Pilot workspace switch
+        # to the permissive one, disable MFA there, and keep the Pilot membership.
+        # Even if a disable did somehow land, the account is locked out of Pilot
+        # data immediately: the session version is bumped, every session revoked,
+        # and the chokepoint then answers MFA_ENROLLMENT_REQUIRED.
+        cache = _mfa_request_cache(request)
+        for workspace_id in _mfa_candidate_workspace_ids(request, user):
+            effective = workspace_effective_mfa_enforcement(connection, workspace_id, cache=cache)
+            if mfa_authz.role_is_covered(effective['enforcement'], _workspace_role_for_user(user, workspace_id)):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        'code': 'MFA_REQUIRED_BY_WORKSPACE',
+                        'message': 'Workspace policy requires MFA for this account.',
+                        'plan': effective['plan'],
+                        'enforcement': effective['enforcement'],
+                    },
+                )
         connection.execute(
             'UPDATE users SET mfa_totp_secret = NULL, mfa_pending_secret = NULL, mfa_enabled_at = NULL, session_version = session_version + 1, updated_at = NOW() WHERE id = %s',
             (user['id'],),
@@ -4521,12 +4931,27 @@ def verify_session_step_up(payload: dict[str, Any], request: Request) -> dict[st
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={'code': 'MFA_NOT_ENROLLED', 'message': 'Enable MFA before verifying your session.'},
             )
+        def _reject(reason: str) -> Exception:
+            # The refusal is audited and COMMITTED before it is raised, so repeated
+            # step-up failures leave evidence. Neither the code nor the secret is
+            # written — only the fact, and where it happened. An audit write that
+            # fails never turns the REFUSAL into a 500.
+            try:
+                log_audit(
+                    connection, action='auth.mfa_challenge_failed', entity_type='user',
+                    entity_id=user['id'], request=request, user_id=user['id'],
+                    workspace_id=user.get('current_workspace_id'), metadata={'method': 'session_step_up'},
+                )
+                connection.commit()
+            except Exception:
+                logger.warning('mfa_step_up_failed_audit_write_failed', exc_info=True)
+            return _reject_session_step_up(user['id'], reason)
+
         if not code or not _normalize_totp_code(code):
-            raise _reject_session_step_up(user['id'], MFA_CONFIRM_REASON_CODE_INVALID)
+            raise _reject(MFA_CONFIRM_REASON_CODE_INVALID)
         secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'])
         if not secret or not _verify_totp(secret, code):
-            raise _reject_session_step_up(
-                user['id'], _diagnose_totp_failure(secret, code) if secret else MFA_CONFIRM_REASON_CODE_INVALID)
+            raise _reject(_diagnose_totp_failure(secret, code) if secret else MFA_CONFIRM_REASON_CODE_INVALID)
 
         # Resolve the workspace step-up window so the assurance expiry we report matches
         # exactly what the approval gate will honor. Default when it cannot be resolved.
@@ -4558,6 +4983,14 @@ def verify_session_step_up(payload: dict[str, Any], request: Request) -> dict[st
             connection, action='auth.session_step_up_verified', entity_type='user', entity_id=user['id'],
             request=request, user_id=user['id'], workspace_id=workspace_id,
             metadata={'methods': ['password', 'totp'], 'valid_for_minutes': minutes},
+        )
+        # Also recorded under the canonical challenge vocabulary: this is the other
+        # place a session becomes MFA-verified, so a reviewer querying one action
+        # name sees both the sign-in challenge and the step-up.
+        log_audit(
+            connection, action='auth.mfa_challenge_success', entity_type='user', entity_id=user['id'],
+            request=request, user_id=user['id'], workspace_id=workspace_id,
+            metadata={'method': 'totp', 'surface': 'session_step_up'},
         )
         connection.commit()
         return {
@@ -5140,9 +5573,14 @@ def _require_workspace_permission(
             detail={'code': 'PERMISSION_DENIED', 'permission': permission, 'message': f'Permission {permission} is required.'},
         )
     policy = _workspace_auth_policy(connection, workspace_context['workspace_id'])
-    mfa_required = policy['mfa_enforcement'] == 'all_members' or (
-        policy['mfa_enforcement'] == 'administrators' and role in {'owner', 'admin'}
+    # EFFECTIVE enforcement, not the raw row: a Pilot workspace still carrying the
+    # default `optional` is governed as `all_members`. `authenticate_with_connection`
+    # has already applied the same rule at the chokepoint, so this is defence in
+    # depth for the permissioned routes rather than the only place it holds.
+    effective = workspace_effective_mfa_enforcement(
+        connection, workspace_context['workspace_id'], cache=_mfa_request_cache(request),
     )
+    mfa_required = mfa_authz.role_is_covered(effective['enforcement'], role)
     if mfa_required:
         if user.get('mfa_enabled'):
             # Password sign-in cannot issue a session for an enrolled account until
