@@ -495,7 +495,10 @@ python -m pytest services/api/tests/test_runtime_truthfulness.py -q
   across workspaces for platform health monitoring.  These are not customer-
   facing and must be protected by an ops-role guard (`require_ops_rbac_guard`).
   The founder console under `/admin/customers` aggregates across
-  ORGANIZATIONS and is protected by `require_internal_admin`.
+  ORGANIZATIONS and is protected by `require_internal_admin`. Every staff read
+  and write on that console is recorded, and the customer-specific ones are
+  mirrored into the affected organization's own workspace audit history — see
+  `docs/STAFF_ACCESS_AUDIT.md`.
 - **Per-tenant RPC request metering**: the tenancy layer bounds RPC consumption
   by capping monitored contracts and targets and by removing suspended or
   expired tenants from monitoring due-selection. It does not count individual

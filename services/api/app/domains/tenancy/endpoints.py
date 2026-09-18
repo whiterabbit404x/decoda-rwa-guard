@@ -59,6 +59,7 @@ from services.api.app import organizations as org_service
 from services.api.app import pilot_retention
 from services.api.app import pilot
 from services.api.app import pilot_access
+from services.api.app import staff_access
 
 try:  # fastapi is stubbed in the offline test runner
     from fastapi import HTTPException, status
@@ -266,23 +267,74 @@ def _require_tenancy_schema(connection: Any) -> None:
 
 
 def list_admin_customers(request: Any, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """The customer directory. ONE staff-access record per request, not per row.
+
+    A directory read touches every tenant, so it is recorded once with the number
+    of rows it returned. Writing an event per returned customer would produce an
+    audit-event explosion that buries the customer-specific reads below, and it
+    is not customer-visible for the same reason: reading the directory is not an
+    access to any one customer's information.
+    """
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
-        org_service.require_internal_admin(connection, request)
+        admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         customers = org_service.list_customer_organizations(connection, limit=limit, offset=offset)
+        staff_access.record_staff_access(
+            connection,
+            actor_user_id=str(admin['id']),
+            action=staff_access.ACTION_CUSTOMER_LIST_VIEWED,
+            access_type=staff_access.ACCESS_READ,
+            object_type='organization_directory',
+            object_categories=['organization_profile', 'plan', 'usage', 'primary_contact'],
+            result_count=len(customers),
+            reason=reason,
+            reason_note=reason_note,
+            request=request,
+        )
+        connection.commit()
         return {'customers': customers, 'count': len(customers)}
 
 
 def get_admin_customer(organization_id: str, request: Any) -> dict[str, Any]:
+    """One customer in detail — the customer-specific read, and it is mirrored.
+
+    Recorded AFTER the organization has been resolved, so a read of an id that
+    does not exist raises 404 and leaves no record of an access that did not
+    happen.
+    """
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
-        org_service.require_internal_admin(connection, request)
+        admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         detail = _organization_detail(connection, organization_id)
         detail['feedback'] = org_service.list_feedback(connection, organization_id=organization_id)
+        staff_access.record_staff_access(
+            connection,
+            actor_user_id=str(admin['id']),
+            action=staff_access.ACTION_CUSTOMER_DETAIL_VIEWED,
+            access_type=staff_access.ACCESS_READ,
+            object_type='organization',
+            organization_id=str(detail['organization']['id']),
+            object_id=str(detail['organization']['id']),
+            # WHAT category was read, without copying any of it into the log.
+            object_categories=[
+                'organization_profile', 'plan', 'entitlements', 'usage',
+                'workspaces', 'members', 'data_lifecycle', 'feedback',
+            ],
+            reason=reason,
+            reason_note=reason_note,
+            request=request,
+        )
+        connection.commit()
         return detail
 
 
@@ -294,14 +346,26 @@ def _admin_lifecycle_audit(
     action: str,
     organization: dict[str, Any],
     metadata: dict[str, Any],
+    staff_action: str,
+    customer_change: dict[str, Any] | None = None,
+    reason: str | None = None,
+    reason_note: str | None = None,
 ) -> None:
-    """One audit row per privileged lifecycle action.
+    """One INTERNAL audit row per privileged lifecycle action, plus its mirror.
 
-    ``workspace_id`` is None: these are TENANT-level actions taken by internal
-    staff, not actions inside any one customer workspace, and attributing them to
-    a workspace would corrupt that workspace's audit chain.
+    ``workspace_id`` is None on the internal row: these are TENANT-level actions
+    taken by internal staff, not actions inside any one customer workspace, and
+    attributing the internal record — with its staff actor id and source IP — to
+    a workspace would put Decoda-internal metadata inside a customer's chain.
+
+    The customer's entitlement to know is served by the MIRROR that
+    ``staff_access.record_staff_access`` writes into each of the organization's
+    workspaces: same facts, no staff identity, linked back to this row by id. The
+    internal row keeps its long-standing ``organization.*`` action name and its
+    richer before/after metadata, so nothing that already reads it changes and no
+    second internal row is written for the same action.
     """
-    pilot.log_audit(
+    record_id = pilot.log_audit(
         connection,
         action=action,
         entity_type='organization',
@@ -314,7 +378,31 @@ def _admin_lifecycle_audit(
             'plan': ent.normalize_plan(organization.get('plan')),
             'status': ent.normalize_status(organization.get('status')),
             **metadata,
+            # Last, so the caller's per-action metadata can never overwrite who
+            # the actor was or what kind of access this record describes.
+            # Self-describing: the internal row states what kind of actor and what
+            # kind of access it records, in the same vocabulary the reads use.
+            'actor_type': staff_access.ACTOR_TYPE_DECODA_STAFF,
+            'access_mode': staff_access.ACCESS_WRITE,
+            'staff_event': staff_action,
+            'reason': reason,
+            'reason_supplied': bool(reason),
+            **({'reason_note': str(reason_note)[:staff_access.REASON_NOTE_MAX_CHARS]}
+               if reason_note else {}),
         },
+    )
+    staff_access.record_staff_access(
+        connection,
+        actor_user_id=actor_user_id,
+        action=staff_action,
+        access_type=staff_access.ACCESS_WRITE,
+        object_type='organization',
+        organization_id=str(organization['id']),
+        object_id=str(organization['id']),
+        change=customer_change or {},
+        reason=reason,
+        request=request,
+        existing_internal_record_id=record_id,
     )
 
 
@@ -389,6 +477,9 @@ def extend_admin_customer_evaluation(
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         before = org_service.get_organization(connection, organization_id)
         if setting_expiry:
@@ -399,6 +490,16 @@ def extend_admin_customer_evaluation(
             organization = org_service.extend_evaluation(
                 connection, organization_id=organization_id, days=days,
             )
+        previous_expires_at = (
+            (before or {}).get('evaluation_expires_at').isoformat()
+            if hasattr((before or {}).get('evaluation_expires_at'), 'isoformat')
+            else (before or {}).get('evaluation_expires_at')
+        )
+        new_expires_at = (
+            organization['evaluation_expires_at'].isoformat()
+            if hasattr(organization.get('evaluation_expires_at'), 'isoformat')
+            else organization.get('evaluation_expires_at')
+        )
         _admin_lifecycle_audit(
             connection, request,
             actor_user_id=str(admin['id']),
@@ -406,6 +507,16 @@ def extend_admin_customer_evaluation(
                 'organization.evaluation_expiry_set' if setting_expiry
                 else 'organization.evaluation_extended'
             ),
+            staff_action=staff_access.ACTION_PILOT_DEADLINE_CHANGED,
+            reason=reason,
+            reason_note=reason_note,
+            # What the customer is entitled to know about their own Pilot window.
+            # 'Open-ended' rather than an empty cell, because a Pilot with no
+            # deadline is a state, not a missing value.
+            customer_change={
+                'previous_pilot_end': previous_expires_at or 'open_ended',
+                'new_pilot_end': new_expires_at or 'open_ended',
+            },
             organization=organization,
             metadata={
                 'days': days,
@@ -413,16 +524,8 @@ def extend_admin_customer_evaluation(
                 # deadline" action, so the audit trail distinguishes it from a
                 # Pilot that simply never had one.
                 'expiry_cleared': bool(setting_expiry and expires_at is None),
-                'previous_expires_at': (
-                    (before or {}).get('evaluation_expires_at').isoformat()
-                    if hasattr((before or {}).get('evaluation_expires_at'), 'isoformat')
-                    else (before or {}).get('evaluation_expires_at')
-                ),
-                'new_expires_at': (
-                    organization['evaluation_expires_at'].isoformat()
-                    if hasattr(organization.get('evaluation_expires_at'), 'isoformat')
-                    else organization.get('evaluation_expires_at')
-                ),
+                'previous_expires_at': previous_expires_at,
+                'new_expires_at': new_expires_at,
             },
         )
         connection.commit()
@@ -438,6 +541,9 @@ def set_admin_customer_status(
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         before = org_service.get_organization(connection, organization_id)
         organization = org_service.set_status(
@@ -447,6 +553,13 @@ def set_admin_customer_status(
             connection, request,
             actor_user_id=str(admin['id']),
             action='organization.status_changed',
+            staff_action=staff_access.ACTION_STATUS_CHANGED,
+            reason=reason,
+            reason_note=reason_note,
+            customer_change={
+                'previous_status': ent.normalize_status((before or {}).get('status')),
+                'new_status': ent.normalize_status(organization.get('status')),
+            },
             organization=organization,
             metadata={
                 'previous_status': ent.normalize_status((before or {}).get('status')),
@@ -467,6 +580,9 @@ def set_admin_customer_plan(
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         before = org_service.get_organization(connection, organization_id)
         organization = org_service.set_plan(
@@ -476,6 +592,13 @@ def set_admin_customer_plan(
             connection, request,
             actor_user_id=str(admin['id']),
             action='organization.plan_changed',
+            staff_action=staff_access.ACTION_PLAN_CHANGED,
+            reason=reason,
+            reason_note=reason_note,
+            customer_change={
+                'previous_plan': ent.normalize_plan((before or {}).get('plan')),
+                'new_plan': ent.normalize_plan(organization.get('plan')),
+            },
             organization=organization,
             metadata={
                 'previous_plan': ent.normalize_plan((before or {}).get('plan')),
@@ -509,7 +632,10 @@ def list_admin_feedback(
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
-        org_service.require_internal_admin(connection, request)
+        admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_tenancy_schema(connection)
         items = org_service.list_feedback(
             connection,
@@ -522,6 +648,26 @@ def list_admin_feedback(
             since=since,
             until=until,
         )
+        # Scoped to ONE organization, this is a customer-specific read of what
+        # that customer's evaluators wrote, and it is mirrored to them. Unscoped,
+        # it is the cross-tenant roadmap view: recorded once with a result count,
+        # and mirrored to nobody, because it is not an access to any one
+        # customer's information and fanning it out to every tenant would bury
+        # the events that are.
+        staff_access.record_staff_access(
+            connection,
+            actor_user_id=str(admin['id']),
+            action=staff_access.ACTION_FEEDBACK_VIEWED,
+            access_type=staff_access.ACCESS_READ,
+            object_type='organization_feedback',
+            organization_id=str(organization_id) if organization_id else None,
+            object_categories=['feedback'],
+            result_count=len(items),
+            reason=reason,
+            reason_note=reason_note,
+            request=request,
+        )
+        connection.commit()
         return {
             'feedback': items,
             'count': len(items),
@@ -630,14 +776,37 @@ def _require_pilot_request_schema(connection: Any) -> None:
 def list_admin_pilot_requests(
     request: Any, status_filter: str | None = None, limit: int = 100, offset: int = 0,
 ) -> dict[str, Any]:
+    """The applicant review queue. One record per request, carrying the row count.
+
+    Not mirrored to any customer: these rows are applications, recorded before an
+    organization or a workspace exists, so there is no customer audit history for
+    them to belong to. The applicant's own decision — approved or rejected — is
+    already audited under ``pilot_request.*``.
+    """
     pilot.require_live_mode()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
-        org_service.require_internal_admin(connection, request)
+        admin = org_service.require_internal_admin(connection, request)
+        # Validated AFTER authorization: an unauthorized caller receives 403,
+        # never a 400 that would confirm the header is understood here.
+        reason, reason_note = staff_access.reason_from_request(request)
         _require_pilot_request_schema(connection)
         requests = pilot_access.list_requests(
             connection, status=status_filter, limit=limit, offset=offset,
         )
+        staff_access.record_staff_access(
+            connection,
+            actor_user_id=str(admin['id']),
+            action=staff_access.ACTION_PILOT_REQUEST_QUEUE_VIEWED,
+            access_type=staff_access.ACCESS_READ,
+            object_type='pilot_request_queue',
+            object_categories=['pilot_request'],
+            result_count=len(requests),
+            reason=reason,
+            reason_note=reason_note,
+            request=request,
+        )
+        connection.commit()
         return {'requests': requests, 'count': len(requests)}
 
 

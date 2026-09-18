@@ -42,3 +42,16 @@ test('fail-closed release proof gate is described without an absolute proven cla
   expect(src).toContain('Fail-closed release proof gates');
   expect(src).toContain('unverified claim');
 });
+
+test('staff access is described truthfully, with its exclusions stated', () => {
+  // The claim must be the narrow one the implementation supports: recorded and
+  // customer-visible for CUSTOMER-SPECIFIC access, with the cross-tenant
+  // directory read explicitly excluded rather than quietly included.
+  expect(src).toContain('Can Decoda staff see our data?');
+  expect(src).toContain('no impersonation or log-in-as');
+  expect(src).toContain('without ordinary membership of your workspace');
+  expect(src).toContain('are recorded internally and are not shown in any one customer');
+  // Never the absolute version of the claim.
+  expect(src).not.toContain('Every action Decoda staff');
+  expect(src).not.toContain('all staff activity is visible');
+});

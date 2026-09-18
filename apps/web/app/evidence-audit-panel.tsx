@@ -309,7 +309,7 @@ type EvidenceMetrics = {
   last_calculated?: string;
 };
 
-type AuditRow = {
+export type AuditRow = {
   id?: string;
   timestamp?: string;
   created_at?: string;
@@ -330,9 +330,48 @@ type AuditRow = {
   workspace_id?: string;
   evidence_source?: string;
   evidence_source_type?: string;
+  // WHO kind of actor: a member of this workspace, authorized Decoda personnel,
+  // an automated service, or the platform. Server-derived — the label is never
+  // inferred in the browser, so a staff event cannot be faked or hidden here.
+  actor_type?: string;
+  actor_type_label?: string;
+  access_mode?: string;
+  access_mode_label?: string;
+  summary?: string;
 };
 
 /* ── Helpers ────────────────────────────────────────────────────── */
+
+// The customer's audit history must distinguish their own people from Decoda's.
+// A row is only labelled "Decoda staff" when the BACKEND said so; an unlabelled
+// row falls back to the neutral platform label rather than guessing.
+const ACTOR_TYPE_LABELS: Record<string, string> = {
+  workspace_member: 'Workspace member',
+  decoda_staff: 'Decoda staff',
+  automated_service: 'Automated service',
+  system: 'System',
+};
+
+export function actorTypePill(row: AuditRow): { label: string; variant: PillVariant } | null {
+  const actorType = (row.actor_type ?? '').toLowerCase();
+  const label = row.actor_type_label ?? ACTOR_TYPE_LABELS[actorType];
+  if (!label) {
+    return null;
+  }
+  return { label, variant: actorType === 'decoda_staff' ? 'info' : 'neutral' };
+}
+
+// "Read only" vs "Change" — a staff read and a staff write are not the same
+// event, and the customer is entitled to see which one happened.
+export function accessModeLabel(row: AuditRow): string | null {
+  if (row.access_mode_label) {
+    return row.access_mode_label;
+  }
+  const mode = (row.access_mode ?? '').toLowerCase();
+  if (mode === 'read') return 'Read only';
+  if (mode === 'write') return 'Change';
+  return null;
+}
 
 // Simulator evidence must always show evidence_source = simulator.
 // Fallback evidence must be labeled unavailable, not simulator.
@@ -2185,6 +2224,8 @@ export default function EvidenceAuditPanel() {
                   const isSelected = rowId === selectedAuditId;
                   const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
                   const result = auditResultPill(row.result ?? row.status);
+                  const actorKind = actorTypePill(row);
+                  const accessMode = accessModeLabel(row);
                   return (
                     <tr
                       key={rowId}
@@ -2198,10 +2239,22 @@ export default function EvidenceAuditPanel() {
                         {fmt(row.timestamp ?? row.created_at)}
                       </td>
                       <td style={{ fontSize: '0.8rem' }}>
-                        {row.actor ?? row.system ?? 'system'}
+                        <span style={{ display: 'block' }}>{row.actor ?? row.system ?? 'system'}</span>
+                        {actorKind ? (
+                          <span style={{ display: 'inline-block', marginTop: '0.2rem' }}>
+                            <StatusPill label={actorKind.label} variant={actorKind.variant} />
+                          </span>
+                        ) : null}
                       </td>
                       <td style={{ fontSize: '0.8rem' }}>
-                        {row.action ?? row.event_type ?? '-'}
+                        <span style={{ display: 'block' }}>
+                          {row.summary ?? row.action ?? row.event_type ?? '-'}
+                        </span>
+                        {accessMode ? (
+                          <span className="tableMeta" style={{ display: 'block' }}>
+                            {accessMode}
+                          </span>
+                        ) : null}
                       </td>
                       <td
                         style={{
@@ -4508,6 +4561,8 @@ function AuditDetailPanel({
 }) {
   const evSrc = evidenceSourcePill(row.evidence_source_type ?? row.evidence_source, workspaceEvidenceSource);
   const result = auditResultPill(row.result ?? row.status);
+  const actorKind = actorTypePill(row);
+  const accessMode = accessModeLabel(row);
 
   return (
     <aside
@@ -4519,7 +4574,7 @@ function AuditDetailPanel({
         Audit Event
       </p>
       <h4 style={{ marginBottom: '0.75rem', fontSize: '0.92rem' }}>
-        {row.action ?? row.event_type ?? 'Audit Event'}
+        {row.summary ?? row.action ?? row.event_type ?? 'Audit Event'}
       </h4>
 
       <div
@@ -4560,7 +4615,30 @@ function AuditDetailPanel({
         <p style={{ fontSize: '0.78rem', margin: 0 }}>
           {row.actor ?? row.system ?? 'system'}
         </p>
+        {actorKind ? (
+          <span style={{ display: 'inline-block', marginTop: '0.25rem' }}>
+            <StatusPill label={actorKind.label} variant={actorKind.variant} />
+          </span>
+        ) : null}
       </div>
+
+      {accessMode ? (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>
+            Access
+          </p>
+          <p style={{ fontSize: '0.78rem', margin: 0 }}>{accessMode}</p>
+        </div>
+      ) : null}
+
+      {row.summary ? (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>
+            Event
+          </p>
+          <p style={{ fontSize: '0.78rem', margin: 0 }}>{row.action ?? row.event_type ?? '-'}</p>
+        </div>
+      ) : null}
 
       <div style={{ marginBottom: '0.5rem' }}>
         <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>
