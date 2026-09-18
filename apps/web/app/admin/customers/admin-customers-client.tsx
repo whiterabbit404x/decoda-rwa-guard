@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { PilotDataLifecycle, founderLifecycleRows } from '../../pilot-retention';
+
 import {
   otherMembersLabel,
   primaryContactEmail,
@@ -176,6 +178,38 @@ export default function AdminCustomersClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The end-of-Pilot dates live on the DETAIL endpoint, not the listing, so the
+  // listing stays one statement. They are fetched only when a founder asks about
+  // one tenant, and a failed fetch says so rather than showing a date.
+  const [lifecycleId, setLifecycleId] = useState<string | null>(null);
+  const [lifecycle, setLifecycle] = useState<PilotDataLifecycle | null>(null);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
+
+  const openLifecycle = useCallback(
+    async (organizationId: string) => {
+      setLifecycleId(organizationId);
+      setLifecycle(null);
+      setLifecycleError(null);
+      try {
+        const response = await fetch(`/api/admin/customers/${organizationId}`, {
+          headers: authHeaders(),
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          setLifecycleError(`Data lifecycle could not be read (HTTP ${response.status}).`);
+          return;
+        }
+        const payload = (await response.json()) as { data_lifecycle?: PilotDataLifecycle | null };
+        setLifecycle(payload.data_lifecycle ?? null);
+        if (!payload.data_lifecycle) {
+          setLifecycleError('This deployment has not recorded a Pilot data lifecycle for this tenant.');
+        }
+      } catch {
+        setLifecycleError('Data lifecycle could not be read.');
+      }
+    },
+    [authHeaders],
+  );
 
   const load = useCallback(async () => {
     if (!isAuthenticated) {
@@ -476,11 +510,21 @@ export default function AdminCustomersClient() {
                   <td>
                     <div className="adminRowActions">
                       {customer.plan === 'pilot' ? (
-                        <PilotEvaluationControls
-                          customer={customer}
-                          disabled={!csrfReady || busyId === customer.id}
-                          onAct={act}
-                        />
+                        <>
+                          <PilotEvaluationControls
+                            customer={customer}
+                            disabled={!csrfReady || busyId === customer.id}
+                            onAct={act}
+                          />
+                          <button
+                            type="button"
+                            className="btn"
+                            data-testid="data-lifecycle-button"
+                            onClick={() => void openLifecycle(customer.id)}
+                          >
+                            Data lifecycle
+                          </button>
+                        </>
                       ) : null}
                       {customer.status === 'suspended' ? (
                         <button
@@ -700,6 +744,17 @@ export default function AdminCustomersClient() {
         </div>
       )}
 
+      {lifecycleId ? (
+        <PilotDataLifecyclePanel
+          lifecycle={lifecycle}
+          error={lifecycleError}
+          onClose={() => {
+            setLifecycleId(null);
+            setLifecycle(null);
+            setLifecycleError(null);
+          }}
+        />
+      ) : null}
       {openFeedback ? <FeedbackDetail item={openFeedback} onClose={() => setOpenFeedbackId(null)} /> : null}
 
     </main>
@@ -806,6 +861,45 @@ function PilotEvaluationControls({
         </button>
       )}
     </>
+  );
+}
+
+/**
+ * The founder view of one tenant's data schedule.
+ *
+ * Every row comes from ``founderLifecycleRows``, which prints "Not recorded" for
+ * a date the backend did not record. Nothing here computes a date from the grace
+ * constant: a schedule shown to a founder must match a deletion request that
+ * actually exists, or it is a number that will be wrong the first time someone
+ * relies on it.
+ */
+function PilotDataLifecyclePanel({
+  lifecycle,
+  error,
+  onClose,
+}: {
+  lifecycle: PilotDataLifecycle | null;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <section className="adminFeedbackDetail" data-testid="pilot-data-lifecycle" aria-label="Pilot data lifecycle">
+      <div className="adminFeedbackDetailHeader">
+        <h3>Pilot data lifecycle</h3>
+        <button type="button" className="btn" onClick={onClose}>Close</button>
+      </div>
+      {error ? <p>{error}</p> : null}
+      {!error && !lifecycle ? <p>Loading…</p> : null}
+      {lifecycle ? (
+        <div className="adminFeedbackDetailMeta">
+          {founderLifecycleRows(lifecycle).map((row) => (
+            <p key={row.label}>
+              <strong>{row.label}:</strong> {row.value}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

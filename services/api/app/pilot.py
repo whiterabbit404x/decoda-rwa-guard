@@ -56,6 +56,7 @@ from services.api.app import entitlements as plan_entitlement_engine
 from services.api.app import execution_authorization as execution_authz
 from services.api.app import mfa_authorization as mfa_authz
 from services.api.app import organizations as organization_service
+from services.api.app import pilot_retention
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
     automation_batch_size,
@@ -4019,6 +4020,13 @@ def provision_pilot_organization(
     organization_service.upsert_membership(
         connection, organization_id=str(organization['id']), user_id=user_id, role='owner',
     )
+    # Retention is provisioned WITH the tenant, not offered as an opt-in. A
+    # workspace created right now holds no record old enough for any of these
+    # periods to reach, so the policy is effective immediately and deletes
+    # nothing today; it is simply in force from the first record onward.
+    seeded = pilot_retention.ensure_workspace_retention_policies(
+        connection, workspace_id=workspace_id, plan=plan_entitlement_engine.PLAN_PILOT,
+    )
     log_audit(
         connection,
         action='organization.pilot_created',
@@ -4035,12 +4043,15 @@ def provision_pilot_organization(
                 else organization.get('evaluation_expires_at')
             ),
             'evaluation_days': plan_entitlement_engine.evaluation_days(),
+            'retention_policies_seeded': seeded,
+            'retention_grace_period_days': pilot_retention.PILOT_GRACE_PERIOD_DAYS,
         },
     )
     return {
         'organization': organization,
         'workspace_id': workspace_id,
         'workspace_name': workspace_name,
+        'retention_policies_seeded': seeded,
     }
 
 
@@ -5366,6 +5377,12 @@ def create_workspace_for_user(payload: dict[str, Any], request: Request) -> dict
             (str(uuid.uuid4()), workspace_id, user['id'], role),
         )
         connection.execute('UPDATE users SET current_workspace_id = %s, updated_at = NOW() WHERE id = %s', (workspace_id, user['id']))
+        # Same policy, same reason as the first workspace: a tenant's second
+        # workspace must not be the one with no retention.
+        pilot_retention.ensure_workspace_retention_policies(
+            connection, workspace_id=workspace_id,
+            plan=(organization or {}).get('plan') or plan_entitlement_engine.PLAN_PILOT,
+        )
         log_audit(
             connection,
             action='workspace.create',
@@ -7814,6 +7831,12 @@ def seed_demo_workspace(email: str, password: str, workspace_name: str, full_nam
                 (workspace_id, normalized_workspace_name, slug, user_id),
             )
             workspace_created = True
+            # Even the demo/dev seeding path. A workspace that exists without a
+            # retention policy is a workspace the worker will never sweep, and
+            # there is no path where that is the right default.
+            pilot_retention.ensure_workspace_retention_policies(
+                connection, workspace_id=workspace_id, plan=plan_entitlement_engine.PLAN_PILOT,
+            )
         if workspace_created or membership is None:
             connection.execute(
                 'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING',
@@ -30881,15 +30904,15 @@ def delete_account(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Workspace data lifecycle governance
 # ---------------------------------------------------------------------------
-_RETENTION_DATA_CLASSES = ('telemetry', 'detections', 'incidents', 'audit_logs', 'exports', 'user_data')
-_RETENTION_DEFAULT_DAYS = {
-    'telemetry': 90,
-    'detections': 365,
-    'incidents': 730,
-    'audit_logs': 2555,
-    'exports': 365,
-    'user_data': 30,
-}
+# The canonical periods live in services/api/app/pilot_retention.py — one place,
+# so no endpoint, worker, screen, or migration carries its own number. What used
+# to sit here was a DISPLAY-only default table: the numbers were rendered by GET
+# /workspace/retention-policies but no row existed, and schedule_requests only
+# sweeps a workspace that HAS a row. The screen therefore stated periods nothing
+# enforced. They are now seeded on every provisioning path and backfilled by
+# migration 0154, so what the screen states is what the worker applies.
+_RETENTION_DATA_CLASSES = pilot_retention.PILOT_DATA_CLASSES
+_RETENTION_DEFAULT_DAYS = pilot_retention.PILOT_RETENTION_DAYS
 
 
 def _validate_data_classes(values: Any) -> list[str]:
@@ -30902,28 +30925,94 @@ def _validate_data_classes(values: Any) -> list[str]:
     return normalized
 
 
+def _coerce_policy_datetime(value: Any) -> datetime | None:
+    """A timezone-aware datetime from a row value, or None. Never raises."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _workspace_retention_policy_rows(connection: Any, workspace_id: str) -> list[dict[str, Any]]:
+    """Every data class with the period that is ACTUALLY in force for it.
+
+    ``enforced`` is the field that matters. A policy row can exist, be enabled,
+    and still not be sweeping, because a policy seeded onto a workspace that
+    already holds records carries an ``effective_from`` notice window. Reporting
+    such a row as simply "enabled" would tell a customer their data is being
+    deleted on a schedule that has not started yet.
+
+    A class with NO row is reported as ``source = 'none'``, ``enforced = False``
+    and a null period — never as a default that is silently applied, because
+    nothing applies it. Showing an unenforced number as the retention period is
+    the exact misreport this change exists to remove, so the recommended default
+    is carried in its own field where it cannot be mistaken for one in force.
+    """
+    columns_ready = pilot_retention.policy_schedule_columns_ready(connection)
+    columns = 'data_class, retention_days, deletion_mode, enabled, updated_at'
+    if columns_ready:
+        columns += ', effective_from, source'
+    rows = connection.execute(
+        f'SELECT {columns} FROM workspace_retention_policies WHERE workspace_id = %s',
+        (workspace_id,),
+    ).fetchall()
+    configured = {str(row['data_class']): row for row in (rows or [])}
+    now = utc_now()
+    policies: list[dict[str, Any]] = []
+    for data_class in _RETENTION_DATA_CLASSES:
+        row = configured.get(data_class)
+        if row is None:
+            policies.append({
+                'data_class': data_class,
+                'retention_days': None,
+                'deletion_mode': None,
+                'enabled': False,
+                'enforced': False,
+                'effective_from': None,
+                'source': 'none',
+                'updated_at': None,
+                'recommended_retention_days': _RETENTION_DEFAULT_DAYS[data_class],
+                'rationale': pilot_retention.RETENTION_RATIONALE[data_class],
+            })
+            continue
+        effective_from = _coerce_policy_datetime(row.get('effective_from')) if columns_ready else None
+        pending = bool(effective_from and effective_from > now)
+        policies.append({
+            'data_class': data_class,
+            'retention_days': int(row['retention_days']),
+            'deletion_mode': str(row['deletion_mode']),
+            'enabled': bool(row['enabled']),
+            'enforced': bool(row['enabled']) and not pending,
+            'effective_from': _json_safe_value(effective_from),
+            'source': (str(row.get('source') or 'workspace') if columns_ready else 'workspace'),
+            'updated_at': _json_safe_value(row['updated_at']),
+            'recommended_retention_days': _RETENTION_DEFAULT_DAYS[data_class],
+            'rationale': pilot_retention.RETENTION_RATIONALE[data_class],
+        })
+    return policies
+
+
 def get_workspace_retention_policies(request: Request) -> dict[str, Any]:
     require_live_mode()
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         _user, workspace = _require_workspace_permission(connection, request, 'security.manage')
-        rows = connection.execute(
-            'SELECT data_class, retention_days, deletion_mode, enabled, updated_at FROM workspace_retention_policies WHERE workspace_id = %s',
-            (workspace['workspace_id'],),
-        ).fetchall()
-        configured = {str(row['data_class']): row for row in rows}
-        policies = []
-        for data_class in _RETENTION_DATA_CLASSES:
-            row = configured.get(data_class)
-            policies.append({
-                'data_class': data_class,
-                'retention_days': int(row['retention_days']) if row else _RETENTION_DEFAULT_DAYS[data_class],
-                'deletion_mode': str(row['deletion_mode']) if row else ('anonymize' if data_class == 'user_data' else 'hard_delete'),
-                'enabled': bool(row['enabled']) if row else True,
-                'source': 'workspace' if row else 'default',
-                'updated_at': _json_safe_value(row['updated_at']) if row else None,
-            })
-        return {'workspace_id': workspace['workspace_id'], 'policies': policies}
+        workspace_id = workspace['workspace_id']
+        policies = _workspace_retention_policy_rows(connection, workspace_id)
+        organization = organization_service.organization_for_workspace(connection, workspace_id)
+        holds = connection.execute(
+            "SELECT COUNT(*) AS count FROM workspace_legal_holds WHERE workspace_id = %s AND status = 'active'",
+            (workspace_id,),
+        ).fetchone()
+        lifecycle = pilot_retention.lifecycle_for_organization(
+            connection, organization, legal_hold_active=int((holds or {}).get('count') or 0) > 0,
+        )
+        return {
+            'workspace_id': workspace_id,
+            'policies': policies,
+            'pilot_lifecycle': lifecycle,
+            'grace_period_days': pilot_retention.PILOT_GRACE_PERIOD_DAYS,
+            'security_record_days': pilot_retention.PILOT_SECURITY_RECORD_DAYS,
+        }
 
 
 def update_workspace_retention_policies(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -30934,10 +31023,23 @@ def update_workspace_retention_policies(payload: dict[str, Any], request: Reques
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
+        columns_ready = pilot_retention.policy_schedule_columns_ready(connection)
         for item in policies:
             data_class = str(item.get('data_class') or '').strip().lower()
             if data_class not in _RETENTION_DATA_CLASSES:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f'Unsupported data_class: {data_class}')
+            if data_class == 'alerts' and not columns_ready:
+                # The 'alerts' class arrives with migration 0154, which also widens
+                # the data_class CHECK constraint. During a rolling deploy the API
+                # can be ahead of it; refusing with the reason beats a 500 from a
+                # constraint violation, and beats silently dropping the row.
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        'code': 'RETENTION_SCHEMA_NOT_MIGRATED',
+                        'message': 'Alert retention is unavailable until this deployment finishes migrating.',
+                    },
+                )
             retention_days = int(item.get('retention_days') or 0)
             if retention_days < 1 or retention_days > 3650:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='retention_days must be between 1 and 3650.')
@@ -30946,19 +31048,42 @@ def update_workspace_retention_policies(payload: dict[str, Any], request: Reques
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='deletion_mode must be hard_delete or anonymize.')
             if data_class == 'user_data' and deletion_mode != 'anonymize':
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='user_data must use anonymize mode.')
-            connection.execute(
-                '''
-                INSERT INTO workspace_retention_policies (workspace_id, data_class, retention_days, deletion_mode, enabled, updated_by_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (workspace_id, data_class) DO UPDATE SET
-                    retention_days = EXCLUDED.retention_days,
-                    deletion_mode = EXCLUDED.deletion_mode,
-                    enabled = EXCLUDED.enabled,
-                    updated_by_user_id = EXCLUDED.updated_by_user_id,
-                    updated_at = NOW()
-                ''',
-                (workspace['workspace_id'], data_class, retention_days, deletion_mode, bool(item.get('enabled', True)), user['id']),
-            )
+            if columns_ready:
+                # A period the customer chose is theirs immediately: source moves
+                # off 'pilot_default' and the seeded notice window is cleared,
+                # because that window exists to protect them from a period they
+                # did not pick, not from one they just did.
+                connection.execute(
+                    '''
+                    INSERT INTO workspace_retention_policies
+                        (workspace_id, data_class, retention_days, deletion_mode, enabled,
+                         source, effective_from, updated_by_user_id)
+                    VALUES (%s, %s, %s, %s, %s, 'workspace', NULL, %s)
+                    ON CONFLICT (workspace_id, data_class) DO UPDATE SET
+                        retention_days = EXCLUDED.retention_days,
+                        deletion_mode = EXCLUDED.deletion_mode,
+                        enabled = EXCLUDED.enabled,
+                        source = 'workspace',
+                        effective_from = NULL,
+                        updated_by_user_id = EXCLUDED.updated_by_user_id,
+                        updated_at = NOW()
+                    ''',
+                    (workspace['workspace_id'], data_class, retention_days, deletion_mode, bool(item.get('enabled', True)), user['id']),
+                )
+            else:
+                connection.execute(
+                    '''
+                    INSERT INTO workspace_retention_policies (workspace_id, data_class, retention_days, deletion_mode, enabled, updated_by_user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (workspace_id, data_class) DO UPDATE SET
+                        retention_days = EXCLUDED.retention_days,
+                        deletion_mode = EXCLUDED.deletion_mode,
+                        enabled = EXCLUDED.enabled,
+                        updated_by_user_id = EXCLUDED.updated_by_user_id,
+                        updated_at = NOW()
+                    ''',
+                    (workspace['workspace_id'], data_class, retention_days, deletion_mode, bool(item.get('enabled', True)), user['id']),
+                )
         log_audit(connection, action='retention.policy.update', entity_type='workspace', entity_id=workspace['workspace_id'], request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'policies': policies})
     return get_workspace_retention_policies(request)
 
@@ -31009,8 +31134,19 @@ def release_workspace_legal_hold(hold_id: str, payload: dict[str, Any], request:
         ).fetchone()
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Active legal hold not found.')
-        log_audit(connection, action='legal_hold.release', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'reason': reason})
-    return {'id': hold_id, 'status': 'released'}
+        # A scheduled end-of-Pilot purge resumes; a customer's own deletion
+        # request does not. The engine re-checks holds at execution, so a request
+        # still covered by another hold simply parks again.
+        resumed = pilot_retention.resume_blocked_pilot_purges(connection, workspace_id=workspace['workspace_id'])
+        log_audit(connection, action='legal_hold.release', entity_type='legal_hold', entity_id=hold_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'reason': reason, 'resumed_pilot_purges': resumed})
+    return {'id': hold_id, 'status': 'released', 'resumed_pilot_purges': resumed}
+
+
+#: Typed by the customer to confirm an immediate deletion. A checkbox or a bare
+#: `true` is not a confirmation for an irreversible action — this is a phrase the
+#: caller has to reproduce, so a mis-click, a replayed body, or an integration
+#: calling the endpoint by accident cannot destroy a workspace's records.
+DATA_DELETION_CONFIRMATION_PHRASE = 'DELETE'
 
 
 def create_data_deletion_request(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -31022,9 +31158,25 @@ def create_data_deletion_request(payload: dict[str, Any], request: Request) -> d
     reason = str(payload.get('reason') or '').strip()
     if not reason:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='reason is required.')
+    if str(payload.get('confirm') or '').strip() != DATA_DELETION_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                'code': 'DELETION_CONFIRMATION_REQUIRED',
+                'message': (
+                    f'Deletion is irreversible. Send confirm="{DATA_DELETION_CONFIRMATION_PHRASE}" '
+                    'to proceed.'
+                ),
+                'confirmation_phrase': DATA_DELETION_CONFIRMATION_PHRASE,
+            },
+        )
     request_id = str(uuid.uuid4())
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
+        # security.manage plus a RECENT re-authentication. Both are deliberate:
+        # the permission decides who may ask, and the reauthentication decides
+        # that the person asking is present right now rather than a stolen
+        # session doing it later.
         user, workspace = _require_workspace_permission(connection, request, 'security.manage', require_reauthentication=True)
         subject_user_id = str(payload.get('subject_user_id') or '').strip() or None
         if request_type == 'user_data' and not subject_user_id:
@@ -31044,7 +31196,7 @@ def create_data_deletion_request(payload: dict[str, Any], request: Request) -> d
                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb)''',
             (request_id, workspace['workspace_id'], request_type, _json_dumps(data_classes), subject_user_id, cutoff_at, request_status, reason, user['id'], _json_dumps({'blocking_legal_hold_ids': blocking})),
         )
-        log_audit(connection, action='data_deletion.request', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'data_classes': data_classes, 'status': request_status, 'blocking_legal_hold_ids': blocking})
+        log_audit(connection, action='data_deletion.request', entity_type='data_deletion_request', entity_id=request_id, request=request, user_id=user['id'], workspace_id=workspace['workspace_id'], metadata={'data_classes': data_classes, 'status': request_status, 'blocking_legal_hold_ids': blocking, 'request_type': request_type, 'confirmed': True})
     return {'id': request_id, 'status': request_status, 'data_classes': data_classes, 'blocking_legal_hold_ids': blocking}
 
 
@@ -31090,7 +31242,8 @@ def approve_and_execute_data_deletion_request(request_id: str, request: Request)
 def run_retention_worker_cycle(*, worker_name: str = 'retention-worker', batch_size: int = 25, dry_run: bool = False) -> dict[str, Any]:
     from services.api.app.data_retention import claim_request, execute_request, record_failure, schedule_requests
 
-    summary = {'scheduled': 0, 'claimed': 0, 'completed': 0, 'blocked': 0, 'retried': 0, 'failed': 0, 'dry_run': dry_run}
+    summary = {'scheduled': 0, 'claimed': 0, 'completed': 0, 'blocked': 0, 'retried': 0, 'failed': 0,
+               'pilots_ended': 0, 'policies_backfilled': 0, 'dry_run': dry_run}
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         if not dry_run:
@@ -31098,6 +31251,16 @@ def run_retention_worker_cycle(*, worker_name: str = 'retention-worker', batch_s
                 """INSERT INTO retention_worker_state (worker_name, heartbeat_at, sweep_started_at, updated_at)
                    VALUES (%s, NOW(), NOW(), NOW()) ON CONFLICT (worker_name) DO UPDATE SET
                    heartbeat_at = NOW(), sweep_started_at = NOW(), updated_at = NOW()""", (worker_name,))
+            # A dated Pilot expires by the clock, so no request handler is running
+            # at the moment it happens: this is where that fact gets written down
+            # and the grace window starts. It records the deadline the customer
+            # was given, never the moment the worker noticed.
+            summary['pilots_ended'] = int(pilot_retention.stamp_expired_pilots(connection).get('stamped') or 0)
+            # Heal any Pilot workspace still outside retention — one written by an
+            # API process that predates this change, or while 0154 was rolling
+            # out. Seeded with the same notice window, so a workspace healed here
+            # is never swept on the cycle that healed it.
+            summary['policies_backfilled'] = pilot_retention.backfill_missing_policies(connection)
         summary['scheduled'] = schedule_requests(connection) if not dry_run else 0
     if dry_run:
         with pg_connection() as connection:

@@ -10,15 +10,71 @@ from typing import Any
 
 from services.api.app.export_storage import load_export_storage
 
+#: The record OF RECORD for each data class: the table whose rows the class is
+#: named after. Anonymisation acts on this table alone, because it is the row the
+#: customer would still see afterwards.
 DATA_TARGETS = {
     'telemetry': ('telemetry_events', 'observed_at'),
     'detections': ('detections', 'detected_at'),
+    'alerts': ('alerts', 'created_at'),
     'incidents': ('incidents', 'created_at'),
     'audit_logs': ('audit_logs', 'created_at'),
 }
+
+#: Tables that belong to a data class but are not its record of record, deleted
+#: alongside it in HARD_DELETE mode only.
+#:
+#: Why this list exists: before it, deleting the ``detections`` class removed
+#: rows from ``detections`` and left every threat detection in place, and there
+#: was no ``alerts`` class at all — so an alert, a finding and a response action
+#: a Pilot produced were outside the deletion engine entirely. Saying "operational
+#: data is deleted" while those rows stayed is exactly the claim this codebase
+#: refuses to make.
+#:
+#: Tables whose rows disappear through an existing ``ON DELETE CASCADE`` are
+#: deliberately NOT listed — the database already removes them, and re-deleting
+#: them here would only inflate the record counts in the deletion report. The
+#: cascades relied on are, for ``alerts``: alert_events, finding_decisions,
+#: finding_actions, detection_metrics, alert_event_outbox, alert_cluster_members;
+#: for ``incidents``: incident_timeline, incident_evidence_snapshots,
+#: incident_forensic_analyses, ai_triage_jobs, ai_triage_results,
+#: ai_triage_citations, ai_recommendations; for ``detections``:
+#: detection_evidence.
+#:
+#: ANONYMIZE mode does not touch these tables. It is a redaction of the record of
+#: record, and the operation report says ``mode: anonymize`` so nothing reads it
+#: as a removal.
+CASCADE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
+    'telemetry': (
+        ('detection_events', 'created_at'),
+        ('monitoring_polls', 'poll_started_at'),
+    ),
+    'detections': (
+        ('threat_detections', 'detected_at'),
+    ),
+    'alerts': (
+        # `evidence` holds the raw on-chain records an alert is raised FROM. It
+        # belongs with the alert rather than with raw telemetry: an alert that
+        # outlived its own evidence would read as "no evidence found" rather than
+        # "evidence expired", which is the more dangerous of the two readings.
+        ('evidence', 'observed_at'),
+        ('asset_risk_findings', 'created_at'),
+        ('alert_clusters', 'created_at'),
+        ('alert_cluster_history', 'created_at'),
+        ('alert_triage_runs', 'created_at'),
+    ),
+    'incidents': (
+        ('response_actions', 'created_at'),
+        # The response/action trail. Its timestamp column is literally named
+        # `timestamp`, which is why the cascade DELETE below quotes identifiers.
+        ('action_history', 'timestamp'),
+    ),
+}
+
 ANONYMIZE_SQL = {
     'telemetry': "UPDATE telemetry_events SET payload_json = '{}'::jsonb, payload_hash = NULL WHERE workspace_id = %s AND observed_at < %s",
     'detections': "UPDATE detections SET title = '[retained detection]', evidence_summary = '[anonymized by retention policy]', raw_evidence_json = '{}'::jsonb, updated_at = NOW() WHERE workspace_id = %s AND detected_at < %s",
+    'alerts': "UPDATE alerts SET title = '[retained alert]', summary = '[anonymized by retention policy]', payload = '{}'::jsonb WHERE workspace_id = %s AND created_at < %s",
     'incidents': "UPDATE incidents SET summary = '[retained incident]', payload = '{}'::jsonb, updated_at = NOW() WHERE workspace_id = %s AND created_at < %s",
     'audit_logs': "UPDATE audit_logs SET user_id = NULL, ip_address = NULL, metadata = jsonb_build_object('_retention_anonymized', true) WHERE workspace_id = %s AND created_at < %s",
 }
@@ -68,6 +124,29 @@ def write_event(connection: Any, *, request_id: str, workspace_id: str, data_cla
     )
 
 
+def _storage_disclosure(storage: Any) -> dict[str, Any]:
+    """What a `storage_delete` on this backend can and cannot guarantee.
+
+    Recorded on every object-storage deletion event so the receipt is honest about
+    what happened. On an S3 bucket with Object Lock in COMPLIANCE mode a
+    ``delete_object`` call SUCCEEDS and writes a delete marker while the locked
+    version stays retrievable until its retention date — a deletion report that
+    said "deleted" and nothing else would be overstating that.
+    """
+    try:
+        lock = storage.object_lock_status() or {}
+    except Exception:  # pragma: no cover - a backend that cannot answer is reported as unknown
+        return {'backend': getattr(storage, 'backend_name', None), 'object_lock': 'unknown'}
+    return {
+        'backend': getattr(storage, 'backend_name', None),
+        'object_lock_enabled': lock.get('object_lock_enabled'),
+        'retention_mode': lock.get('retention_mode'),
+        'removed_from_active_storage': True,
+        # True only when the backend can hold a version past this delete.
+        'versions_may_persist_under_object_lock': bool(lock.get('worm')),
+    }
+
+
 def delete_registered_artifacts(connection: Any, *, request_id: str, workspace_id: str,
                                 data_class: str, cutoff: datetime) -> int:
     rows = connection.execute(
@@ -95,7 +174,7 @@ def delete_registered_artifacts(connection: Any, *, request_id: str, workspace_i
                     operation='storage_delete', records_affected=1, suffix=f'artifact:{row["id"]}',
                     details={'artifact_id': str(row['id']), 'provider': provider, 'object_key': key,
                              'source_table': row.get('source_table'), 'source_id': _safe(row.get('source_id')),
-                             'cutoff_at': _safe(cutoff)})
+                             'cutoff_at': _safe(cutoff), 'storage': _storage_disclosure(storage)})
     return len(rows)
 
 
@@ -126,6 +205,7 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
     for data_class in classes:
         mode = str(modes.get(data_class) or ('anonymize' if data_class == 'user_data' else 'hard_delete'))
         affected = 0
+        cascade_counts: dict[str, int] = {}
         before = after = None
         if data_class in DATA_TARGETS:
             table, timestamp = DATA_TARGETS[data_class]
@@ -148,6 +228,22 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
                     (workspace_id,),
                 ).fetchone()
                 after = str(row['row_hash']) if row and row.get('row_hash') else None
+            if mode != 'anonymize':
+                # The rest of the class. Hard delete only: anonymisation redacts
+                # the record of record and leaves these rows alone, which the
+                # operation's recorded mode already says.
+                for extra_table, extra_timestamp in CASCADE_TABLES.get(data_class, ()):
+                    # Validated against the safe-identifier allowlist first, THEN
+                    # quoted: `action_history.timestamp` is a column named after a
+                    # SQL keyword, and quoting is a no-op for every other name here.
+                    _validate_sql_identifier(extra_table, 'retention table')
+                    _validate_sql_identifier(extra_timestamp, 'retention timestamp column')
+                    extra = connection.execute(
+                        f'DELETE FROM "{extra_table}" WHERE workspace_id = %s AND "{extra_timestamp}" < %s',
+                        (workspace_id, cutoff),
+                    )
+                    cascade_counts[extra_table] = max(int(extra.rowcount or 0), 0)
+                    affected += cascade_counts[extra_table]
         elif data_class == 'exports':
             rows = connection.execute(
                 """SELECT id, storage_backend, storage_object_key FROM export_jobs
@@ -168,7 +264,8 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
                 write_event(connection, request_id=request_id, workspace_id=workspace_id, data_class='exports',
                             operation='storage_delete', records_affected=1, suffix=f'export:{row["id"]}',
                             details={'export_job_id': str(row['id']), 'storage_backend': row.get('storage_backend'),
-                                     'object_key': key, 'cutoff_at': _safe(cutoff)})
+                                     'object_key': key, 'cutoff_at': _safe(cutoff),
+                                     'storage': _storage_disclosure(storage)})
         elif data_class == 'user_data':
             if not subject:
                 raise ValueError('user_data deletion requires subject_user_id')
@@ -190,11 +287,14 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
         external = delete_registered_artifacts(connection, request_id=request_id, workspace_id=workspace_id,
                                                data_class=data_class, cutoff=cutoff)
         operations[data_class] = {'records_affected': affected, 'external_artifacts_deleted': external, 'mode': mode}
+        if cascade_counts:
+            operations[data_class]['tables'] = dict(cascade_counts)
         write_event(connection, request_id=request_id, workspace_id=workspace_id, data_class=data_class,
                     operation='anonymize' if mode == 'anonymize' else 'hard_delete', records_affected=affected,
                     anchor_before=before, anchor_after=after,
                     details={'cutoff_at': _safe(cutoff), 'worker_name': worker_name,
-                             'external_artifacts_deleted': external, 'subject_user_id': subject})
+                             'external_artifacts_deleted': external, 'subject_user_id': subject,
+                             'tables': dict(cascade_counts) or None})
     report = {
         'request_id': request_id,
         'workspace_id': workspace_id,
@@ -214,8 +314,27 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
 
 
 def schedule_requests(connection: Any) -> int:
+    """Queue today's age-based sweep for every workspace whose policy is live.
+
+    ``effective_from`` is what makes seeding a retention policy onto an EXISTING
+    workspace safe: the row is real, enabled and visible from the moment it is
+    written, and the sweep still cannot act on it until the stated date. Without
+    that gate, deploying the policy backfill would itself be a bulk deletion of
+    every record older than the new period — which is the one thing a retention
+    rollout must not be.
+
+    The column arrives with migration 0154. On a deployment whose API is ahead of
+    its migrations the gate is simply absent from the statement, which is the
+    pre-existing behaviour (no seeded policies exist there yet either).
+    """
+    from services.api.app.pilot_retention import policy_schedule_columns_ready
+
+    effective_gate = (
+        'AND (p.effective_from IS NULL OR p.effective_from <= NOW())'
+        if policy_schedule_columns_ready(connection) else ''
+    )
     cursor = connection.execute(
-        """INSERT INTO data_deletion_requests
+        f"""INSERT INTO data_deletion_requests
            (id, workspace_id, request_type, data_classes, cutoff_at, status, reason,
             requested_by_user_id, result, idempotency_key, next_attempt_at)
            SELECT gen_random_uuid(), p.workspace_id, 'retention_sweep', jsonb_build_array(p.data_class),
@@ -229,6 +348,7 @@ def schedule_requests(connection: Any) -> int:
                          ORDER BY CASE WHEN wm.user_id = p.updated_by_user_id THEN 0
                                        WHEN wm.role IN ('owner', 'workspace_owner') THEN 1 ELSE 2 END, wm.created_at LIMIT 1) actor ON TRUE
            WHERE p.enabled = TRUE
+           {effective_gate}
            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"""
     )
     return max(int(cursor.rowcount or 0), 0)

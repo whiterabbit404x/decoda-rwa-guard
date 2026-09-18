@@ -148,6 +148,8 @@ When `EXPORT_STORAGE_BACKEND=s3`:
 - The API response for export creation includes `object_lock_enabled` when known.
 - Object Lock (COMPLIANCE mode recommended) prevents any user including bucket owners from deleting or modifying objects during the retention period.
 
+**This conflicts with customer deletion, and the conflict is deliberate — but it must not be hidden.** A retention sweep, an end-of-Pilot purge, and a customer's own immediate-deletion request all call `delete_object`. On a COMPLIANCE-mode bucket that call succeeds and writes a delete marker while the locked version stays retrievable until its retention date. Decoda therefore records the bucket's object-lock state in every `storage_delete` event (`details.storage`), so the deletion receipt says a locked version may persist rather than implying the bytes are gone. Set the bucket's Object Lock retention period no longer than the evidence retention period you publish, or be prepared to state the difference to customers.
+
 ---
 
 ## Audit Log Hash Chaining
