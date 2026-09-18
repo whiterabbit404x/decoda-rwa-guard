@@ -305,7 +305,7 @@ def _execute(classes, modes, handler=None, cutoff=NOW):
 
 def _deleted_tables(connection) -> set[str]:
     return {
-        call[0].split()[2] for call in connection.calls if call[0].startswith('DELETE FROM')
+        call[0].split()[2].strip('"') for call in connection.calls if call[0].startswith('DELETE FROM')
     }
 
 
@@ -349,7 +349,11 @@ def test_8b_alerts_is_a_real_retention_data_class_end_to_end():
 
 def test_9_incidents_are_deleted_with_their_response_history():
     connection, _ = _execute(['incidents'], {'incidents': 'hard_delete'})
-    assert {'incidents', 'response_actions'} <= _deleted_tables(connection)
+    assert {'incidents', 'response_actions', 'action_history'} <= _deleted_tables(connection)
+    # action_history's timestamp column is named after a SQL keyword, so the
+    # cascade DELETE quotes identifiers rather than relying on it parsing bare.
+    history = [sql for sql, _ in connection.calls if 'action_history' in sql][0]
+    assert history == 'DELETE FROM "action_history" WHERE workspace_id = %s AND "timestamp" < %s'
 
 
 def test_9b_anonymize_mode_redacts_the_record_and_deletes_nothing():

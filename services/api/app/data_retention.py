@@ -65,6 +65,9 @@ CASCADE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     'incidents': (
         ('response_actions', 'created_at'),
+        # The response/action trail. Its timestamp column is literally named
+        # `timestamp`, which is why the cascade DELETE below quotes identifiers.
+        ('action_history', 'timestamp'),
     ),
 }
 
@@ -230,10 +233,13 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
                 # the record of record and leaves these rows alone, which the
                 # operation's recorded mode already says.
                 for extra_table, extra_timestamp in CASCADE_TABLES.get(data_class, ()):
+                    # Validated against the safe-identifier allowlist first, THEN
+                    # quoted: `action_history.timestamp` is a column named after a
+                    # SQL keyword, and quoting is a no-op for every other name here.
                     _validate_sql_identifier(extra_table, 'retention table')
                     _validate_sql_identifier(extra_timestamp, 'retention timestamp column')
                     extra = connection.execute(
-                        f'DELETE FROM {extra_table} WHERE workspace_id = %s AND {extra_timestamp} < %s',
+                        f'DELETE FROM "{extra_table}" WHERE workspace_id = %s AND "{extra_timestamp}" < %s',
                         (workspace_id, cutoff),
                     )
                     cascade_counts[extra_table] = max(int(extra.rowcount or 0), 0)

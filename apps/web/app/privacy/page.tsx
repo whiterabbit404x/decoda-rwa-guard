@@ -68,6 +68,16 @@ export default function PrivacyPage() {
         cancelled and nothing is deleted.
       </p>
 
+      <h2>What the schedule does not cover</h2>
+      <p>
+        The schedule above removes your operational security records. It does not remove your workspace configuration:
+        the asset registry, monitoring targets and monitoring configuration, integrations and their stored credentials,
+        API keys, webhooks, notification destinations, team membership and invitations, governance policies, and
+        workspace settings remain until the account is closed. Closing the account removes them; request it from
+        Settings → Security, or contact <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>. We
+        list this rather than implying the schedule deletes everything, because it does not.
+      </p>
+
       <h2>Requesting deletion earlier</h2>
       <p>
         A workspace owner or administrator can request immediate deletion at any time from Settings → Security. The request

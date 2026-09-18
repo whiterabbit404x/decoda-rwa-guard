@@ -96,6 +96,10 @@ Reactivating, extending, setting a future deadline, suspending, or upgrading to 
 
 An organization that is `expired` with NO `evaluation_expires_at` has no recorded end date. Nothing invents one: no grace window starts and no deletion is ever queued for it. The founder console reports "Pilot end date not recorded"; ending the Pilot explicitly is what starts the clock.
 
+### What the engine does NOT sweep
+
+The seven data classes cover the operational security record. They do NOT cover workspace configuration, and no customer-facing surface may imply otherwise: the asset registry, targets and monitoring configuration, integrations and their stored credentials, API keys, webhooks, notification destinations, membership and invitations, governance policies, onboarding sessions, billing records, and workspace settings all survive every schedule on this page. `/privacy` states this explicitly under "What the schedule does not cover". Removing them is account closure, which is a separate, manual workflow today.
+
 **The retention worker is what performs all of this.** If `retention-worker` is not deployed, the periods published on `/privacy` and shown in Settings → Security are not applied and a queued end-of-Pilot deletion never executes. `/ops` readiness reports worker freshness; a stale worker is reported as stale, never assumed healthy.
 
 Deletion is two-step and auditable:

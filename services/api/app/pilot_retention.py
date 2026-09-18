@@ -254,7 +254,8 @@ def _columns_present(connection: Any, table: str, columns: tuple[str, ...]) -> b
     try:
         row = connection.execute(
             '''SELECT COUNT(*) AS present FROM information_schema.columns
-               WHERE table_schema = 'public' AND table_name = %s AND column_name = ANY(%s)''',
+               WHERE table_schema = 'public' AND table_name::text = %s::text
+                 AND column_name::text = ANY(%s::text[])''',
             (table, list(columns)),
         ).fetchone()
     except Exception:  # pragma: no cover - a failed probe is reported as not ready
@@ -405,6 +406,13 @@ def _schedule_purge_request(
     The idempotency key carries ``ended_at``, so re-ending a Pilot after a
     reactivation queues a fresh schedule instead of colliding with the cancelled
     one.
+
+    Every parameter is cast explicitly. This is an ``INSERT ... SELECT`` rather
+    than an ``INSERT ... VALUES``, and PostgreSQL does not resolve an unknown
+    parameter in a SELECT output list from the insert target's column type the
+    way it does for VALUES — an uncast placeholder lands as ``text`` against a
+    ``uuid``/``timestamptz`` column and the statement fails at runtime, where no
+    fake-connection test would catch it.
     """
     key = f'pilot-{idempotency_suffix}:{workspace_id}:{ended_at.isoformat()}'
     cursor = connection.execute(
@@ -412,9 +420,10 @@ def _schedule_purge_request(
         INSERT INTO data_deletion_requests
             (id, workspace_id, request_type, data_classes, cutoff_at, status, reason,
              requested_by_user_id, result, idempotency_key, next_attempt_at, requested_at, updated_at)
-        SELECT %s, %s, %s, %s::jsonb, %s, 'approved', %s, actor.user_id, %s::jsonb, %s, %s, NOW(), NOW()
+        SELECT %s::uuid, %s::uuid, %s::text, %s::jsonb, %s::timestamptz, 'approved', %s::text,
+               actor.user_id, %s::jsonb, %s::text, %s::timestamptz, NOW(), NOW()
         FROM (SELECT wm.user_id FROM workspace_members wm
-              WHERE wm.workspace_id = %s
+              WHERE wm.workspace_id = %s::uuid
               ORDER BY CASE WHEN wm.role IN ('owner', 'workspace_owner') THEN 0 ELSE 1 END,
                        wm.created_at
               LIMIT 1) actor

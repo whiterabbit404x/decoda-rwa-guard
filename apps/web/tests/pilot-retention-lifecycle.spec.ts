@@ -232,6 +232,10 @@ test('the public policy pages state the schedule and the backup limitation', () 
   expect(privacy).toContain('Grace period — 30 days');
   expect(privacy).toContain('Legal holds');
   expect(privacy).toContain('Backups');
+  // The schedule covers operational records, not workspace configuration. Saying
+  // so is what keeps "your data is deleted" from being an overstatement.
+  expect(privacy).toContain('What the schedule does not cover');
+  expect(privacy).toContain('asset registry');
   expect(privacy).not.toContain('until contractual retention ends');
   expect(privacy.toLowerCase()).not.toContain('zero residual');
 
