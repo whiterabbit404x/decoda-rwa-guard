@@ -47,9 +47,11 @@ export default function PrivacyPage() {
         </tbody>
       </table>
       <p>
-        A workspace owner can shorten or lengthen any of these periods in Settings → Security. The period shown there is the
-        one actually applied; a period that has been configured but has not started applying yet is labelled as such rather
-        than shown as active.
+        Settings → Security shows the period in force for each class, where it came from, and whether it is being applied
+        yet: a period that has been configured but has not started applying is labelled as such rather than shown as
+        active, and a class with no policy reads &ldquo;no automatic deletion&rdquo; rather than a number nothing applies.
+        A workspace owner can shorten or lengthen any of these periods through Decoda&rsquo;s API, or by asking us to; the
+        change is audited and requires a recent re-authentication.
       </p>
 
       <h2>What happens when a Pilot ends</h2>
@@ -82,10 +84,11 @@ export default function PrivacyPage() {
 
       <h2>Requesting deletion earlier</h2>
       <p>
-        A workspace owner or administrator can request immediate deletion at any time from Settings → Security. The request
-        requires a recent re-authentication and an explicit typed confirmation, is recorded in the audit log, and produces a
-        deletion receipt — a hash of the deletion report, listing what was removed and how many records, and containing none
-        of the deleted content. Deleted records cannot be restored through any Decoda API.
+        A workspace owner or administrator can request immediate deletion at any time, through Decoda&rsquo;s API or by
+        contacting <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>. The request requires a recent
+        re-authentication and an explicit typed confirmation, is recorded in the audit log, and produces a deletion
+        receipt — a hash of the deletion report, listing what was removed and how many records, and containing none of the
+        deleted content. Deleted records cannot be restored through any Decoda API.
       </p>
 
       <h2>Legal holds</h2>
