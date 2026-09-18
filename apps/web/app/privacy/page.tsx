@@ -77,8 +77,8 @@ export default function PrivacyPage() {
         API keys, webhooks, notification destinations, team membership and invitations, governance policies, and
         workspace settings are not on any automatic schedule. Removing them means deleting the workspace itself, which
         Decoda does on request — contact <a href="mailto:support@decodasecurity.com">support@decodasecurity.com</a>.
-        Deleting your individual user account (Account settings) anonymizes your own identity and revokes your sessions;
-        it does not delete the workspace. We list this rather than implying the schedule deletes everything, because it
+        Deleting your individual user account anonymizes your own identity and revokes your sessions; it does not delete
+        the workspace. We list this rather than implying the schedule deletes everything, because it
         does not.
       </p>
 
