@@ -27,14 +27,25 @@ const principles = [
     // verifiable" is stated only because a public-key signature makes it true:
     // it was not claimable while the only seal was a shared-secret HMAC.
     body: 'Evidence exports contain a SHA-256 hash for each file, a canonical manifest hash and a Merkle integrity root, '
-      + 'so any change to a packaged artifact is detectable. New evidence packages are signed with Decoda\'s evidence-signing '
-      + 'key and can be verified offline using the published public verification key. Verification does not require access to '
-      + 'Decoda\'s application, API, database or any Decoda secret. Packages carry stable UUIDs and an audit-chain anchor.',
+      + 'so any change to a packaged artifact is detectable offline \u2014 without access to Decoda\'s application, API, '
+      + 'database or any Decoda secret. Authenticity is reported separately from integrity: where a deployment has '
+      + 'provisioned Decoda\'s Ed25519 evidence-signing key, new packages also carry a public-key signature that proves '
+      + 'origin offline against the published verification key, and a package sealed only with the legacy shared-secret '
+      + 'seal is reported as \u201cauthenticity not independently verifiable\u201d rather than as signed. Every package '
+      + 'carries a stable UUID and an audit-chain anchor.',
   },
   {
     icon: 'auditlog',
-    title: 'Immutable audit logs',
-    body: 'Every governance action, incident record, response action, and export operation is written to an append-only audit log. Audit entries are not editable after creation.',
+    // NOT "immutable": the retention worker is allowed to delete audit rows once
+    // their retention period expires, and the Privacy Policy publishes that
+    // schedule. What the database trigger actually guarantees is append-only —
+    // no UPDATE from anything, no DELETE from the application.
+    title: 'Append-only, hash-chained audit logs',
+    body: 'Every governance action, incident record, response action and export operation is written to an audit log '
+      + 'that a database trigger keeps append-only: no audit row can be rewritten, and the application cannot delete '
+      + 'one. Rows are SHA-256 hash-chained per workspace, so a removal or reordering is detectable. Audit records are '
+      + 'kept for the retention period published in the Privacy Policy and are then removed on that schedule by the '
+      + 'retention worker \u2014 they are not kept forever.',
   },
   {
     icon: 'proofgates',
@@ -43,12 +54,38 @@ const principles = [
   },
 ];
 
+// Every line below states who enforces it. A control Decoda's own code applies
+// is written as a Decoda guarantee; a control that belongs to the deployment
+// platform or the storage bucket is attributed there and NOT claimed as ours.
+// See docs/PRODUCTION_SECURITY_CONFIGURATION.md for the operator checks that
+// would let a deployment-dependent line be strengthened.
 const dataProtectionItems = [
   'RPC provider credentials are stored encrypted and never logged in plaintext.',
-  'Workspace secrets (webhook tokens, API keys) use envelope encryption.',
-  'Evidence packages are stored with server-side encryption at rest.',
-  'All API traffic uses TLS. Internal service communication is authenticated.',
-  'Database connections use short-lived credentials with automatic rotation in production.',
+  // Not "envelope encryption": secret_crypto.py encrypts the plaintext DIRECTLY
+  // under one managed key. There is no data key wrapped by a key-encrypting key.
+  'Workspace secrets — webhook tokens, API keys, OIDC client secrets and MFA seeds — are encrypted with '
+    + 'AES-256-GCM under a managed, versioned application key, each with its own random nonce and bound to the '
+    + 'record it belongs to.',
+  'Account passwords are stored using salted scrypt password hashing.',
+  // export_storage.py calls put_object() without ServerSideEncryption, so
+  // encryption at rest is whatever the configured bucket applies. We report the
+  // bucket's Object Lock state rather than assuming WORM.
+  'Evidence packages are stored in the object storage configured for your deployment. Encryption at rest and '
+    + 'WORM/Object-Lock behaviour come from that storage configuration, not from Decoda application code, and the '
+    + 'product reports the bucket\u2019s Object Lock state rather than assuming it.',
+  // TLS is terminated by Vercel/Railway. No Decoda code sets a TLS version or
+  // cipher policy, so we do not name a TLS version here.
+  'Production web and API traffic is served over HTTPS by the deployment platform, which terminates TLS. The web '
+    + 'application sends HTTP Strict-Transport-Security in production. Decoda application code does not set the TLS '
+    + 'version or cipher policy.',
+  // Internal analysis calls carry no application credential. Saying so is the
+  // only honest option; "authenticated" was not true.
+  'Internal analysis services are separated from the public internet by deployment network configuration rather '
+    + 'than by an application-level credential.',
+  // credential_rotation.py has no database credential type at all.
+  'Decoda tracks rotation schedules for application secrets — signing keys, encryption keys, API keys, webhook and '
+    + 'integration credentials — and supports managed rotation through AWS Secrets Manager where it is configured. '
+    + 'Database credentials are not on an automated rotation schedule.',
   'No third-party analytics scripts run inside the authenticated product UI.',
 ];
 
@@ -84,6 +121,41 @@ const disclosureFaqs = [
       + 'the timestamp, and those events appear in your own workspace audit history as \u201cDecoda staff\u201d, '
       + 'marked read-only or change. Cross-tenant listings \u2014 an internal directory spanning all customers '
       + '\u2014 are recorded internally and are not shown in any one customer\u2019s history.',
+  },
+  {
+    q: 'Do you require multi-factor authentication?',
+    // Enforced server-side at one chokepoint (require_pilot_mfa) on every
+    // authenticated Pilot route — see docs/PILOT_MFA_BOUNDARY.md. The last
+    // sentence is there because MFA is routinely oversold as a token-theft
+    // control, and that document explicitly states it is not one.
+    a: 'Yes, for Pilot. Every human user of a Pilot workspace must have a second factor enrolled AND must have '
+      + 'completed a challenge on the current session before any Pilot business or data API will answer them. It is '
+      + 'enforced on the server for every role and every authenticated route, including direct API calls, newly '
+      + 'invited accounts and sessions that existed before enrolment — not by hiding screens in the UI. '
+      + 'Approving a response action or an execution requires a further, recent step-up challenge. MFA protects '
+      + 'sign-in and session access; it does not make a stolen session token harmless, and we do not claim it does.',
+  },
+  {
+    q: 'Does Decoda ever hold our wallet keys or move our funds?',
+    a: 'No. Decoda does not request, ingest or store customer wallet private keys, seed phrases or customer signing '
+      + 'credentials — there is no field anywhere in the product that accepts one, and values shaped like one are '
+      + 'stripped or refused at ingestion. Pilot workspaces additionally cannot execute production blockchain state '
+      + 'changes at all: they observe, investigate, simulate, recommend and evidence. Signing, broadcasting, pausing '
+      + 'a contract, freezing a wallet and moving funds are refused by a server-side entitlement check, not by a '
+      + 'hidden button.',
+  },
+  {
+    q: 'What happens to the data we send you?',
+    // Phase 12 rules: never "no sensitive data reaches Decoda" and never "all
+    // telemetry is anonymized". Both would be false — the request arrives
+    // before the sanitizer runs, and public chain fields are kept on purpose.
+    a: 'Decoda’s supported telemetry is public blockchain data. Credential-shaped values — private keys, '
+      + 'seed phrases, API tokens, passwords — are stripped at ingestion before the record is stored or '
+      + 'forwarded, and each workspace can add its own redaction rules. Two things we will not claim: the raw request '
+      + 'does reach Decoda before the sanitizer runs, and rows written before a redaction rule existed are not '
+      + 'retroactively rewritten. Public chain fields such as addresses, transaction hashes and amounts are kept '
+      + 'deliberately — they are what the product monitors — so this is redaction of credentials, not '
+      + 'anonymization of telemetry.',
   },
   {
     q: 'Is Decoda SOC 2 certified?',
@@ -208,7 +280,7 @@ export default function TrustPage() {
         <div className="trustHeroBadges">
           <span className="trustHeroBadge trustHeroBadge--green">Fail-closed by design</span>
           <span className="trustHeroBadge trustHeroBadge--green">Workspace-isolated</span>
-          <span className="trustHeroBadge trustHeroBadge--green">Immutable audit trail</span>
+          <span className="trustHeroBadge trustHeroBadge--green">Append-only audit trail</span>
           <span className="trustHeroBadge trustHeroBadge--yellow">SOC 2 — in roadmap, not yet certified</span>
         </div>
         <p className="trustHeroProofLine">

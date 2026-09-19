@@ -209,7 +209,7 @@ export const lifecycleStages: LifecycleStage[] = [
   { icon: 'alerts', title: 'Alert Correlation', detail: 'Cluster and enrich related events', tone: 'indigo' },
   { icon: 'incident', title: 'Incident Investigation', detail: 'Deep dive into root cause', tone: 'purple' },
   { icon: 'policy', title: 'Policy-Gated Response', detail: 'Recommend and approve safe actions', tone: 'amber' },
-  { icon: 'verified', title: 'Cryptographic Evidence', detail: 'Immutable proof and audit trail', tone: 'green' },
+  { icon: 'verified', title: 'Cryptographic Evidence', detail: 'Tamper-evident proof and audit trail', tone: 'green' },
 ];
 
 // ── Product console preview callouts (ILLUSTRATION ONLY) ─────
@@ -385,7 +385,7 @@ export const policyLanes: PolicyLane[] = [
     caption: 'Only approved actions run, and each one leaves a record behind it.',
     steps: [
       { icon: 'response', title: 'Execute', detail: 'actions', tone: 'blue' },
-      { icon: 'verified', title: 'Record evidence', detail: 'immutable proof', tone: 'green' },
+      { icon: 'verified', title: 'Record evidence', detail: 'tamper-evident proof', tone: 'green' },
     ],
   },
 ];
