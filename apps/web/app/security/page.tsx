@@ -12,9 +12,10 @@ export default function SecurityPage() {
       <h2>Core controls</h2>
       <ul>
         <li>Role-based workspace access with owner/admin/analyst/viewer scopes.</li>
-        <li>Session management, CSRF protection, and optional MFA workflows.</li>
+        <li>Session management, CSRF protection, and multi-factor authentication &mdash; mandatory for every human user of a Pilot workspace, configurable elsewhere.</li>
         <li>Audit logs for workspace administration and workflow-critical actions.</li>
-        <li>Encrypted transport in deployed environments and secret-based service integrations.</li>
+        <li>HTTPS transport in deployed environments, terminated by the deployment platform; Decoda application code does not set the TLS version or cipher policy.</li>
+        <li>Workspace secrets encrypted with AES-256-GCM under a managed, versioned application key; passwords hashed with salted scrypt.</li>
       </ul>
 
       <h2>Security reporting</h2>
