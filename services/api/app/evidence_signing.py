@@ -716,15 +716,48 @@ def compute_audit_row_hash(
     return _sha256_hex(canonical_json(payload))
 
 
+def _is_retention_anonymized(row: dict[str, Any]) -> bool:
+    """Whether this row is in the exact state retention anonymization leaves behind.
+
+    The shape is the one migration 0156 permits and nothing else can produce: the
+    actor cleared and the metadata replaced by the retention marker alone. Any
+    other combination — a marker beside surviving keys, a marker with an actor
+    still attached — is NOT an anonymized row and is content-verified normally,
+    so the marker cannot be used to excuse a row from verification.
+    """
+    if row.get('user_id'):
+        return False
+    return row.get('metadata') == {'_retention_anonymized': True}
+
+
 def verify_audit_chain(rows: list[dict[str, Any]], *, initial_previous_hash: str | None = None) -> dict[str, Any]:
     """
     Verify the hash chain integrity for a list of audit rows.
 
     Rows must be ordered by created_at ASC (oldest first).
-    Returns {'valid': bool, 'errors': list[str], 'chain_length': int}.
+
+    Returns ``{'valid', 'errors', 'chain_length', 'anonymized_rows',
+    'fully_verifiable'}``.
+
+    ``valid`` is the tamper verdict: linkage holds across every row, and every
+    row whose content CAN be recomputed matches its stored hash.
+
+    Retention anonymization is the one operation allowed to destroy fields the
+    row hash covers (``user_id`` and ``metadata``), so an anonymized row's
+    content hash can never be recomputed again — the inputs are gone, by design
+    and by promise. Those rows are counted in ``anonymized_rows`` rather than
+    reported as tampered, because a retention sweep running as published is not
+    evidence of tampering and must not raise one.
+
+    What that costs is stated rather than hidden: ``fully_verifiable`` is True
+    only when no row was anonymized. A caller that needs "every row was
+    content-verified" must read that field — it cannot reach the claim through
+    ``valid`` alone. The linkage check still runs on anonymized rows, so
+    reordering, removal or substitution anywhere in the chain is still caught.
     """
     errors: list[str] = []
     previous_hash: str | None = initial_previous_hash
+    anonymized_rows = 0
 
     for i, row in enumerate(rows):
         row_id = str(row.get('id', ''))
@@ -737,6 +770,14 @@ def verify_audit_chain(rows: list[dict[str, Any]], *, initial_previous_hash: str
                 f'chain_break_at_row_{i}:id={row_id}'
                 f':expected_prev={previous_hash}:stored_prev={stored_prev}'
             )
+
+        if stored_hash and _is_retention_anonymized(row):
+            # Linkage checked above; content is unrecomputable by design. Advance
+            # on the STORED hash, which retention may not alter, so every later
+            # row is still verified against the real chain.
+            anonymized_rows += 1
+            previous_hash = stored_hash
+            continue
 
         # Recompute row_hash
         if stored_hash:
@@ -764,4 +805,10 @@ def verify_audit_chain(rows: list[dict[str, Any]], *, initial_previous_hash: str
             # Row pre-dates hash chaining; advance the chain only if we have no errors yet
             previous_hash = stored_prev if stored_prev else previous_hash
 
-    return {'valid': len(errors) == 0, 'errors': errors, 'chain_length': len(rows)}
+    return {
+        'valid': len(errors) == 0,
+        'errors': errors,
+        'chain_length': len(rows),
+        'anonymized_rows': anonymized_rows,
+        'fully_verifiable': len(errors) == 0 and anonymized_rows == 0,
+    }

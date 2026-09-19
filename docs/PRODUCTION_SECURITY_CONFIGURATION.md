@@ -204,19 +204,38 @@ Secrets Manager and raises otherwise.
 | **Claim unlocked** | Every retention period published on `/privacy` and `/trust`. If the worker is not running, **nothing is deleted on schedule** and those pages become inaccurate |
 | **Verified** | ☐ not yet verified |
 
-> 🔴 **Known defect, must be resolved before the audit-anonymization claim is
-> accurate.** Migration `0100` installs
-> `guard_audit_logs_append_only`, which permits `DELETE` when
-> `app.retention_worker='on'` but raises `'audit_logs is append-only'` on
-> **every** `UPDATE`, unconditionally. `data_retention.py` anonymizes audit rows
-> with an `UPDATE` (`ANONYMIZE_SQL['audit_logs']`), and
-> `pilot_retention.py` selects `'anonymize'` as the audit mode for the
-> end-of-Pilot sequence. Against real PostgreSQL that `UPDATE` raises. The
-> existing test asserts only on the migration's **text**, never executing the
-> trigger, so this is not caught. Until it is fixed, treat "audit logs are
-> anonymized" on `/privacy` as unproven. `/trust` no longer claims immutability
-> and states that audit records are removed on the published schedule, which is
-> true under either resolution.
+> ✅ **Resolved in migration `0156`.** Migration `0100` installed
+> `guard_audit_logs_append_only`, which permitted `DELETE` when
+> `app.retention_worker='on'` but raised `'audit_logs is append-only'` on
+> **every** `UPDATE`, unconditionally — including the `UPDATE` that
+> `data_retention.py` uses to anonymize audit rows
+> (`ANONYMIZE_SQL['audit_logs']`), which `pilot_retention.py` selects as the
+> audit mode for the end-of-Pilot sequence. Against real PostgreSQL that
+> `UPDATE` raised, so the anonymization step could never run.
+>
+> `0156` replaces the guard body. `DELETE` is unchanged. `UPDATE` is permitted
+> only under a **separate** transaction-local flag,
+> `app.audit_retention_anonymize='on'`, and only when the row moves in exactly
+> the three columns `/privacy` names (`user_id`, `ip_address`, `metadata`) to
+> exactly the anonymized values it names. Every other column — primary key,
+> workspace, action, entity, `created_at` and the whole hash chain — is compared
+> whole-row and must be byte-identical, so a column added to `audit_logs` later
+> is frozen by default. `app.retention_worker='on'` remains delete-only and
+> cannot perform an update.
+>
+> This is now proven against real PostgreSQL rather than asserted from migration
+> text: `services/api/tests/test_audit_retention_anonymization_postgres.py`
+> applies every migration to a live database and executes the trigger. It
+> requires `DECODA_MIGRATION_TEST_DSN` and skips without it, so a green run that
+> never set that variable proves nothing here — check that the file reports
+> passed, not skipped.
+>
+> One consequence is recorded rather than smoothed over: the row hash covers
+> `user_id` and `metadata`, so an anonymized row's content hash can never be
+> recomputed. `verify_audit_chain` therefore reports such rows in
+> `anonymized_rows` and sets `fully_verifiable: false`, while still checking
+> chain linkage — a published retention sweep must not read as tampering, and it
+> must not be mistaken for a fully re-verified chain either.
 
 ## 9. Migrations
 

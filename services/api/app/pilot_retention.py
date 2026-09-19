@@ -127,9 +127,12 @@ RETENTION_RATIONALE: dict[str, str] = {
     'audit_logs': (
         'Security and accountability record — who did what, when. Anonymised '
         'rather than deleted: actor identity, IP address and metadata payload are '
-        'destroyed and the append-only hash chain is left intact, so an abuse or '
-        'security question can still be answered at the shape level without '
-        'keeping personal data. One year, then removed.'
+        'destroyed. The hash-chain fields are never rewritten, so the chain still '
+        'links and every later row still verifies; the anonymised row itself can '
+        'no longer be re-derived from its own contents, because the contents it '
+        'was sealed over are gone. An abuse or security question can still be '
+        'answered at the shape level without keeping personal data. One year, '
+        'then removed.'
     ),
     'user_data': (
         'Individual erasure. Anonymised rather than deleted because the person’s '

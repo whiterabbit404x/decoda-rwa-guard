@@ -71,6 +71,25 @@ CASCADE_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+#: Transaction-local PostgreSQL settings that authorize the only two operations
+#: the append-only guard on `audit_logs` permits (migration 0156). They are
+#: deliberately SEPARATE capabilities: `app.retention_worker` authorizes the
+#: scheduled hard delete and can never perform an UPDATE, and
+#: `app.audit_retention_anonymize` authorizes the narrow anonymization UPDATE and
+#: can never perform a DELETE. Neither is a general write bypass — the trigger
+#: independently refuses any anonymization that moves a column outside
+#: ``AUDIT_ANONYMIZED_COLUMNS`` or writes anything other than the values below.
+AUDIT_RETENTION_DELETE_SETTING = 'app.retention_worker'
+AUDIT_ANONYMIZE_SETTING = 'app.audit_retention_anonymize'
+
+#: The columns retention anonymization destroys on an audit row. This is the set
+#: the /privacy statement names and the set migration 0156 enforces; EVERY other
+#: column — id, workspace_id, action, entity_type, entity_id, created_at and the
+#: whole hash chain — is immutable to the retention worker as much as to anyone
+#: else. Declared here so the guarantee can be asserted against the live schema
+#: rather than against a second hand-maintained list that could fall behind it.
+AUDIT_ANONYMIZED_COLUMNS: tuple[str, ...] = ('user_id', 'ip_address', 'metadata')
+
 ANONYMIZE_SQL = {
     'telemetry': "UPDATE telemetry_events SET payload_json = '{}'::jsonb, payload_hash = NULL WHERE workspace_id = %s AND observed_at < %s",
     'detections': "UPDATE detections SET title = '[retained detection]', evidence_summary = '[anonymized by retention policy]', raw_evidence_json = '{}'::jsonb, updated_at = NOW() WHERE workspace_id = %s AND detected_at < %s",
@@ -209,8 +228,6 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
         before = after = None
         if data_class in DATA_TARGETS:
             table, timestamp = DATA_TARGETS[data_class]
-            if data_class == 'audit_logs':
-                connection.execute("SELECT set_config('app.retention_worker', 'on', true)")
             _validate_sql_identifier(table, 'retention table')
             _validate_sql_identifier(timestamp, 'retention timestamp column')
             if data_class == 'audit_logs':
@@ -219,6 +236,15 @@ def execute_request(connection: Any, deletion: Any, *, worker_name: str) -> dict
                     (workspace_id, cutoff),
                 ).fetchone()
                 before = str(row['row_hash']) if row and row.get('row_hash') else None
+                # Authorize ONE operation, in THIS transaction, immediately before
+                # the statement that needs it. `is_local=True` is what keeps the
+                # grant from outliving the transaction: it is discarded on commit
+                # and on rollback alike, so no later statement on this connection —
+                # and no other request that reuses it — inherits the capability.
+                connection.execute(
+                    'SELECT set_config(%s, %s, true)',
+                    (AUDIT_ANONYMIZE_SETTING if mode == 'anonymize' else AUDIT_RETENTION_DELETE_SETTING, 'on'),
+                )
             cursor = connection.execute(ANONYMIZE_SQL[data_class], (workspace_id, cutoff)) if mode == 'anonymize' else connection.execute(
                 f'DELETE FROM {table} WHERE workspace_id = %s AND {timestamp} < %s', (workspace_id, cutoff))
             affected = max(int(cursor.rowcount or 0), 0)

@@ -22,7 +22,11 @@ def validate_restore(dsn: str, *, environment: str, source_region: str | None, r
     from services.api.app.evidence_signing import verify_audit_chain, verify_bundle
     from services.api.app.export_storage import load_export_storage
 
-    result = {'audit_chain_valid': True, 'evidence_chain_valid': True, 'workspaces_checked': 0, 'exports_checked': 0, 'errors': []}
+    # `audit_rows_anonymized` is carried into the drill record so a chain that
+    # passed WITH anonymized rows is never filed as a fully re-verified one:
+    # retention destroys hash inputs on purpose, and the drill should say so.
+    result = {'audit_chain_valid': True, 'evidence_chain_valid': True, 'workspaces_checked': 0,
+              'exports_checked': 0, 'audit_rows_anonymized': 0, 'errors': []}
     with _connect(dsn) as connection:
         workspaces = connection.execute('SELECT DISTINCT workspace_id FROM audit_logs WHERE workspace_id IS NOT NULL').fetchall()
         for workspace in workspaces:
@@ -43,6 +47,7 @@ def validate_restore(dsn: str, *, environment: str, source_region: str | None, r
                 initial_anchor = str(anchor['chain_anchor_before']) if anchor else None
             verification = verify_audit_chain([dict(row) for row in rows], initial_previous_hash=initial_anchor)
             result['workspaces_checked'] += 1
+            result['audit_rows_anonymized'] += int(verification.get('anonymized_rows') or 0)
             if not verification['valid']:
                 result['audit_chain_valid'] = False
                 result['errors'].append({'workspace_id': str(workspace['workspace_id']), 'audit_errors': verification['errors']})

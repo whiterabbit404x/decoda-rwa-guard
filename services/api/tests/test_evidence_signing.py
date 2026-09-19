@@ -366,3 +366,76 @@ def test_verify_audit_chain_single_row():
     result = verify_audit_chain(rows)
     assert result['valid']
     assert result['chain_length'] == 1
+
+
+# ── verify_audit_chain across retention anonymization ───────────────
+#
+# Retention anonymization destroys `user_id` and `metadata`, and BOTH are inputs
+# to the row hash — so an anonymized row's content hash can never be recomputed.
+# The verifier has to be honest in two directions at once: a sweep running as
+# published must not read as tampering, and a chain carrying anonymized rows must
+# not be reported as fully verified.
+
+def _anonymize(row: dict) -> dict:
+    """The exact state migration 0156 permits the retention worker to leave."""
+    return {**row, 'user_id': None, 'metadata': {'_retention_anonymized': True}}
+
+
+def test_verify_audit_chain_reports_anonymized_rows_instead_of_tampering():
+    rows = _build_chain(5)
+    rows[0] = _anonymize(rows[0])
+    rows[1] = _anonymize(rows[1])
+
+    result = verify_audit_chain(rows)
+
+    assert result['valid'], f'a published retention sweep is not tampering: {result["errors"]}'
+    assert result['anonymized_rows'] == 2
+    assert result['fully_verifiable'] is False, 'the chain must stop claiming full verifiability'
+    assert result['chain_length'] == 5
+
+
+def test_verify_audit_chain_without_anonymization_is_fully_verifiable():
+    result = verify_audit_chain(_build_chain(3))
+    assert result['valid'] and result['fully_verifiable'] is True
+    assert result['anonymized_rows'] == 0
+
+
+def test_verify_audit_chain_still_detects_tampering_past_anonymized_rows():
+    rows = _build_chain(5)
+    rows[0] = _anonymize(rows[0])
+    rows[4] = {**rows[4], 'action': 'TAMPERED_ACTION'}
+
+    result = verify_audit_chain(rows)
+
+    assert not result['valid']
+    assert any('row_hash_mismatch' in error for error in result['errors'])
+
+
+def test_verify_audit_chain_still_detects_a_broken_link_past_anonymized_rows():
+    rows = _build_chain(5)
+    rows[0] = _anonymize(rows[0])
+    rows[3] = {**rows[3], 'previous_row_hash': 'wrong-hash'}
+
+    result = verify_audit_chain(rows)
+
+    assert not result['valid']
+    assert any('chain_break' in error for error in result['errors'])
+
+
+def test_the_anonymization_marker_cannot_excuse_a_row_from_verification():
+    """The marker is recognised only in the shape the database can produce.
+
+    Migration 0156 will not write the marker while an actor survives, and will
+    not write it beside any other key. If the verifier honoured the marker on its
+    own, forging a row would be as cheap as adding one field to it — so both
+    near-misses below must still be content-verified, and caught.
+    """
+    rows = _build_chain(3)
+    with_actor = [*rows]
+    with_actor[1] = {**rows[1], 'action': 'FORGED', 'metadata': {'_retention_anonymized': True}}
+    assert not verify_audit_chain(with_actor)['valid']
+
+    with_extra_keys = [*rows]
+    with_extra_keys[1] = {**rows[1], 'action': 'FORGED', 'user_id': None,
+                          'metadata': {'_retention_anonymized': True, 'kept': 'value'}}
+    assert not verify_audit_chain(with_extra_keys)['valid']
