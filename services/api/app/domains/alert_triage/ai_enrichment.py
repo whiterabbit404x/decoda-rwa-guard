@@ -23,6 +23,7 @@ import re
 from typing import Any, Optional, Protocol
 
 from services.api.app.domains.alert_triage import config as cfg
+from services.api.app import telemetry_privacy
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,17 @@ class FailingNarrativeProvider:
 
 def _cluster_context(cluster: dict[str, Any]) -> dict[str, Any]:
     """The ONLY facts an AI provider is allowed to see — already grounded, no
-    raw actors / tx hashes / values."""
+    raw actors / tx hashes / values.
+
+    The allowlist below is the primary control and is unchanged. It is then run
+    through the canonical AI sanitizer as defense in depth, because two of these
+    values (``title`` and ``asset_name``) are customer-supplied text that the
+    allowlist itself does not inspect.
+    """
+    return telemetry_privacy.sanitize_for_ai(_cluster_facts(cluster)).payload
+
+
+def _cluster_facts(cluster: dict[str, Any]) -> dict[str, Any]:
     return {
         'title': cluster.get('title'),
         'detection_family': cfg.detection_family_label(cluster.get('detection_family')),

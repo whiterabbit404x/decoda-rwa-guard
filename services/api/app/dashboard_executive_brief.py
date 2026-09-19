@@ -28,6 +28,8 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping
 
+from services.api.app import telemetry_privacy
+
 BRIEF_PROMPT_VERSION = 'dashboard-brief-2026-07-1'
 # Bumped 1 -> 2: briefs stored before the canonical active-incident fix were keyed
 # only on the reporting date, so a stale "no open incidents" brief survived a same
@@ -249,6 +251,11 @@ def build_brief_evidence(aggregates: dict[str, Any]) -> dict[str, Any]:
 
 def build_brief_prompt(evidence: dict[str, Any], prompt_version: str = BRIEF_PROMPT_VERSION) -> dict[str, str]:
     """Build the provider prompt payload (system + user + parsed evidence)."""
+    # AI PRIVACY BOUNDARY: the last point before this evidence leaves Decoda for
+    # an external model provider. See services/api/app/telemetry_privacy.py — the
+    # AI policy is stricter than the storage policy, and public-chain identifiers
+    # pass through intact so the brief can still cite what it is about.
+    evidence = telemetry_privacy.sanitize_for_ai(evidence).payload
     schema_hint = {
         'headline': 'string',
         'summary': 'string (2-4 sentences)',

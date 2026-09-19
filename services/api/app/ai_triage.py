@@ -37,6 +37,7 @@ from typing import Any
 from services.api.app import entitlements
 from services.api.app import pilot
 from services.api.app import ai_providers
+from services.api.app import telemetry_privacy
 from services.api.app.ai_providers import ProviderRawResult, TriageProviderError
 
 logger = logging.getLogger(__name__)
@@ -1037,8 +1038,29 @@ def build_prompt(snapshot: dict[str, Any], policy: dict[str, Any], *, prompt_ver
 
     ``evidence_obj`` carries the parsed snapshot so the deterministic mock
     provider can produce grounded output without re-parsing the fenced text.
+
+    AI PRIVACY BOUNDARY (telemetry_privacy.sanitize_for_ai). This is the last
+    point before evidence leaves Decoda for an external model provider, so the
+    snapshot passes through the canonical sanitizer here — after it is assembled
+    and before it is serialized into the prompt. The AI policy is stricter than
+    the storage policy by construction: email addresses and private network
+    identifiers are removed regardless of what a workspace chose for its own
+    rows, because a model provider is a different trust boundary from the
+    customer's own database.
+
+    Public blockchain identifiers are preserved verbatim, so the grounding
+    contract is unaffected: ``derive_valid_references`` reads tx hashes,
+    addresses, block numbers, timestamps and record ids, every one of which is in
+    ``telemetry_privacy.PUBLIC_CHAIN_FIELDS`` or is an opaque uuid. A triage
+    result that could not name the transaction it is about would be worthless.
+
+    Fail-closed: ``sanitize_for_ai`` raises rather than forwarding anything it
+    could not filter, so a filter failure means no provider call.
     """
     import json as _json
+
+    sanitization = telemetry_privacy.sanitize_for_ai(snapshot)
+    snapshot = sanitization.payload
     schema_hint = {
         'schema_version': RESULT_SCHEMA_VERSION,
         'incident_id': snapshot.get('incident_id'),
@@ -1067,6 +1089,10 @@ def build_prompt(snapshot: dict[str, Any], policy: dict[str, Any], *, prompt_ver
         'user': user,
         'evidence_obj': snapshot,
         'prompt_version': prompt_version,
+        # Safe operational metadata ONLY: how many fields were removed, which
+        # rules fired, and the source type. The redacted content itself is never
+        # recorded here, logged, or sent to the provider.
+        'privacy_processing': telemetry_privacy.privacy_processing_metadata(sanitization),
         # Structured-output contract for providers that enforce a JSON Schema
         # (OpenAI Responses API). Providers that don't (mock, anthropic) ignore it.
         'json_schema': INCIDENT_TRIAGE_RESULT_SCHEMA,

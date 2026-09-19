@@ -55,6 +55,7 @@ from services.api.app.proof_chain_sql import (
     incident_proof_chain_count_sql,
 )
 from services.api.app import organizations as organization_service
+from services.api.app import telemetry_privacy
 from services.api.app.monitoring_canary import resolve_canary_config
 from services.api.app.monitoring_runtime_mode import realtime_streams_enabled
 from services.api.app.monitoring_reliability import MonitoringSLOs, evaluate_monitoring_slos, monitoring_slo_snapshot
@@ -2224,8 +2225,16 @@ def monitoring_operational_mode(runtime: dict[str, Any], *, degraded: bool, degr
 
 
 def _safe_error_message(exc: Exception) -> str:
+    """Bounded, credential-free rendering of one exception for logs and rows.
+
+    A transport exception routinely quotes the URL it failed on, and an RPC
+    provider URL commonly carries the API key in its path or query — so this
+    routes through the canonical sanitizer (telemetry_privacy.sanitize_error_text)
+    rather than only truncating. The key is removed BEFORE the string reaches a
+    log line or ``monitoring_polls.error_message``, not when it is rendered.
+    """
     text = str(exc).strip() or exc.__class__.__name__
-    return text[:240]
+    return telemetry_privacy.sanitize_error_text(text, max_chars=240)
 
 
 # Substrings that indicate the DB connection itself is dead and must not be reused.
@@ -7127,9 +7136,12 @@ def run_monitoring_cycle(*, worker_name: str = 'monitoring-worker', limit: int =
                 runs.append(result)
                 checked += 1
             except Exception as exc:
-                error_message = str(exc)
+                # Sanitized BEFORE it is written to monitored_systems.last_error_text
+                # and monitoring_polls.error_message (both customer-visible) — an RPC
+                # URL in a transport error carries the provider API key.
+                error_message = _safe_error_message(exc)
                 if workspace_id:
-                    workspace_errors[workspace_id] = str(exc)
+                    workspace_errors[workspace_id] = error_message
                 logger.exception('monitoring target failed target=%s name=%s', target.get('id'), target.get('name'))
                 # If the failure tore down the worker connection (idle-in-transaction
                 # timeout / server close), the same connection must NOT be reused for the

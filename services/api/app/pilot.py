@@ -58,6 +58,8 @@ from services.api.app import mfa_authorization as mfa_authz
 from services.api.app import organizations as organization_service
 from services.api.app import pilot_retention
 from services.api.app import staff_access as _staff_access
+from services.api.app import telemetry_privacy
+from services.api.app import telemetry_privacy_policy
 from services.api.app.credential_rotation import (
     SUPPORTED_CREDENTIAL_TYPES,
     automation_batch_size,
@@ -10300,6 +10302,20 @@ def persist_analysis_run(
     response_payload: dict[str, Any],
     request: Request,
 ) -> str:
+    # PRIVACY BOUNDARY (services/api/app/telemetry_privacy.py). ``request_payload``
+    # is a caller-shaped body — the only externally-supplied object Decoda stores
+    # without reconstructing it field by field — so it is sanitized HERE, at the
+    # single place every ``analysis_runs`` row is written, rather than at each of
+    # the routes that call this. Mandatory credential stripping applies to every
+    # workspace; a workspace policy can only add to it. Public-chain forensic
+    # fields (tx hash, addresses, amounts, block numbers) are preserved verbatim.
+    request_result = telemetry_privacy.sanitize_ingested_payload(
+        request_payload,
+        source_type=telemetry_privacy.SOURCE_CUSTOMER_REQUEST,
+        policy=telemetry_privacy_policy.load_policy(connection, workspace_id),
+    )
+    safe_request_payload = request_result.payload if isinstance(request_result.payload, dict) else {}
+
     analysis_run_id = str(uuid.uuid4())
     summary = str(response_payload.get('explanation') or response_payload.get('explainability_summary') or response_payload.get('summary') or title)
     source = str(response_payload.get('source') or 'live')
@@ -10324,7 +10340,7 @@ def persist_analysis_run(
             analysis_source,
             analysis_status,
             degraded_reason,
-            _json_dumps(request_payload),
+            _json_dumps(safe_request_payload),
             _json_dumps(response_payload),
         ),
     )
@@ -10336,9 +10352,32 @@ def persist_analysis_run(
         request=request,
         user_id=user_id,
         workspace_id=workspace_id,
-        metadata={'analysis_type': analysis_type, 'service_name': service_name, 'status': status_value},
+        metadata={
+            'analysis_type': analysis_type,
+            'service_name': service_name,
+            'status': status_value,
+            # States that the stored request is a sanitized copy and what was
+            # removed, so the row is never mistaken for the untouched original.
+            # Counts and rule ids only — never a redacted value (Phase 14).
+            'privacy_processing': telemetry_privacy.privacy_processing_metadata(request_result),
+        },
     )
     return analysis_run_id
+
+
+def sanitize_workspace_payload(connection: Any, *, workspace_id: str, payload: Any) -> dict[str, Any]:
+    """Sanitize one payload under a workspace's effective privacy policy.
+
+    The shared helper for callers that write or forward a payload outside
+    ``persist_analysis_run`` (an alert row, an outbound webhook delivery). Returns
+    the sanitized dict; the original is never mutated.
+    """
+    result = telemetry_privacy.sanitize_ingested_payload(
+        payload,
+        source_type=telemetry_privacy.SOURCE_CUSTOMER_REQUEST,
+        policy=telemetry_privacy_policy.load_policy(connection, workspace_id),
+    )
+    return result.payload if isinstance(result.payload, dict) else {}
 
 
 def maybe_insert_alert(
@@ -10603,7 +10642,15 @@ def create_governance_action_record(
             str(response_payload.get('target_id') or payload.get('target_id') or workspace_id),
             str(response_payload.get('status') or 'recorded'),
             str(response_payload.get('reason') or payload.get('reason') or 'Governance action recorded.'),
-            _json_dumps({'request': payload, 'response': response_payload}),
+            # PRIVACY BOUNDARY: ``payload`` is the caller-shaped request body, kept
+            # here alongside the response as the record of what was submitted. It is
+            # sanitized before the write, exactly as persist_analysis_run does for
+            # analysis_runs, so a credential in the submission never lands in
+            # governance_actions either.
+            _json_dumps({
+                'request': sanitize_workspace_payload(connection, workspace_id=workspace_id, payload=payload),
+                'response': response_payload,
+            }),
         ),
     )
     return governance_id
@@ -10633,7 +10680,12 @@ def create_incident_record(
             str(response_payload.get('severity') or payload.get('severity') or 'medium'),
             str(response_payload.get('status') or payload.get('status') or 'open'),
             str(response_payload.get('summary') or payload.get('summary') or 'Incident recorded.'),
-            _json_dumps({'request': payload, 'response': response_payload}),
+            # PRIVACY BOUNDARY: same reasoning as create_governance_action_record —
+            # the submitted body is sanitized before it is stored on the incident.
+            _json_dumps({
+                'request': sanitize_workspace_payload(connection, workspace_id=workspace_id, payload=payload),
+                'response': response_payload,
+            }),
         ),
     )
     return incident_id
