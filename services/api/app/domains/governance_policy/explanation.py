@@ -31,6 +31,8 @@ from typing import Any
 from services.api.app.domains.governance_policy import config as gpc
 from services.api.app.domains.governance_policy import schemas
 
+from services.api.app import telemetry_privacy
+
 logger = logging.getLogger(__name__)
 
 EXPLANATION_SCHEMA_VERSION = 'governance-policy-explanation-v1'
@@ -202,6 +204,13 @@ def merge_ai_explanation(decision: dict[str, Any], ai_payload: Any) -> dict[str,
 
 
 def _build_prompt(facts: dict[str, Any]) -> dict[str, Any]:
+    # AI PRIVACY BOUNDARY: the last point before these facts leave Decoda for an
+    # external model provider. The canonical sanitizer strips credential shapes and
+    # is stricter than the storage boundary (email + private network identifiers go
+    # regardless of workspace policy). Public-chain identifiers pass through intact,
+    # so the grounding contract below is unaffected. Fail-closed: it raises rather
+    # than forwarding anything it could not filter.
+    facts = telemetry_privacy.sanitize_for_ai(facts).payload
     system = (
         'You explain a completed, deterministic governance policy evaluation to an operator. '
         'The ALLOW/DENY decision, the reason codes, the policy version, and the check results '

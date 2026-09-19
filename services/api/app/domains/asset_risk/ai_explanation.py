@@ -20,6 +20,8 @@ import logging
 import os
 from typing import Any
 
+from services.api.app import telemetry_privacy
+
 logger = logging.getLogger(__name__)
 
 SUMMARY_SCHEMA_VERSION = 'asset-risk-summary-v1'
@@ -202,6 +204,13 @@ def ai_summary_config() -> dict[str, Any]:
 
 
 def _build_prompt(facts: dict[str, Any]) -> dict[str, str]:
+    # AI PRIVACY BOUNDARY: the last point before these facts leave Decoda for an
+    # external model provider. The canonical sanitizer strips credential shapes and
+    # is stricter than the storage boundary (email + private network identifiers go
+    # regardless of workspace policy). Public-chain identifiers pass through intact,
+    # so the grounding contract below is unaffected. Fail-closed: it raises rather
+    # than forwarding anything it could not filter.
+    facts = telemetry_privacy.sanitize_for_ai(facts).payload
     # The model receives ONLY structured, already-computed facts and is told not
     # to invent numbers. All figures the narrative may cite are present verbatim.
     system = (

@@ -83,6 +83,7 @@ from services.api.app.pilot import (
     parse_csv_env,
     pilot_schema_status,
     persist_analysis_run,
+    sanitize_workspace_payload,
     pilot_mode,
     pg_connection,
     resolve_workspace,
@@ -284,6 +285,8 @@ from services.api.app.pilot import (
     promote_wallet_transfer_alerts,
 )
 from services.api.app import governance as governance_guard
+from services.api.app import telemetry_privacy
+from services.api.app import telemetry_privacy_policy
 from services.api.app.monitoring_runner import (
     backfill_missing_alerts_for_target,
     backfill_target_block_range,
@@ -3941,6 +3944,18 @@ def workspace_settings_update(payload: dict[str, Any], request: Request) -> dict
     return with_auth_schema_json(lambda: governance_guard.update_workspace_settings(payload, request))
 
 
+# Telemetry privacy policy: the workspace's own exclusion/redaction rules, on top
+# of Decoda's mandatory credential stripping (which is not configurable here).
+@app.get('/workspace/telemetry-privacy', summary='Get workspace telemetry privacy policy')
+def workspace_telemetry_privacy_get(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: telemetry_privacy_policy.get_privacy_settings(request))
+
+
+@app.put('/workspace/telemetry-privacy', summary='Update workspace telemetry privacy policy (version-guarded)')
+def workspace_telemetry_privacy_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: telemetry_privacy_policy.update_privacy_settings(payload, request))
+
+
 # Canonical security settings view + governance-aware security-policy change flow.
 @app.get('/workspace/security-settings', summary='Get canonical workspace security settings')
 def workspace_security_settings_get(request: Request) -> dict[str, Any]:
@@ -6230,30 +6245,42 @@ def _persist_live_analysis(request: Request, payload: dict[str, Any], response_p
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
         workspace_context = resolve_workspace(connection, user['id'], request.headers.get('x-workspace-id'))
+        workspace_id = workspace_context['workspace_id']
+        # PRIVACY BOUNDARY. These routes accept a caller-shaped JSON body, and the
+        # analysis response is written into alerts.payload AND forwarded to the
+        # workspace's outbound webhook deliveries. ``persist_analysis_run`` is the
+        # choke point that sanitizes what lands in analysis_runs; the response is
+        # sanitized here because the alert write and the outbound forward are a
+        # separate path out of Decoda. Public-chain fields pass through untouched.
+        safe_response = sanitize_workspace_payload(
+            connection, workspace_id=workspace_id, payload=response_payload,
+        )
         analysis_run_id = persist_analysis_run(
             connection,
-            workspace_id=workspace_context['workspace_id'],
+            workspace_id=workspace_id,
             user_id=user['id'],
             analysis_type=analysis_type,
             service_name=service_name,
             title=title,
             status_value='completed',
             request_payload=payload,
-            response_payload=response_payload,
+            response_payload=safe_response,
             request=request,
         )
         maybe_insert_alert(
             connection,
-            workspace_id=workspace_context['workspace_id'],
+            workspace_id=workspace_id,
             user_id=user['id'],
             analysis_run_id=analysis_run_id,
             alert_type=analysis_type,
             title=title,
-            response_payload=response_payload,
+            response_payload=safe_response,
         )
         connection.commit()
+        # The sanitized response is what is returned as well as what is stored, so
+        # the caller is never shown a value the workspace record does not contain.
         return {
-            **response_payload,
+            **safe_response,
             'pilot_saved': True,
             'analysis_run_id': analysis_run_id,
             'workspace': workspace_context['workspace'],

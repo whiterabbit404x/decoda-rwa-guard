@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Literal
 
+from services.api.app import telemetry_privacy as privacy
+
 ThreatKind = Literal['contract', 'transaction', 'market']
 
 
@@ -46,7 +48,13 @@ def _dict_bool(value: Any) -> dict[str, bool]:
     return {str(key): _to_bool(flag, False) for key, flag in value.items()}
 
 
-def _safe_metadata(payload: dict[str, Any], module_config: dict[str, Any], *, original_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _safe_metadata(
+    payload: dict[str, Any],
+    module_config: dict[str, Any],
+    *,
+    original_payload: dict[str, Any] | None = None,
+    policy: privacy.PrivacyPolicy = privacy.DEFAULT_POLICY,
+) -> dict[str, Any]:
     metadata = deepcopy(payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {})
     metadata.update(
         {
@@ -61,7 +69,18 @@ def _safe_metadata(payload: dict[str, Any], module_config: dict[str, Any], *, or
         }
     )
     if original_payload is not None:
-        metadata['original_ui_request'] = deepcopy(original_payload)
+        # ``original_ui_request`` is the one place in this module that keeps a
+        # caller-shaped body rather than named fields, and it is persisted into
+        # analysis_runs. It therefore goes through the central sanitizer BEFORE it
+        # is copied in — not when it is later read or rendered. Public-chain fields
+        # (tx hash, addresses, amounts, block numbers) are preserved verbatim; the
+        # accompanying ``privacy_processing`` block states what was removed so the
+        # stored copy is never mistaken for the untouched original.
+        result = privacy.sanitize_ingested_payload(
+            original_payload, source_type=privacy.SOURCE_CUSTOMER_REQUEST, policy=policy,
+        )
+        metadata['original_ui_request'] = result.payload
+        metadata['privacy_processing'] = privacy.privacy_processing_metadata(result)
     return metadata
 
 
@@ -77,15 +96,21 @@ def _is_modern_market(payload: dict[str, Any]) -> bool:
     return 'asset' in payload and 'order_flow_summary' in payload
 
 
-def normalize_threat_payload(kind: ThreatKind, payload: dict[str, Any], *, include_original: bool = False) -> tuple[dict[str, Any], bool]:
+def normalize_threat_payload(
+    kind: ThreatKind,
+    payload: dict[str, Any],
+    *,
+    include_original: bool = False,
+    policy: privacy.PrivacyPolicy = privacy.DEFAULT_POLICY,
+) -> tuple[dict[str, Any], bool]:
     source_payload = deepcopy(payload)
     module_config = deepcopy(payload.get('module_config') if isinstance(payload.get('module_config'), dict) else {})
-    metadata = _safe_metadata(payload, module_config, original_payload=source_payload if include_original else None)
+    metadata = _safe_metadata(payload, module_config, original_payload=source_payload if include_original else None, policy=policy)
 
     if kind == 'contract':
         if _is_modern_contract(payload):
             normalized = deepcopy(payload)
-            normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None)
+            normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None, policy=policy)
             return normalized, False
 
         function_summaries_raw = payload.get('function_summaries') if isinstance(payload.get('function_summaries'), list) else []
@@ -119,7 +144,7 @@ def normalize_threat_payload(kind: ThreatKind, payload: dict[str, Any], *, inclu
     if kind == 'transaction':
         if _is_modern_transaction(payload):
             normalized = deepcopy(payload)
-            normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None)
+            normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None, policy=policy)
             return normalized, False
 
         normalized = {
@@ -141,7 +166,7 @@ def normalize_threat_payload(kind: ThreatKind, payload: dict[str, Any], *, inclu
 
     if _is_modern_market(payload):
         normalized = deepcopy(payload)
-        normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None)
+        normalized['metadata'] = _safe_metadata(normalized, module_config, original_payload=source_payload if include_original else None, policy=policy)
         return normalized, False
 
     order_flow = payload.get('order_flow_summary') if isinstance(payload.get('order_flow_summary'), dict) else {}
