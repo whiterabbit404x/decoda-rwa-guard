@@ -336,6 +336,11 @@ def check_manifest_signature(
         key_version=outcome.get('key_version'),
         provider=outcome.get('provider'),
         algorithm=outcome.get('algorithm'),
+        # WHO can establish authenticity from this seal. A passing signature
+        # check and an INDEPENDENTLY verifiable one are different guarantees,
+        # so they travel as separate facts and never collapse into one.
+        authenticity=outcome.get('authenticity'),
+        public_key_signature=outcome.get('public_key_signature'),
     )
 
 
@@ -621,6 +626,11 @@ def verify_evidence_package_document(
             'provider': signature.get('provider'),
             'algorithm': signature.get('algorithm'),
         },
+        # Authenticity as its OWN axis, reported separately from integrity so a
+        # legacy shared-secret seal can never be presented as proof of origin.
+        # ``independently_verifiable`` is true only for a verified public-key
+        # signature — never for an HMAC, however cleanly the HMAC verifies.
+        'authenticity': signature.get('authenticity'),
         'policy_snapshot_present': by_key[CHECK_POLICY_SNAPSHOT]['status'] == CHECK_PASSED,
         'provenance_complete': by_key[CHECK_PROVENANCE]['status'] == CHECK_PASSED,
         'required_evidence_complete': by_key[CHECK_REQUIRED_EVIDENCE]['status'] == CHECK_PASSED,
@@ -1359,6 +1369,9 @@ def build_verification_contract(
         },
         'merkle_root': merkle,
         'manifest_signature': signature,
+        # Separate axis, never folded into the badge: "the signature verified"
+        # and "a third party can verify it" are different guarantees.
+        'authenticity': (result or {}).get('authenticity') if executed else None,
         'policy_snapshot': category(CHECK_POLICY_SNAPSHOT),
         'provenance': category(CHECK_PROVENANCE),
         'required_evidence': required_evidence,

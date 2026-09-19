@@ -5,6 +5,9 @@ What goes in
     EV-2026-017/
         manifest.json                 the exact sealed manifest
         manifest.sig                  the detached signature document (only when sealed)
+        seal.json                     byte-identical copy of manifest.sig, under the
+                                      name the stored bundle and the docs use
+        VERIFY.md                     how to verify this package offline, in two commands
         verification.json             the backend verification result for this package
         artifacts/
             on-chain/…                the ORIGINAL immutable evidence artifacts,
@@ -17,6 +20,11 @@ What goes in
         verification/
             README.txt                how to re-verify this package offline
             signing-key.json          PUBLIC signer metadata (identifiers only)
+            decoda-evidence-keys.json PUBLIC Ed25519 verification keyring — a
+                                      CONVENIENCE COPY only. A key shipped inside
+                                      the package it verifies establishes no trust
+                                      on its own; an auditor must pin the keyring
+                                      from an independent source.
 
 What must never go in
 ---------------------
@@ -347,24 +355,98 @@ Re-verifying offline
        The root must equal manifest.json's "merkle_root".
 
 4. Manifest signature
-       manifest.sig covers the canonical JSON of the COMPLETE manifest object,
-       including its own "manifest_sha256" field. The algorithm and key
-       identifiers are recorded in manifest.sig and in verification/signing-key.json.
-       Verification requires the corresponding key, which is held by the issuer
-       and is deliberately NOT part of this archive.
+       manifest.sig (also written as seal.json) may carry TWO independent seals.
+       They prove different things and must not be read as one.
+
+       a) HMAC-SHA256 over the canonical JSON of the COMPLETE manifest object,
+          including its own "manifest_sha256" field. The key is a SHARED SECRET
+          held by the issuer. Checking it requires that secret, and anyone
+          holding it could also produce it, so it can NEVER establish
+          authenticity to a third party. It is deliberately not in this archive.
+
+       b) Ed25519 public-key signature, listed under "signatures" in a seal with
+          "schema_version": 2. The signed bytes are exactly:
+
+              b"DECODA-EVIDENCE-MANIFEST-V1\x00" + bytes.fromhex(manifest_sha256)
+
+          where manifest_sha256 is RECOMPUTED as in step 2 — never trusted from
+          the document. Anyone holding only the PUBLIC verification key can
+          check this offline, with no Decoda account, API, database or secret.
+          Get the keyring from https://<your-decoda-host>/.well-known/decoda-evidence-keys.json
+          (pin it once; verification itself never needs the network).
+
+       Run the standalone verifier for all of the above in one command:
+
+           python -m decoda_evidence_verifier verify <this-package>.zip \
+               --keyring decoda-evidence-keys.json
 
 Signing assurance
 -----------------
 verification/signing-key.json states the signing provider, algorithm and whether
 the signature is hardware-backed (HSM/KMS). Read it rather than assuming: this
-build seals with a shared-secret HMAC held by the application, which is
-tamper-evident to a key holder but is not a hardware-custodied, non-repudiable
-signature.
+build signs in-process with fetched key material, so it is NOT hardware-custodied
+even when an Ed25519 signature is present.
+
+A package with no "signatures" block carries the HMAC seal only. Its integrity is
+still fully checkable from the hashes above, but its AUTHENTICITY cannot be
+independently verified, and no honest verifier will report otherwise.
+
+verification/decoda-evidence-keys.json is included for convenience. A public key
+carried inside the very package it verifies proves nothing on its own — anyone who
+could alter the package could alter the bundled key with it. Verify against a
+keyring you obtained and pinned independently.
 
 No credentials
 --------------
 This archive intentionally contains NO private signing keys, API secrets,
 database credentials or storage credentials.
+"""
+
+
+_VERIFY_MD = """# Verify this evidence package offline
+
+This package is verifiable **without** a Decoda account, the Decoda API, the Decoda
+database, or any Decoda secret.
+
+## 1. Get the verifier and the public keyring (once)
+
+    # the standalone verifier — stdlib + `cryptography`, no Decoda imports
+    tools/decoda_evidence_verifier/
+
+    # Decoda's PUBLIC verification keys — pin this once, from a source you trust
+    curl -o decoda-evidence-keys.json \\
+        https://<your-decoda-host>/.well-known/decoda-evidence-keys.json
+
+## 2. Verify
+
+    python -m decoda_evidence_verifier verify {package_file} \\
+        --keyring decoda-evidence-keys.json
+
+Machine-readable output:
+
+    python -m decoda_evidence_verifier verify {package_file} --json
+
+Exit codes: `0` verified · `1` verification FAILED · `2` unusable package/usage ·
+`3` integrity verified but authenticity not independently verifiable.
+
+## What this proves
+
+| Result | Meaning |
+| --- | --- |
+| Integrity verified | Every artifact still hashes to the SHA-256 the manifest records, the manifest hashes to its own `manifest_sha256`, and the Merkle root recomputes. |
+| Authenticity verified | The manifest digest was signed with Decoda's Ed25519 private key, checked here with the PUBLIC key only. |
+| Audit anchor present | The manifest records `previous_audit_anchor_hash`, sealed under the signature. |
+
+## What this does NOT prove
+
+* that each source event was truthful when it was ingested;
+* that a blockchain, RPC provider or off-chain system reported honestly;
+* Decoda's whole server-side audit chain — only the single anchor value this
+  package records.
+
+`verification/decoda-evidence-keys.json` inside this ZIP is a **convenience copy**.
+A public key carried inside the package it verifies establishes no trust by itself.
+Use a keyring you obtained independently.
 """
 
 
@@ -381,12 +463,18 @@ def build_evidence_archive(
     generated_at: str,
     investigation_report: str | None = None,
     secret_denylist: tuple[bytes, ...] = (),
+    public_keyring: dict[str, Any] | None = None,
 ) -> bytes:
     """Assemble the deterministic evidence ZIP and return its bytes.
 
     ``file_values`` are the artifact values read back out of the stored package
     — the SAME values verification hashes — so the archive can never contain a
     freshly re-queried version of the evidence.
+
+    ``public_keyring`` is the PUBLIC Ed25519 verification keyring, bundled as a
+    convenience so an auditor has everything in one download. It is public
+    material only and is explicitly labelled as establishing no trust on its own.
+    Omitted (or empty) it is simply not written — never a placeholder key.
     """
     root = safe_archive_segment(str(package_number or package_id or 'evidence-package').strip())
     entries: dict[str, bytes] = {}
@@ -396,9 +484,12 @@ def build_evidence_archive(
         manifest, indent=2, sort_keys=True,
     ).encode('utf-8')
     if isinstance(seal, dict) and str(seal.get('signature') or '').strip():
-        entries[archive_entry_name(root, 'manifest.sig')] = json.dumps(
-            seal, indent=2, sort_keys=True,
-        ).encode('utf-8')
+        seal_bytes = json.dumps(seal, indent=2, sort_keys=True).encode('utf-8')
+        entries[archive_entry_name(root, 'manifest.sig')] = seal_bytes
+        # The SAME bytes under the name the stored bundle, the docs and the
+        # standalone verifier all use. Two names, one document — never two
+        # documents that could disagree about what was signed.
+        entries[archive_entry_name(root, 'seal.json')] = seal_bytes
 
     # -- verification result ----------------------------------------------
     entries[archive_entry_name(root, 'verification.json')] = json.dumps(
@@ -447,6 +538,25 @@ def build_evidence_archive(
         public_signer, indent=2, sort_keys=True, default=str,
     ).encode('utf-8')
 
+    # -- PUBLIC verification keyring + offline instructions ------------------
+    # A convenience copy ONLY: a key shipped inside the package it verifies
+    # establishes no trust by itself, because whoever could alter the package
+    # could alter the bundled key with it. Both the keyring's own note and
+    # VERIFY.md say so, and the verifier lets the auditor pin an external one.
+    if isinstance(public_keyring, dict) and public_keyring.get('keys'):
+        keyring_document = dict(public_keyring)
+        keyring_document['trust_note'] = (
+            'Convenience copy. A public key bundled inside the package it verifies does not by '
+            'itself establish trust. Verify against a keyring obtained and pinned independently, '
+            'e.g. from https://<your-decoda-host>/.well-known/decoda-evidence-keys.json'
+        )
+        entries[archive_entry_name(root, 'verification', 'decoda-evidence-keys.json')] = json.dumps(
+            keyring_document, indent=2, sort_keys=True, default=str,
+        ).encode('utf-8')
+    entries[archive_entry_name(root, 'VERIFY.md')] = _VERIFY_MD.format(
+        package_file=f'{root}.zip',
+    ).encode('utf-8')
+
     # -- fail closed on any credential material ----------------------------
     assert_no_secret_material(entries, extra_denylist=secret_denylist)
 
@@ -483,6 +593,14 @@ def archive_contents_listing(
     }
     present_artifacts = sorted(path for path in manifest_paths if path in file_values)
     sealed = isinstance(seal, dict) and bool(str(seal.get('signature') or '').strip())
+    # A keyring only ships for a package that actually carries a public-key
+    # signature. Listing one for an HMAC-only package would imply an offline
+    # authenticity check that package cannot support.
+    public_key_signed = bool(
+        isinstance(seal, dict)
+        and isinstance(seal.get('signatures'), list)
+        and any(isinstance(entry, dict) and entry.get('signature') for entry in seal['signatures'])
+    )
     return [
         {
             'key': 'artifacts',
@@ -510,6 +628,26 @@ def archive_contents_listing(
             'path': f'{package_number}/manifest.sig',
             'available': sealed,
             'unavailable_reason': None if sealed else 'This package was not sealed with a manifest signature.',
+        },
+        {
+            'key': 'verification_keyring',
+            'label': 'Public verification keys',
+            'kind': 'file',
+            'path': f'{package_number}/verification/decoda-evidence-keys.json',
+            'available': bool(public_key_signed),
+            'unavailable_reason': (
+                None if public_key_signed
+                else 'This package has no public-key signature, so there is no verification key to publish with it.'
+            ),
+        },
+        {
+            'key': 'verify_instructions',
+            'label': 'Offline verification instructions',
+            'kind': 'file',
+            'path': f'{package_number}/VERIFY.md',
+            'available': True,
+            'unavailable_reason': None,
+            'media_type': 'text/markdown',
         },
         {
             'key': 'report',

@@ -58,6 +58,26 @@ export type SignerMetadata = {
   warning?: string | null;
   signed?: boolean;
   signed_at?: string | null;
+  /** True only when this signer produces a signature a third party can verify
+   *  with PUBLIC key material alone. */
+  public_key_signing?: boolean;
+  public_key_algorithm?: string | null;
+  public_key_id?: string | null;
+};
+
+/**
+ * WHO can establish this package's authenticity — reported by the backend, never
+ * derived here. `independently_verifiable` is true only for a verified
+ * public-key signature; a valid HMAC never sets it, because the key that checks
+ * an HMAC can also forge it.
+ */
+export type AuthenticityContract = {
+  method?: 'public_key' | 'shared_secret' | string | null;
+  status?: 'verified' | 'failed' | 'unavailable' | string | null;
+  independently_verifiable?: boolean;
+  algorithm?: string | null;
+  key_id?: string | null;
+  detail?: string | null;
 };
 
 export type VerificationResult = {
@@ -72,6 +92,7 @@ export type VerificationResult = {
   artifact_hashes?: { valid?: number; total?: number; failed_artifact_ids?: string[]; missing_artifact_ids?: string[] };
   merkle_root?: { valid?: boolean; status?: string; expected?: string | null; computed?: string | null };
   manifest_signature?: { valid?: boolean; state?: string | null; key_id?: string | null; provider?: string | null };
+  authenticity?: AuthenticityContract;
   signer?: SignerMetadata;
 };
 
@@ -149,6 +170,9 @@ export type VerificationContract = {
   };
   merkle_root?: VerificationCategory;
   manifest_signature?: VerificationCategory;
+  /** Authenticity as its OWN axis. A verified signature and an INDEPENDENTLY
+   *  verifiable one are different guarantees and never share a badge. */
+  authenticity?: AuthenticityContract;
   policy_snapshot?: VerificationCategory;
   provenance?: VerificationCategory;
   required_evidence?: VerificationCategory;
@@ -398,6 +422,7 @@ export function PackageCryptoSummary({
   merkleScheme,
   manifestSchemaVersion,
   signing,
+  authenticity,
   policySnapshot,
   verificationStatus,
   lastVerifiedAt,
@@ -412,6 +437,8 @@ export function PackageCryptoSummary({
   merkleScheme?: string | null;
   manifestSchemaVersion?: string | null;
   signing?: SignerMetadata | null;
+  /** From the backend contract. Never derived from `signing` on this surface. */
+  authenticity?: AuthenticityContract | null;
   policySnapshot?: PolicySnapshot | null;
   verificationStatus?: string | null;
   /** From the canonical contract. Null means never verified — never "unknown". */
@@ -489,6 +516,23 @@ export function PackageCryptoSummary({
             </span>
           )}
         </MetaRow>
+        <MetaRow label="Offline Verification">
+          {authenticity?.independently_verifiable ? (
+            <span style={{ color: 'var(--success-fg)' }}>
+              Public-key verifiable{authenticity?.algorithm ? ` · ${authenticity.algorithm}` : ''}
+            </span>
+          ) : (
+            // A legacy HMAC seal and a public-key signature must never read the
+            // same. The customer needs to know which one they can hand to an
+            // auditor, and only one of them is verifiable without our secret.
+            <span style={{ color: 'var(--text-muted)' }}>
+              {authenticity?.status === 'failed'
+                ? 'Public-key signature did not verify'
+                : 'Not independently verifiable (legacy seal)'}
+            </span>
+          )}
+        </MetaRow>
+        {authenticity?.key_id ? <MetaRow label="Verification Key">{authenticity.key_id}</MetaRow> : null}
         <MetaRow label="Policy Snapshot">
           {policySnapshot?.present && policySnapshot?.policy_key ? (
             <>
@@ -727,9 +771,22 @@ export function VerificationShield({
     ? { label: shield.label, variant: 'neutral' as PillVariant, tone: shield.tone }
     : verificationStatusPresentation(status);
   const hardwareBacked = Boolean((contract?.signer ?? result?.signer)?.hardware_backed);
+  // Integrity and authenticity are separate guarantees, so they get separate
+  // words. A package whose hashes all match but whose only seal is a shared
+  // secret is NOT something a customer can hand to an auditor as proof of
+  // origin, and this surface must not let the two read the same.
+  const authenticity = contract?.authenticity ?? result?.authenticity;
+  const independentlyVerifiable = Boolean(authenticity?.independently_verifiable);
 
   const body = (() => {
     if (phase === 'verifying') return 'Verifying this package against its stored bytes…';
+    if (isVerified && independentlyVerifiable) {
+      return (
+        'This package is cryptographically sealed and tamper-evident. Its manifest carries a '
+        + (authenticity?.algorithm || 'public-key')
+        + " signature that anyone can verify offline with Decoda's published verification key."
+      );
+    }
     if (isVerified && hardwareBacked) {
       return 'This package is cryptographically sealed and tamper-evident. Its manifest was signed by the configured hardware-backed key.';
     }
@@ -796,11 +853,22 @@ export function VerificationShield({
         {presentation.label.toUpperCase()}
       </p>
       <p style={{ margin: '0.35rem 0 0', fontSize: '0.71rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>{body}</p>
-      {isVerified && !hardwareBacked ? (
-        // Truthfulness: a verified seal is not a hardware-custodied signature,
-        // and the product never lets one read as the other.
+      {isVerified && !independentlyVerifiable ? (
+        // The distinction this whole surface exists to keep: server-side
+        // verification passed, but nothing here proves WHO produced the package
+        // to anyone outside Decoda. Never shown as equivalent to a public-key
+        // signature, and never softened into "verified".
         <p style={{ margin: '0.35rem 0 0', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-          Sealed with a software-held key ({result?.signer?.assurance_label || 'shared-secret HMAC'}), not an
+          Legacy {result?.signer?.assurance_label || 'shared-secret HMAC'} seal. Integrity is verified;
+          authenticity is <strong>not independently verifiable</strong> outside Decoda.
+        </p>
+      ) : null}
+      {isVerified && independentlyVerifiable && !hardwareBacked ? (
+        // A public-key signature is not a hardware-custodied one. The product
+        // gains "independently verifiable", not "HSM".
+        <p style={{ margin: '0.35rem 0 0', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+          Signed with a software-held {authenticity?.algorithm || 'Ed25519'} key
+          {authenticity?.key_id ? ` (${authenticity.key_id})` : ''} — publicly verifiable, but not an
           HSM/KMS-backed signature.
         </p>
       ) : null}

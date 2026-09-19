@@ -530,10 +530,37 @@ def build_recovery_manifest(
     return manifest, file_bytes_map
 
 
+#: Seal schema that carries a PUBLIC-KEY-verifiable signature alongside the
+#: legacy HMAC fields. Schema 1 (no ``schema_version`` key at all) is HMAC-only
+#: and stays byte-for-byte what it always was.
+SEAL_SCHEMA_V2 = 2
+
+
 def seal_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """
     Compute HMAC-SHA256 over the canonical manifest JSON (which includes manifest_sha256).
     Returns seal dict. Never includes the raw secret.
+
+    When an Ed25519 evidence signing key is provisioned, the seal ADDITIONALLY
+    carries a public-key signature in ``signatures`` and is stamped
+    ``schema_version: 2``. The HMAC fields keep their exact existing meaning and
+    position, so every already-exported package and every existing reader is
+    unaffected; the new block is purely additive.
+
+    The two seals answer different questions and neither replaces the other:
+
+      HMAC-SHA256   tamper-evident to whoever holds the shared secret. That
+                    includes Decoda, so it can never establish authenticity to a
+                    third party — the same key that checks it can forge it.
+      Ed25519       tamper-evident AND attributable to the holder of Decoda's
+                    private signing key, verifiable by anyone holding only the
+                    published PUBLIC key. This is what makes offline,
+                    independent authenticity verification possible.
+
+    A deployment with no Ed25519 key provisioned emits the HMAC-only seal and
+    every surface reports authenticity as not independently verifiable. It never
+    falls back to a built-in keypair, because a signing key shipped in source
+    would be forgeable by anyone who can read this file.
     """
     secret, is_prod_secret = _require_signing_secret()
     key_id = _signing_key_id()
@@ -553,7 +580,33 @@ def seal_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
             'DEV_MODE_TEST_SECRET: This seal was generated with a non-production '
             'test secret and is NOT valid for regulatory, legal, or evidentiary purposes.'
         )
+    public_signature = _ed25519_signature_for(manifest)
+    if public_signature is not None:
+        seal['schema_version'] = SEAL_SCHEMA_V2
+        seal['signatures'] = [public_signature]
     return seal
+
+
+def _ed25519_signature_for(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """The public-key signature document for this manifest, when one can be made.
+
+    Returns ``None`` — never a partial or fabricated signature — when no Ed25519
+    key is provisioned or the manifest has no digest to commit to. A provisioned
+    key that cannot be used is a configuration fault: it is logged (without any
+    key material) and the package is sealed HMAC-only rather than failing the
+    export, because withholding evidence entirely is worse than shipping it with
+    truthfully-reported weaker authenticity.
+    """
+    digest = str(manifest.get('manifest_sha256') or '').strip()
+    if not digest:
+        return None
+    try:
+        from services.api.app import evidence_ed25519
+
+        return evidence_ed25519.sign_manifest_digest(digest)
+    except Exception:  # noqa: BLE001 - never block an export on signing-key config
+        _log.error('evidence_ed25519_signing_failed manifest_sha256=%s', digest)
+        return None
 
 
 def signing_metadata(manifest: dict[str, Any], seal: dict[str, Any]) -> dict[str, Any]:
