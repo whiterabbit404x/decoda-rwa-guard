@@ -204,7 +204,7 @@ customer session.
 
 | Property | How it holds |
 | --- | --- |
-| Append-only | `log_audit` only INSERTs. No API updates or deletes an audit row; the sole `UPDATE audit_logs` in the codebase is the scheduled retention anonymizer in `data_retention.py`. |
+| Append-only | `log_audit` only INSERTs. No API updates or deletes an audit row; the sole `UPDATE audit_logs` in the codebase is the scheduled retention anonymizer in `data_retention.py`. This is enforced by the database, not only by the absence of a code path: the `audit_logs_append_only` trigger (migration `0156`) refuses every UPDATE and DELETE, and admits the anonymizer's UPDATE only under a transaction-local flag and only when `user_id`, `ip_address` and `metadata` move to their anonymized values with every other column byte-identical. A staff row is an `audit_logs` row, so it is governed by exactly these rules — including anonymization on the published 365-day schedule, which destroys the staff actor and source IP along with the customer's. |
 | Actor not client-supplied | The actor is the account `require_internal_admin` resolved from the session. No staff handler takes a `user_id`/`actor` parameter, and headers naming another user change nothing. |
 | Scope server-derived | Mirror workspaces are read from `workspaces.organization_id` for the one accessed organization. No workspace id is read from a request. |
 | Server timestamp | `pilot.utc_now()` at insert, `sealed_at` set with it. |
