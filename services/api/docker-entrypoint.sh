@@ -54,6 +54,8 @@ resolve_start_command() {
             _RESOLVED_COMMAND="python -m services.api.app.run_recovery_drill_worker" ;;
         retention-worker | retention_worker)
             _RESOLVED_COMMAND="python -m services.api.app.retention_worker" ;;
+        external-watchlist-worker | external_watchlist_worker)
+            _RESOLVED_COMMAND="python -m services.api.app.run_external_watchlist_worker" ;;
         api | web | "")
             _RESOLVED_COMMAND="$(_default_api_command)" ;;
         *)

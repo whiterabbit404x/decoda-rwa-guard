@@ -1,0 +1,15 @@
+import { proxyJsonToBackend } from 'app/api/_shared/backend-proxy';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+type Params = { params: Promise<{ watchlistId: string; findingId: string }> };
+
+export async function POST(request: Request, { params }: Params): Promise<Response> {
+  const { watchlistId, findingId } = await params;
+  return proxyJsonToBackend(request, {
+    backendPath: `/admin/external-watchlists/${encodeURIComponent(watchlistId)}/findings/${encodeURIComponent(findingId)}/prospect-report`,
+    method: 'POST',
+    forwardBody: true,
+  });
+}

@@ -8,3 +8,4 @@ ai-triage-worker: python -m services.api.app.run_ai_triage_worker
 onboarding-worker: python -m services.api.app.run_onboarding_worker
 asset-risk-worker: python -m services.api.app.run_asset_risk_worker
 threat-detection-worker: python -m services.api.app.run_threat_detection_worker
+external-watchlist-worker: python -m services.api.app.run_external_watchlist_worker
