@@ -35,6 +35,7 @@ from services.api.app.domains.governance_policy import endpoints as governance_p
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
 from services.api.app.domains.tenancy import endpoints as tenancy_endpoints
+from services.api.app.domains.external_watchlist import endpoints as external_watchlist_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
     QUICKNODE_STREAMS_WEBHOOK_VERSION,
@@ -4557,6 +4558,214 @@ def admin_pilot_request_reject(request_id: str, payload: dict[str, Any], request
 def admin_pilot_request_resend(request_id: str, request: Request) -> dict[str, Any]:
     return with_auth_schema_json(
         lambda: tenancy_endpoints.resend_admin_pilot_invitation(request_id, request)
+    )
+
+
+# ── External Watchlist (founder / internal admin) ───────────────────────────
+# Independent, read-only monitoring of PUBLIC infrastructure belonging to
+# protocols that are not customers. Every handler authorizes internal staff
+# FIRST (a customer or Pilot user gets 403 and no data), then checks the
+# EXTERNAL_WATCHLIST_ENABLED flag. External data lives in its own
+# monitoring_scope = 'external_public' tables and never reaches a customer
+# workspace. Nothing here can execute, sign, or approve on an external target.
+
+@app.get('/admin/console-config', summary='Internal: founder console configuration and feature flags')
+def admin_console_config(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: external_watchlist_endpoints.get_console_config(request))
+
+
+@app.get('/admin/external-watchlists', summary='Internal: list externally watched protocols')
+def admin_external_watchlists(
+    request: Request, q: str | None = None, network: str | None = None, status: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.list_watchlists(
+            request, q=q, network=network, status_filter=status, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.post('/admin/external-watchlists', summary='Internal: start monitoring a public protocol')
+def admin_external_watchlist_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: external_watchlist_endpoints.create_watchlist(payload, request))
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}', summary='Internal: externally watched protocol detail')
+def admin_external_watchlist_detail(watchlist_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: external_watchlist_endpoints.get_watchlist(watchlist_id, request))
+
+
+@app.patch('/admin/external-watchlists/{watchlist_id}', summary='Internal: edit, pause or resume a watched protocol')
+def admin_external_watchlist_update(watchlist_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.update_watchlist(watchlist_id, payload, request)
+    )
+
+
+@app.delete('/admin/external-watchlists/{watchlist_id}', summary='Internal: stop watching a protocol')
+def admin_external_watchlist_delete(watchlist_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: external_watchlist_endpoints.delete_watchlist(watchlist_id, request))
+
+
+@app.post('/admin/external-watchlists/{watchlist_id}/targets', summary='Internal: add a public target')
+def admin_external_watchlist_add_target(watchlist_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.add_target(watchlist_id, payload, request)
+    )
+
+
+@app.patch('/admin/external-watchlists/{watchlist_id}/targets/{target_id}', summary='Internal: edit or pause a public target')
+def admin_external_watchlist_update_target(
+    watchlist_id: str, target_id: str, payload: dict[str, Any], request: Request,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.update_target(watchlist_id, target_id, payload, request)
+    )
+
+
+@app.delete('/admin/external-watchlists/{watchlist_id}/targets/{target_id}', summary='Internal: remove a public target')
+def admin_external_watchlist_remove_target(watchlist_id: str, target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.remove_target(watchlist_id, target_id, request)
+    )
+
+
+@app.post(
+    '/admin/external-watchlists/{watchlist_id}/targets/{target_id}/diagnostic',
+    summary='Internal: read-only diagnostic for a public target',
+)
+def admin_external_watchlist_target_diagnostic(watchlist_id: str, target_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.run_target_diagnostic(watchlist_id, target_id, request)
+    )
+
+
+@app.post('/admin/external-watchlists/{watchlist_id}/backfill', summary='Internal: queue a historical backfill')
+def admin_external_watchlist_backfill(watchlist_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.trigger_backfill(watchlist_id, payload, request)
+    )
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}/events', summary='Internal: observed public events')
+def admin_external_watchlist_events(
+    watchlist_id: str, request: Request, category: str | None = None, target_id: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.list_events(
+            watchlist_id, request, category=category, target_id=target_id, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}/findings', summary='Internal: external findings')
+def admin_external_watchlist_findings(
+    watchlist_id: str, request: Request, status: str | None = None, severity: str | None = None,
+    limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.list_findings(
+            watchlist_id, request, status_filter=status, severity=severity, limit=limit, offset=offset,
+        )
+    )
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}/findings/{finding_id}', summary='Internal: external finding detail')
+def admin_external_watchlist_finding(watchlist_id: str, finding_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.get_finding(watchlist_id, finding_id, request)
+    )
+
+
+@app.patch('/admin/external-watchlists/{watchlist_id}/findings/{finding_id}', summary='Internal: set an external finding status')
+def admin_external_watchlist_finding_update(
+    watchlist_id: str, finding_id: str, payload: dict[str, Any], request: Request,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.update_finding(watchlist_id, finding_id, payload, request)
+    )
+
+
+@app.post(
+    '/admin/external-watchlists/{watchlist_id}/findings/{finding_id}/evidence',
+    summary='Internal: generate a sealed evidence package for an external finding',
+)
+def admin_external_watchlist_generate_evidence(watchlist_id: str, finding_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.generate_evidence(watchlist_id, finding_id, request)
+    )
+
+
+@app.post(
+    '/admin/external-watchlists/{watchlist_id}/findings/{finding_id}/prospect-report',
+    summary='Internal: generate a shareable prospect report for an external finding',
+)
+def admin_external_watchlist_prospect_report(watchlist_id: str, finding_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.generate_prospect_report(watchlist_id, finding_id, request)
+    )
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}/evidence', summary='Internal: external evidence packages')
+def admin_external_watchlist_evidence(
+    watchlist_id: str, request: Request, limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.list_evidence(watchlist_id, request, limit=limit, offset=offset)
+    )
+
+
+@app.get('/admin/external-watchlists/{watchlist_id}/evidence/{evidence_id}', summary='Internal: external evidence package')
+def admin_external_watchlist_evidence_detail(watchlist_id: str, evidence_id: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.get_evidence(watchlist_id, evidence_id, request)
+    )
+
+
+@app.post(
+    '/admin/external-watchlists/{watchlist_id}/convert-to-pilot',
+    summary='Internal: create a Pilot workspace from a watched protocol (explicit founder action)',
+)
+def admin_external_watchlist_convert(watchlist_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(
+        lambda: external_watchlist_endpoints.convert_to_pilot(watchlist_id, payload, request)
+    )
+
+
+def _external_execution_refusal(capability: str):
+    def handler(watchlist_id: str, request: Request) -> dict[str, Any]:
+        return with_auth_schema_json(
+            lambda: external_watchlist_endpoints.refuse_execution(watchlist_id, capability, request)
+        )
+
+    return handler
+
+
+def _external_target_execution_refusal(capability: str):
+    def handler(watchlist_id: str, target_id: str, request: Request) -> dict[str, Any]:
+        return with_auth_schema_json(
+            lambda: external_watchlist_endpoints.refuse_execution(watchlist_id, capability, request)
+        )
+
+    return handler
+
+
+# execution_authority = NONE, enforced by the server: each execution-shaped
+# capability is a real route that answers 403, not a button the UI hides.
+for _capability in external_watchlist_endpoints.FORBIDDEN_CAPABILITIES:
+    app.add_api_route(
+        f'/admin/external-watchlists/{{watchlist_id}}/{_capability}',
+        _external_execution_refusal(_capability),
+        methods=['POST'],
+        summary=f'Internal: refused — external targets have no {_capability}',
+    )
+    app.add_api_route(
+        f'/admin/external-watchlists/{{watchlist_id}}/targets/{{target_id}}/{_capability}',
+        _external_target_execution_refusal(_capability),
+        methods=['POST'],
+        summary=f'Internal: refused — external targets have no {_capability}',
     )
 
 
