@@ -19,7 +19,7 @@ remediation or approval for an external target (refused with 403 by
 
 Every founder action is written to the hash-chained audit log with
 ``workspace_id = NULL`` (an internal action, not inside any customer
-workspace), ``monitoring_scope = external_public`` and the staff actor type.
+workspace), ``monitoring_scope = external_public`` and ``actor_role = internal_admin``.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from urllib.parse import urlsplit
 from services.api.app import onboarding_discovery as disc
 from services.api.app import organizations as org_service
 from services.api.app import pilot
-from services.api.app import staff_access
 from services.api.app.domains.external_watchlist import abi
 from services.api.app.domains.external_watchlist import config as ewc
 from services.api.app.domains.external_watchlist import conversion
@@ -186,7 +185,8 @@ def _audit(connection: Any, request: Any, *, admin: dict[str, Any], action: str,
             **(metadata or {}),
             'monitoring_scope': ewc.MONITORING_SCOPE_EXTERNAL_PUBLIC,
             'execution_authority': ewc.EXECUTION_AUTHORITY_NONE,
-            'actor_type': staff_access.ACTOR_TYPE_DECODA_STAFF,
+            # Internal founder console action; never shown in a customer's trail.
+            'actor_role': 'internal_admin',
         },
     )
 
