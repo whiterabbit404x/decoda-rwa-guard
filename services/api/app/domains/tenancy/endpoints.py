@@ -58,6 +58,7 @@ from services.api.app import entitlements as ent
 from services.api.app import organizations as org_service
 from services.api.app import pilot_retention
 from services.api.app import pilot
+from services.api.app.decoda_identity import config as decoda_identity_config
 from services.api.app import pilot_access
 from services.api.app import staff_access
 
@@ -703,6 +704,7 @@ def submit_pilot_request(payload: dict[str, Any], request: Any) -> dict[str, Any
     else's request.
     """
     pilot.require_live_mode()
+    decoda_identity_config.require_local_onboarding()
     fields = pilot_access.validate_submission(payload)
     client = getattr(request, 'client', None)
     source_ip = client.host if client else None
@@ -857,6 +859,7 @@ def approve_admin_pilot_request(
     falsehood this product refuses to render.
     """
     pilot.require_live_mode()
+    decoda_identity_config.require_local_onboarding()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         admin = org_service.require_internal_admin(connection, request)
@@ -932,6 +935,7 @@ def resend_admin_pilot_invitation(request_id: str, request: Any) -> dict[str, An
     one, so a link that leaked from a failed delivery attempt is dead once the
     replacement is issued.
     """
+    decoda_identity_config.require_local_onboarding()
     return approve_admin_pilot_request(request_id, {}, request)
 
 
@@ -987,6 +991,7 @@ def lookup_pilot_invitation(token: str, request: Any) -> dict[str, Any]:
     invitation already names, so it is not an oracle for arbitrary addresses.
     """
     pilot.require_live_mode()
+    decoda_identity_config.require_local_onboarding()
     with pilot.pg_connection() as connection:
         pilot.ensure_pilot_schema(connection)
         pilot_access.require_schema(connection)
@@ -1053,6 +1058,7 @@ def signup_invited_user(payload: dict[str, Any], request: Any) -> dict[str, Any]
     invitation token is NOT consumed here; acceptance consumes it, exactly once.
     """
     pilot.require_live_mode()
+    decoda_identity_config.require_local_onboarding()
     body = payload if isinstance(payload, dict) else {}
     token = str(body.get('token') or '').strip()
     if not token:
@@ -1120,6 +1126,7 @@ def accept_pilot_invitation(payload: dict[str, Any], request: Any) -> dict[str, 
     plan, role, or internal-admin flag a caller could supply.
     """
     pilot.require_live_mode()
+    decoda_identity_config.require_local_onboarding()
     body = payload if isinstance(payload, dict) else {}
     token = str(body.get('token') or '').strip()
     if not token:

@@ -2,7 +2,7 @@ fastapi==0.111.0
 uvicorn[standard]==0.30.1
 psycopg[binary]==3.2.13
 redis==5.2.1
-cryptography==46.0.5
+cryptography==50.0.1
 boto3==1.36.26
 pytest==8.4.2
 httpx>=0.27
@@ -11,3 +11,7 @@ httpx>=0.27
 # the AI triage agent is enabled with the OpenAI provider; tests use a mock
 # client and never import or call the real SDK.
 openai>=1.66.0
+# Official WorkOS SDK: shared Decoda identity (JWKS URL, session facts).
+workos==10.5.0
+# WorkOS access-token verification (RS256 via JWKS); also a dependency of the WorkOS SDK.
+PyJWT==2.15.0

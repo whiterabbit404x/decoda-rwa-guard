@@ -56,6 +56,8 @@ from services.api.app import entitlements as plan_entitlement_engine
 from services.api.app import execution_authorization as execution_authz
 from services.api.app import mfa_authorization as mfa_authz
 from services.api.app import organizations as organization_service
+from services.api.app.decoda_identity import config as decoda_identity_config
+from services.api.app.decoda_identity import session_gate as decoda_session_gate
 from services.api.app import pilot_retention
 from services.api.app import staff_access as _staff_access
 from services.api.app import telemetry_privacy
@@ -987,6 +989,21 @@ def validate_runtime_configuration() -> dict[str, Any]:
             severity='error' if strict_billing else 'warning',
         )
         checks['billing'] = billing_status
+
+    # Shared Decoda identity (decoda_identity.config): once enabled it must be
+    # fully configured in EVERY environment — never a silent fallback to Guard
+    # passwords. Production additionally needs the issuer, BFF secret, MFA
+    # attestation and (dual) a legacy-password sunset.
+    identity_errors = decoda_identity_config.configuration_errors()
+    identity_mode = decoda_identity_config.load_identity_settings().mode
+    _record_check(
+        'decoda_identity',
+        not identity_errors,
+        required=True,
+        detail='; '.join(identity_errors) or None,
+    )
+    # Informational: `legacy` stays a valid production mode until the staged cutover.
+    checks['decoda_identity']['mode'] = identity_mode
 
     return {'mode': mode, 'errors': errors, 'warnings': warnings, 'checks': checks}
 
@@ -2501,12 +2518,17 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return payload
 
 
-def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _validate_session(connection: Any, token: str, payload: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
     """Validate the bearer session and return its server-side security record.
 
     The returned row carries the session's own MFA facts (``mfa_verified_at`` and
     ``authentication_methods``) so the Pilot MFA boundary can decide without a
     second round trip. Callers that only need the 401 behaviour may ignore it.
+
+    Under the shared Decoda identity (``GUARD_IDENTITY_MODE`` dual/workos) the
+    session is also re-confirmed against the Decoda platform on every request,
+    bound to the live AuthKit session the BFF forwards, and legacy sessions are
+    ended once the mode no longer allows them (``decoda_identity.session_gate``).
     """
     session_hash = _auth_token_hash(token)
     # Fast-path: Redis blacklist check for immediate revocation
@@ -2514,7 +2536,8 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> d
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
     session = connection.execute(
         '''
-        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods
+        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods,
+               auth_mode, workos_session_id, metadata
         FROM auth_sessions
         WHERE session_token_hash = %s
         ''',
@@ -2527,6 +2550,11 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any]) -> d
     user_session_version = connection.execute('SELECT session_version FROM users WHERE id = %s', (payload.get('sub'),)).fetchone()
     if not user_session_version or int(payload.get('sv', 0)) != int(user_session_version['session_version']):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session version is no longer valid.')
+    try:
+        session_record = dict(session)
+    except Exception:
+        session_record = {}
+    decoda_session_gate.check_session(session_record, session_hash, request)
     connection.execute(
         'UPDATE auth_sessions SET last_seen_at = NOW(), updated_at = NOW() WHERE session_token_hash = %s',
         (session_hash,),
@@ -2624,7 +2652,7 @@ def _json_safe_value(value: Any) -> Any:
 def _ensure_membership(connection: Any, user_id: str, workspace_id: str) -> dict[str, Any]:
     membership = connection.execute(
         '''
-        SELECT wm.workspace_id, wm.role, w.name, w.slug
+        SELECT wm.workspace_id, wm.role, w.name, w.slug, w.organization_id
         FROM workspace_members wm
         JOIN workspaces w ON w.id = wm.workspace_id
         WHERE wm.user_id = %s AND wm.workspace_id = %s
@@ -2633,6 +2661,10 @@ def _ensure_membership(connection: Any, user_id: str, workspace_id: str) -> dict
     ).fetchone()
     if membership is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='You do not belong to that workspace.')
+    # A Decoda session is bound to one organization: a workspace of another
+    # organization (even one this person also belongs to) needs a Decoda
+    # organization switch, so its own entitlement is checked first.
+    decoda_session_gate.enforce_workspace_binding(membership.get('organization_id'))
     membership['role'] = _normalize_workspace_role(str(membership['role']))
     return membership
 
@@ -3245,16 +3277,30 @@ def build_user_response(connection: psycopg.Connection, user_id: str) -> dict[st
     ).fetchone()
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Unknown user.')
-    memberships = connection.execute(
-        '''
-        SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug
-        FROM workspace_members wm
-        JOIN workspaces w ON w.id = wm.workspace_id
-        WHERE wm.user_id = %s
-        ORDER BY w.created_at ASC, w.name ASC
-        ''',
-        (user_id,),
-    ).fetchall()
+    bound_organization_id = decoda_session_gate.bound_guard_organization()
+    if bound_organization_id is None:
+        memberships = connection.execute(
+            '''
+            SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug
+            FROM workspace_members wm
+            JOIN workspaces w ON w.id = wm.workspace_id
+            WHERE wm.user_id = %s
+            ORDER BY w.created_at ASC, w.name ASC
+            ''',
+            (user_id,),
+        ).fetchall()
+    else:
+        # A Decoda session sees only the workspaces of the organization it is bound to.
+        memberships = connection.execute(
+            '''
+            SELECT wm.workspace_id, wm.role, wm.created_at, w.name, w.slug
+            FROM workspace_members wm
+            JOIN workspaces w ON w.id = wm.workspace_id
+            WHERE wm.user_id = %s AND w.organization_id = %s
+            ORDER BY w.created_at ASC, w.name ASC
+            ''',
+            (user_id, bound_organization_id),
+        ).fetchall()
     membership_payload = []
     for membership in memberships:
         workspace_id = str(membership['workspace_id'])
@@ -3750,8 +3796,10 @@ def evaluate_pilot_mfa(
     answer — entering a customer's Pilot workspace is customer access, and
     elevated privilege is not a second factor.
     """
-    enrolled = bool(user.get('mfa_enabled'))
     session_record = session if session is not None else _session_security_record(connection, request)
+    # A Decoda session whose MFA the identity provider enforced (attested) holds
+    # a second factor there, even without a Guard TOTP enrollment.
+    enrolled = bool(user.get('mfa_enabled')) or decoda_session_gate.session_has_idp_mfa(session_record)
     session_verified = mfa_authz.session_completed_mfa(session_record)
     state = {
         'required': False,
@@ -3879,6 +3927,48 @@ def _session_security_record(connection: Any, request: Any) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
+def decoda_identity_state(session: dict[str, Any] | None) -> dict[str, Any]:
+    """How this session was established and which sign-in the deployment accepts.
+
+    Published on `/auth/me` so the app shows the right sign-in, MFA and switcher
+    UI. Nothing is authorized from it: every rule is enforced server-side.
+    """
+    settings = decoda_identity_config.load_identity_settings()
+    sunset = settings.legacy_password_sunset
+    return {
+        'mode': settings.mode,
+        'auth_method': 'workos' if (session or {}).get('auth_mode') == 'workos' else 'password',
+        'legacy_password_sunset': sunset.isoformat() if sunset else None,
+    }
+
+
+def _require_password_sign_in_allowed(connection: Any, user_id: str) -> None:
+    """In `dual` mode an account already linked to a Decoda identity signs in with Decoda only.
+
+    Checked only after the password (or the challenge it produced) has been
+    proven, so the refusal never tells a stranger which addresses are linked.
+    """
+    if decoda_identity_config.load_identity_settings().mode == 'legacy':
+        return
+    row = connection.execute('SELECT auth_provider FROM users WHERE id = %s', (user_id,)).fetchone()
+    decoda_identity_config.require_legacy_password_sign_in(auth_provider=(dict(row) if row else {}).get('auth_provider'))
+
+
+def _require_guard_mfa_session(connection: Any, request: Request) -> None:
+    """Guard TOTP enrollment, step-up and password re-authentication are for Guard-issued sessions.
+
+    A Decoda session's second factor and re-authentication belong to the Decoda
+    account (WorkOS): the refusal tells the app to send the person through a
+    Decoda re-authentication instead.
+    """
+    if decoda_identity_config.load_identity_settings().mode == 'legacy':
+        return
+    row = connection.execute(
+        'SELECT auth_mode FROM auth_sessions WHERE session_token_hash = %s', (_current_session_hash(request),)
+    ).fetchone()
+    decoda_identity_config.require_local_mfa((dict(row) if row else {}).get('auth_mode'))
+
+
 def authenticate_request(request: Request) -> dict[str, Any]:
     require_live_mode()
     authorization = request.headers.get('authorization', '')
@@ -3891,8 +3981,9 @@ def authenticate_request(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token payload missing subject.')
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
-        session = _validate_session(connection, token, payload)
+        session = _validate_session(connection, token, payload, request)
         user = build_user_response(connection, user_id)
+        user['identity'] = decoda_identity_state(session)
         # `/auth/me` is served from here, and it is a bootstrap endpoint: it must
         # answer an operator who has NOT yet satisfied MFA, and tell them so.
         # Publishing the evaluated state is what lets the app render the
@@ -3912,7 +4003,7 @@ def authenticate_with_connection(connection: psycopg.Connection, request: Reques
     user_id = str(payload.get('sub') or '')
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token payload missing subject.')
-    session = _validate_session(connection, token, payload)
+    session = _validate_session(connection, token, payload, request)
     user = build_user_response(connection, user_id)
     user['mfa'] = public_pilot_mfa_state(
         require_pilot_mfa(connection, request, user, session=session)
@@ -4149,6 +4240,7 @@ def create_invited_account(
     a way to overwrite an existing account's password, so a duplicate is a 409
     that routes the person to sign-in, not a silent credential reset.
     """
+    decoda_identity_config.require_new_password_accounts()
     # Local import: pilot_access imports this module, so the error vocabulary is
     # borrowed at call time rather than creating an import cycle. One definition
     # of the code, in the module that owns the invitation state machine.
@@ -4209,6 +4301,9 @@ def create_invited_account(
 def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Create an ACCOUNT. Deliberately not a tenant, a workspace, or a Pilot.
 
+    Only in GUARD_IDENTITY_MODE=legacy: under the shared Decoda identity new
+    people arrive through Decoda invitations (410 SIGN_UP_MOVED).
+
     Signing up proves one thing: that someone is claiming an email address, which
     they then verify. It does not prove Decoda approved them to evaluate against
     live assets, so it provisions nothing — no workspace, no organization, no
@@ -4223,6 +4318,7 @@ def signup_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     because it is a useful hint for the eventual activation, but it now names
     nothing that exists yet.
     """
+    decoda_identity_config.require_new_password_accounts()
     require_live_mode()
     email = _normalize_email(str(payload.get('email', '')))
     password = str(payload.get('password', ''))
@@ -4340,6 +4436,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         )
 
     logger.info('event=auth_sign_in_attempt email=%s request_id=%s', email, _request_id)
+    decoda_identity_config.require_legacy_password_sign_in()
 
     try:
         with pg_connection() as connection:
@@ -4361,6 +4458,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
                 _log_auth_failure('password_mismatch', 401, str(user['id']))
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid email or password.')
             user_id = str(user['id'])
+            _require_password_sign_in_allowed(connection, user_id)
             suspension = connection.execute('SELECT suspended_at FROM users WHERE id = %s', (user_id,)).fetchone()
             if suspension and suspension.get('suspended_at'):
                 _log_auth_failure('account_suspended', 403, user_id)
@@ -4443,6 +4541,7 @@ def signin_user(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 
 def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     challenge_token = str(payload.get('mfa_token', '')).strip()
     code = str(payload.get('code', '')).strip()
     if not challenge_token or not code:
@@ -4458,6 +4557,8 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         user = connection.execute('SELECT id, session_version, mfa_totp_secret FROM users WHERE id = %s', (token_row['user_id'],)).fetchone()
         if user is None:
             raise HTTPException(status_code=401, detail='Unknown user.')
+        # A challenge issued before the account was linked to Decoda cannot finish after it.
+        _require_password_sign_in_allowed(connection, str(user['id']))
         secret = _decrypt_mfa_secret(str(user['id']), user['mfa_totp_secret'])
         used_recovery_code = False
         if not secret or not _verify_totp(secret, code):
@@ -4514,11 +4615,60 @@ def mfa_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, 
         return {'access_token': access_token, 'token_type': 'bearer', 'user': hydrated_user}
 
 
+# Refusals of the shared-identity re-check that leave a session in place (the
+# platform withdrew access, or cannot be reached right now). Signing out must
+# still end such a session — see ``_revoke_presented_session``.
+_IDENTITY_REFUSALS_THAT_KEEP_SESSION = frozenset({'PRODUCT_ACCESS_DENIED', 'IDENTITY_DIRECTORY_UNAVAILABLE'})
+
+
+def _revoke_presented_session(request: Request, token: str) -> None:
+    """Revoke a validly signed session token without the identity re-check.
+
+    Only for sign-out: a Decoda session whose platform access was withdrawn is
+    refused by ``_validate_session`` and could otherwise never be ended by its
+    owner — it would come back to life if access were restored.
+    """
+    payload = decode_access_token(token)
+    token_hash = _auth_token_hash(token)
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        row = connection.execute(
+            '''UPDATE auth_sessions SET revoked_at = NOW(), updated_at = NOW()
+               WHERE session_token_hash = %s AND user_id = %s AND revoked_at IS NULL
+               RETURNING user_id''',
+            (token_hash, str(payload.get('sub') or '')),
+        ).fetchone()
+        if row is not None:
+            log_audit(
+                connection,
+                action='auth.signout',
+                entity_type='user',
+                entity_id=str(row['user_id']),
+                request=request,
+                user_id=str(row['user_id']),
+                workspace_id=None,
+                metadata={'identity_access_refused': True},
+            )
+        connection.commit()
+    _blacklist_session_token(token_hash, SESSION_TTL_HOURS * 3600)
+
+
 def signout_user(request: Request) -> dict[str, Any]:
     require_live_mode()
     authorization = request.headers.get('authorization', '')
     token = authorization.split(' ', 1)[1].strip() if authorization.startswith('Bearer ') else ''
     token_hash = _auth_token_hash(token) if token else None
+    try:
+        return _signout_authenticated(request, token_hash)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if token and detail.get('code') in _IDENTITY_REFUSALS_THAT_KEEP_SESSION:
+            _revoke_presented_session(request, token)
+            return {'signed_out': True}
+        raise
+
+
+def _signout_authenticated(request: Request, token_hash: str | None) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
@@ -4743,6 +4893,7 @@ def mfa_begin_enrollment(request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         # One pending enrollment per user. Writing a fresh id + secret here EXPLICITLY
         # replaces (invalidates) any previous pending enrollment: confirmation is bound
         # to this enrollment_id, so a stale authenticator entry from an earlier attempt
@@ -4779,6 +4930,7 @@ def mfa_confirm_enrollment(payload: dict[str, Any], request: Request) -> dict[st
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         row = connection.execute(
             'SELECT mfa_pending_secret, mfa_pending_enrollment_id, mfa_pending_expires_at, mfa_enabled_at '
             'FROM users WHERE id = %s',
@@ -4828,6 +4980,7 @@ def mfa_regenerate_recovery_codes(payload: dict[str, Any], request: Request) -> 
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
         secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'] if row else None)
         if not row or not row['mfa_enabled_at'] or not _verify_totp(secret, code):
@@ -4844,6 +4997,7 @@ def mfa_disable(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         row = connection.execute('SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
         secret = _decrypt_mfa_secret(user['id'], row['mfa_totp_secret'] if row else None)
         if not row or not row['mfa_enabled_at'] or not secret or not _verify_totp(secret, code):
@@ -4885,6 +5039,7 @@ def reauthenticate_user(payload: dict[str, Any], request: Request) -> dict[str, 
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         row = connection.execute('SELECT password_hash, mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s', (user['id'],)).fetchone()
         if row is None or not verify_password(password, str(row['password_hash'] or '')):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid password.')
@@ -4941,6 +5096,7 @@ def verify_session_step_up(payload: dict[str, Any], request: Request) -> dict[st
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
         user = authenticate_with_connection(connection, request)
+        _require_guard_mfa_session(connection, request)
         row = connection.execute(
             'SELECT mfa_totp_secret, mfa_enabled_at FROM users WHERE id = %s',
             (user['id'],),
@@ -5034,6 +5190,7 @@ def request_email_verification(payload: dict[str, Any], request: Request) -> dic
     is sent to an address that has no account or is already verified.
     """
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     email = _normalize_email(str(payload.get('email', '')))
     # tokens are never exposed in API responses
     generic_response = {'sent': True, 'verification_token': None}
@@ -5050,6 +5207,7 @@ def request_email_verification(payload: dict[str, Any], request: Request) -> dic
 
 def verify_email_token(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     raw_token = str(payload.get('token', '')).strip()
     if not raw_token:
         raise HTTPException(status_code=400, detail='token is required')
@@ -5074,6 +5232,7 @@ def verify_email_token(payload: dict[str, Any], request: Request) -> dict[str, A
 
 def request_password_reset(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     email = _normalize_email(str(payload.get('email', '')))
     with pg_connection() as connection:
         ensure_pilot_schema(connection)
@@ -5107,6 +5266,7 @@ def validate_password_reset_token(payload: dict[str, Any], request: Request) -> 
     is actually valid, so the user can confirm which account they are about to change.
     """
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     raw_token = str(payload.get('token', '')).strip()
     if not raw_token:
         return {'status': RESET_TOKEN_STATUS_INVALID, 'email': None}
@@ -5139,6 +5299,7 @@ def validate_password_reset_token(payload: dict[str, Any], request: Request) -> 
 
 def reset_password(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_legacy_password_sign_in()
     raw_token = str(payload.get('token', '')).strip()
     password = str(payload.get('password', ''))
     _require_strong_password(password)
@@ -5339,6 +5500,9 @@ def _resolve_organization_for_new_workspace(
     if organization is None:
         logger.warning('workspace_create_denied reason=no_approved_organization user_id=%s', user_id)
         raise _pilot_access_required()
+    # current_workspace_id is per user, not per session: a Decoda session only
+    # ever adds workspaces to the organization it is bound to.
+    decoda_session_gate.enforce_workspace_binding(organization.get('id'))
     plan_entitlement_engine.enforce_resource_creation(
         organization,
         plan_entitlement_engine.LIMIT_WORKSPACES,
@@ -5543,6 +5707,8 @@ def _session_mfa_satisfied(connection: Any, request: Request) -> bool:
         # the read path it is called from.
         return False
     methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
+    if decoda_session_gate.session_has_idp_mfa(row):
+        return True
     return row.get('mfa_verified_at') is not None and bool({'totp', 'recovery_code'} & set(map(str, methods)))
 
 
@@ -5576,6 +5742,10 @@ def _session_approval_stepup_satisfied(connection: Any, request: Request, worksp
 def _require_session_mfa(connection: Any, request: Request) -> None:
     row = _current_session_security(connection, request)
     methods = row.get('authentication_methods') if isinstance(row.get('authentication_methods'), list) else []
+    if decoda_session_gate.session_has_idp_mfa(row):
+        # A Decoda session: MFA completed at the identity provider (attested). Its
+        # recency is still enforced separately (authenticated_at = the sign-in).
+        return
     if row.get('mfa_verified_at') is None or not ({'totp', 'recovery_code'} & set(map(str, methods))):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -5787,6 +5957,13 @@ def accept_workspace_invitation(payload: dict[str, Any], request: Request) -> di
         ).fetchone()
         if invitation is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invitation is invalid or expired.')
+        if decoda_session_gate.bound_guard_organization() is not None:
+            # A Decoda session joins workspaces of its own organization only; an
+            # invitation elsewhere is accepted after switching organization in Decoda.
+            invited_into = connection.execute(
+                'SELECT organization_id FROM workspaces WHERE id = %s', (invitation['workspace_id'],)
+            ).fetchone()
+            decoda_session_gate.enforce_workspace_binding((dict(invited_into) if invited_into else {}).get('organization_id'))
         connection.execute(
             'INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (%s, %s, %s, %s, NOW()) ON CONFLICT (workspace_id, user_id) DO NOTHING',
             (str(uuid.uuid4()), invitation['workspace_id'], user['id'], _normalize_workspace_role(str(invitation['role']))),
@@ -31907,6 +32084,7 @@ def _verify_oidc_id_token(id_token: str, *, discovery: dict[str, Any], client_id
 
 def oidc_begin_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_local_sign_in_paths()
     workspace = str(payload.get('workspace') or '').strip()
     redirect_uri = str(payload.get('redirect_uri') or '').strip()
     if not workspace or not redirect_uri:
@@ -31943,6 +32121,7 @@ def oidc_begin_signin(payload: dict[str, Any], request: Request) -> dict[str, An
 
 def oidc_complete_signin(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_live_mode()
+    decoda_identity_config.require_local_sign_in_paths()
     state = str(payload.get('state') or '').strip()
     code = str(payload.get('code') or '').strip()
     if not state or not code:

@@ -863,6 +863,14 @@ _KEYWORD_ALLOWLIST = {
     'apps/web/app/trust/page.tsx',
     # This file.
     'services/api/tests/test_staff_access_audit.py',
+    # Shared Decoda identity: a WorkOS session that WorkOS reports as
+    # impersonated is REFUSED at session exchange, and no setting can allow it.
+    # Reading that fact and testing the refusal is the opposite of building a
+    # mechanism.
+    'services/api/app/decoda_identity/exchange.py',
+    'services/api/app/decoda_identity/workos_api.py',
+    'services/api/tests/decoda_identity_support.py',
+    'services/api/tests/test_decoda_identity_postgres.py',
 }
 
 # ``(?:\b|_)`` on BOTH sides rather than ``\b``: an underscore is a word
