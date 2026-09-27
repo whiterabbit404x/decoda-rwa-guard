@@ -144,6 +144,30 @@ def test_access_cache_ttl_is_capped(workos_env):
     assert identity_config.load_identity_settings().access_cache_ttl_seconds == 60
 
 
+def test_first_use_builds_the_identity_services_without_waiting_on_itself(workos_env):
+    """A fresh API process builds the services on its first Decoda sign-in. The
+    directory is created under the same (non-re-entrant) lock, so building must
+    never wait on that lock again — that hung every first exchange forever."""
+    import threading
+
+    from services.api.app import decoda_identity
+
+    decoda_identity.set_identity_services(None)
+    built: list = []
+    worker = threading.Thread(target=lambda: built.append(decoda_identity.get_identity_services()), daemon=True)
+    try:
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive(), 'get_identity_services() never returned on first use'
+        services = built[0]
+        assert services.directory is decoda_identity.get_directory()
+        assert decoda_identity.get_identity_services() is services
+    finally:
+        if worker.is_alive():  # free the module from the stuck thread so later tests can run
+            decoda_identity._lock = threading.Lock()
+        decoda_identity.set_identity_services(None)
+
+
 def test_runtime_validation_blocks_startup_on_identity_misconfiguration(env):
     env.setenv('GUARD_IDENTITY_MODE', 'workos')
     result = pilot.validate_runtime_configuration()

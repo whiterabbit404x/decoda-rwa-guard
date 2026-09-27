@@ -36,14 +36,20 @@ _directory: PlatformDirectory | None = None
 _lock = threading.Lock()
 
 
-def get_directory() -> PlatformDirectory:
+def _directory_locked(settings: Any) -> PlatformDirectory:
+    """The process-wide directory. The caller holds ``_lock`` (it is not re-entrant)."""
     global _directory
     if _directory is None:
-        settings = load_identity_settings()
-        with _lock:
-            if _directory is None:
-                _directory = PlatformDirectory(settings.platform_database_url, cache_ttl_seconds=settings.access_cache_ttl_seconds)
+        _directory = PlatformDirectory(settings.platform_database_url, cache_ttl_seconds=settings.access_cache_ttl_seconds)
     return _directory
+
+
+def get_directory() -> PlatformDirectory:
+    if _directory is not None:
+        return _directory
+    settings = load_identity_settings()
+    with _lock:
+        return _directory_locked(settings)
 
 
 def get_identity_services() -> IdentityServices:
@@ -61,7 +67,7 @@ def get_identity_services() -> IdentityServices:
                     issuer=settings.workos_issuer,
                 ),
                 sessions=WorkOSSessionLookup(client),
-                directory=get_directory(),
+                directory=_directory_locked(settings),
             )
     return _services
 
