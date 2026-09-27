@@ -5779,13 +5779,21 @@ def _require_workspace_permission(
     )
     mfa_required = mfa_authz.role_is_covered(effective['enforcement'], role)
     if mfa_required:
-        if user.get('mfa_enabled'):
+        # A Decoda (shared identity) session never passes a Guard TOTP challenge:
+        # its second factor is the one its identity provider enforced, recorded on
+        # this exact session at the exchange (`idp_mfa`). A Guard TOTP enrollment
+        # (a linked legacy account may still hold one) does not stand in for it.
+        # The per-request session check binds an organization only for a Decoda
+        # session, so the binding identifies one without another lookup.
+        decoda_session = decoda_session_gate.bound_guard_organization() is not None
+        if user.get('mfa_enabled') and not decoda_session:
             # Password sign-in cannot issue a session for an enrolled account until
             # its TOTP/recovery challenge succeeds.
             pass
-        elif str(user.get('auth_provider') or 'password') == 'oidc':
-            # Federated identities satisfy workspace MFA only when the signed ID
-            # token's AMR was persisted on this exact server-side session.
+        elif decoda_session or str(user.get('auth_provider') or 'password') == 'oidc':
+            # Federated identities satisfy workspace MFA only when the second factor
+            # was recorded on this exact server-side session: the signed ID token's
+            # AMR (workspace OIDC), or the IdP-enforced MFA of a Decoda session.
             try:
                 _require_session_mfa(connection, request)
             except HTTPException as exc:

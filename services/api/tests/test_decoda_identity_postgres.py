@@ -337,6 +337,30 @@ def test_mfa_assurance_depends_on_method_and_attestation(identity, auth_method, 
     assert row['metadata']['identity_auth_method'] == auth_method
 
 
+_WALLET = {'name': 'Treasury wallet', 'asset_type': 'wallet', 'chain_network': 'ethereum-mainnet', 'identifier': '0x5f6f35FD8b10C5576089f99C7c8c351Deb851d1F'}
+
+
+def test_permissioned_writes_accept_decoda_attested_mfa_and_nothing_less(identity):
+    """Pilot workspaces require MFA for every member on permission-gated writes
+    too (defence in depth behind the per-request check). A Decoda session meets
+    it only with the IdP-attested MFA recorded on that session — it has no Guard
+    TOTP enrollment to point to. Regression: such writes were refused with
+    MFA_ENROLLMENT_REQUIRED for every Decoda account."""
+    org, admin = _org_with_admin(identity)
+    session = identity.session(admin, org, auth_method='password')
+    workspace = session.user['current_workspace']['id']
+    created = session.post('/assets', _WALLET, workspace=workspace)
+    assert created.status_code == 200, created.text
+    assert identity.db.execute('SELECT count(*) AS n FROM assets WHERE workspace_id = %s', (workspace,)).fetchone()['n'] == 1
+
+    # The same owner signing in without an attested second factor is refused, fail closed.
+    oauth = identity.session(admin, org, auth_method='oauth')
+    refused = oauth.post('/assets', {**_WALLET, 'name': 'Second wallet', 'identifier': '0x' + '1' * 40}, workspace=workspace)
+    assert refused.status_code == 403, refused.text
+    assert _detail(refused)['code'] in {'MFA_ENROLLMENT_REQUIRED', 'MFA_CHALLENGE_REQUIRED'}
+    assert identity.db.execute('SELECT count(*) AS n FROM assets WHERE workspace_id = %s', (workspace,)).fetchone()['n'] == 1
+
+
 def test_authenticated_at_is_the_sign_in_not_the_exchange(identity):
     org, admin = _org_with_admin(identity)
     signed_in_at = int(time.time()) - 3600
