@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Select, StatusPill, TableShell } from './components/ui-primitives';
+import { followDecodaRefusal } from './decoda-identity-shared';
 import { usePilotAuth } from './pilot-auth-context';
 import {
   confidenceText,
@@ -88,12 +89,9 @@ function AlertsScreenInner() {
 
   const loadSummary = useCallback(async () => {
     setError('');
+    // No token check here: the session is the HttpOnly cookie, attached by the
+    // server. A missing or expired session is the 401 handled below.
     const headers = authHeaders();
-    if (!headers.Authorization) {
-      setError('Your session is missing or expired. Please sign in again.');
-      setLoading(false);
-      return;
-    }
     try {
       const params = new URLSearchParams();
       if (severity) params.set('severity', severity);
@@ -109,6 +107,7 @@ function AlertsScreenInner() {
         headers: { ...headers }, cache: 'no-store',
       });
       if (res.status === 401 || res.status === 403) {
+        if (await followDecodaRefusal(res)) return;
         await signOut();
         setError('Your session is missing or expired. Please sign in again.');
         return;

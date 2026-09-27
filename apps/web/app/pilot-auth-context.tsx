@@ -7,6 +7,8 @@ import { markDashboardPerf } from './dashboard-perf';
 import { AuthStateError, EMAIL_NOT_VERIFIED_CODE, isEmailNotVerifiedResponse } from './sign-in/email-verification-state';
 import { normalizeWorkspaceHeaderValue } from './workspace-header';
 import type { RuntimeConfig } from './runtime-config-schema';
+import { decodaRefusalPath } from './decoda-identity-shared';
+import { clearRetiredBrowserToken } from './retired-browser-token';
 
 const UNLOADED_RUNTIME_CONFIG: RuntimeConfig = {
   apiUrl: null,
@@ -21,8 +23,6 @@ const UNLOADED_RUNTIME_CONFIG: RuntimeConfig = {
   },
 };
 
-const ACCESS_TOKEN_COOKIE_NAME = 'decoda_access_token';
-const ACCESS_TOKEN_STORAGE_KEY = 'decoda.accessToken';
 const MISSING_SESSION_MESSAGE = 'Your session is missing or expired. Please sign in again.';
 
 export type WorkspaceSummary = {
@@ -84,8 +84,18 @@ export type PilotUser = {
   // not "MFA satisfied" — it is "the backend did not say" — so the gate treats it
   // as nothing to show and leaves enforcement where it belongs, on the server.
   mfa?: PilotMfaState;
+  // How this session was established and which sign-in the deployment
+  // accepts, as `/auth/me` reports it (shared Decoda identity). Presentation
+  // only: every rule is enforced by the API.
+  identity?: PilotIdentityState;
   current_workspace: WorkspaceSummary | null;
   memberships: WorkspaceMembership[];
+};
+
+export type PilotIdentityState = {
+  mode: 'legacy' | 'dual' | 'workos' | string;
+  auth_method: 'workos' | 'password' | string;
+  legacy_password_sunset: string | null;
 };
 
 type PilotAuthContextValue = {
@@ -127,7 +137,7 @@ type PilotAuthContextValue = {
   // Send a fresh verification link. The backend answers identically for every address,
   // so this reports only whether the REQUEST was accepted, never whether mail was sent.
   resendVerificationEmail: (email: string) => Promise<{ ok: boolean; status: number; body: unknown }>;
-  signOut: () => Promise<void>;
+  signOut: () => Promise<string | null>;
   refreshUser: () => Promise<PilotUser | null>;
   refreshCsrfToken: () => Promise<string | null>;
   createWorkspace: (name: string) => Promise<PilotUser>;
@@ -177,41 +187,6 @@ function safeAuthFailureMessage(message: string, fallback: string) {
   return normalized;
 }
 
-function readCookie(name: string) {
-  if (typeof document === 'undefined') {
-    return null;
-  }
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = document.cookie.match(new RegExp(`(?:^|; )${escapedName}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function readStoredAccessToken() {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  const fromStorage = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)?.trim() || null;
-  if (fromStorage) {
-    return fromStorage;
-  }
-  const fromCookie = readCookie(ACCESS_TOKEN_COOKIE_NAME)?.trim() || null;
-  if (fromCookie) {
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, fromCookie);
-  }
-  return fromCookie;
-}
-
-function persistAccessToken(token: string | null) {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  if (!token) {
-    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
-    return;
-  }
-  window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
-}
-
 export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   const response = await fetch('/api/runtime-config', {
     cache: 'no-store',
@@ -235,7 +210,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(UNLOADED_RUNTIME_CONFIG);
   const [configLoading, setConfigLoading] = useState(true);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [user, setUser] = useState<PilotUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -254,12 +228,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return runtimeConfig.apiUrl;
   }, [configLoading, runtimeConfig.apiUrl, runtimeConfig.diagnostic]);
 
+  // The session is NEVER visible to this code: it lives in the HttpOnly
+  // `decoda_session` cookie and the server attaches it to every backend call
+  // (proxy.ts). Only the workspace and anti-CSRF headers are set here.
   const authHeaders = useCallback((workspaceIdOverride?: string | null) => {
-    const token = accessToken || readStoredAccessToken();
     const headers: Record<string, string> = {};
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
     const workspaceId = workspaceIdOverride ?? user?.current_workspace?.id ?? user?.current_workspace_id ?? null;
     const normalizedWorkspaceId = normalizeWorkspaceHeaderValue(workspaceId);
     if (normalizedWorkspaceId) {
@@ -269,7 +242,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       headers['X-CSRF-Token'] = csrfToken;
     }
     return headers;
-  }, [accessToken, csrfToken, user?.current_workspace?.id, user?.current_workspace_id]);
+  }, [csrfToken, user?.current_workspace?.id, user?.current_workspace_id]);
 
   // Network only — no state write, so a caller can start this in parallel with
   // another request and decide afterwards whether the token should be applied.
@@ -324,10 +297,15 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       const data = await readApiResponse<{ detail?: string }>(response).catch((): ApiResponsePayload<{ detail?: string }> => ({
         detail: 'Your session expired. Please sign in again.',
       }));
+      // A Decoda session the platform refuses (access withdrawn, directory
+      // unavailable) is explained on /access, not bounced to the sign-in form.
+      const refusal = decodaRefusalPath(response.status, data);
+      if (refusal && window.location.pathname !== '/access') {
+        window.location.assign(refusal);
+        return null;
+      }
       setUser(null);
       setMfaChallengeToken(null);
-      setAccessToken(null);
-      persistAccessToken(null);
       setError(response.status === 401 ? MISSING_SESSION_MESSAGE : (data.detail ?? MISSING_SESSION_MESSAGE));
       setSessionLoading(false);
       console.debug('[dashboard-page-data trace] source=auth-session-restore', {
@@ -342,8 +320,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       swallowUnusedCsrf();
       setUser(null);
       setMfaChallengeToken(null);
-      setAccessToken(null);
-      persistAccessToken(null);
       setError(payload.detail ?? MISSING_SESSION_MESSAGE);
       setSessionLoading(false);
       console.debug('[dashboard-page-data trace] source=auth-session-restore', {
@@ -352,10 +328,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
     setUser(payload.user);
-    const restoredToken = readStoredAccessToken();
-    if (restoredToken) {
-      setAccessToken(restoredToken);
-    }
     // Already in flight since before /auth/me was awaited. csrfReady stays false
     // until this resolves to a real token — a null is stored as null, never as ready.
     setCsrfToken(await csrfTokenPromise);
@@ -443,20 +415,15 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [configLoading, refreshUser]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    const restored = readStoredAccessToken();
-    if (restored) {
-      setAccessToken(restored);
-    }
+    // An earlier release kept a copy of the session token where scripts could
+    // read it. Remove any such copy; the session itself is the HttpOnly cookie.
+    clearRetiredBrowserToken();
   }, []);
 
-  const saveAuthPayload = useCallback((nextUser: PilotUser, nextAccessToken?: string | null) => {
+  // Sign-in responses carry the user only: the server set the HttpOnly session
+  // cookie, and no token ever reaches this code.
+  const saveAuthPayload = useCallback((nextUser: PilotUser) => {
     setUser(nextUser);
-    const token = (nextAccessToken ?? '').trim() || readStoredAccessToken();
-    setAccessToken(token);
-    persistAccessToken(token);
     setError(null);
   }, []);
 
@@ -483,7 +450,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
-      access_token?: string;
     }>(response);
     if (!response.ok) {
       const message = classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data);
@@ -505,7 +471,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user) {
       throw new Error(classifyAuthResponseError('sign in', proxyUrl, response.status, data.detail, data));
     }
-    saveAuthPayload(data.user, data.access_token ?? null);
+    saveAuthPayload(data.user);
     setMfaChallengeToken(null);
     await fetchAndStoreCsrfToken();
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
@@ -527,11 +493,11 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mfa_token: mfaChallengeToken, code }),
     });
-    const data = await readApiResponse<{ user?: PilotUser; detail?: string; access_token?: string }>(response);
+    const data = await readApiResponse<{ user?: PilotUser; detail?: string }>(response);
     if (!response.ok || !data.user) {
       throw new Error(data.detail ?? 'Invalid MFA code.');
     }
-    saveAuthPayload(data.user, data.access_token ?? null);
+    saveAuthPayload(data.user);
     setMfaChallengeToken(null);
     await fetchAndStoreCsrfToken();
     console.debug('[dashboard-page-data trace] source=auth-signin-response', {
@@ -659,7 +625,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
       backendApiUrl?: string | null;
       configured?: boolean;
       code?: string;
-      access_token?: string;
     }>(response);
     if (!response.ok) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
@@ -674,7 +639,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, data.detail, data));
     }
-    saveAuthPayload(data.user, data.access_token ?? null);
+    saveAuthPayload(data.user);
     await fetchAndStoreCsrfToken();
     return { user: data.user, verificationRequired: false };
   }, [saveAuthPayload, fetchAndStoreCsrfToken]);
@@ -696,7 +661,6 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     const data = await readApiResponse<{
       user?: PilotUser;
       code?: string;
-      access_token?: string;
     }>(response);
 
     if (!response.ok) {
@@ -720,7 +684,7 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user) {
       throw new Error(classifyAuthResponseError('create an account', proxyUrl, response.status, undefined, data));
     }
-    saveAuthPayload(data.user, data.access_token ?? null);
+    saveAuthPayload(data.user);
     // Activation is an authenticated mutation, so the anti-CSRF token has to exist
     // before the very next call. Same order sign-in uses.
     await fetchAndStoreCsrfToken();
@@ -747,15 +711,23 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
     return { ok: response.ok, status: response.status, body };
   }, []);
 
-  const signOut = useCallback(async () => {
-    await fetch('/api/auth/signout', { method: 'POST', headers: authHeaders() }).catch(() => undefined);
+  // Resolves to where the browser should go next: with the shared Decoda
+  // identity that is the WorkOS logout URL (ending the Decoda session too),
+  // otherwise null.
+  const signOut = useCallback(async (): Promise<string | null> => {
+    const response = await fetch('/api/auth/signout', { method: 'POST', headers: authHeaders() }).catch(() => null);
+    const body = response ? await response.json().catch(() => null) as { redirect?: unknown } | null : null;
     setUser(null);
     setMfaChallengeToken(null);
     setCsrfToken(null);
-    setAccessToken(null);
-    persistAccessToken(null);
     setError(null);
     setSessionLoading(false);
+    const redirect = typeof body?.redirect === 'string' ? body.redirect : null;
+    // Same-site paths and https URLs only; plain http only when this page is
+    // itself served over http (local runs), never as a downgrade.
+    const allowed = redirect && (redirect.startsWith('https://') || (redirect.startsWith('/') && !redirect.startsWith('//'))
+      || (window.location.protocol === 'http:' && redirect.startsWith('http://')));
+    return allowed ? redirect : null;
   }, [authHeaders]);
 
   const createWorkspace = useCallback(async (name: string) => {

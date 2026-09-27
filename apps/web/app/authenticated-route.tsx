@@ -125,6 +125,7 @@ export default function AuthenticatedRoute({ children }: { children: React.React
       <MfaRequired
         variant={mfaGateVariant(user?.mfa) as 'enroll' | 'verify'}
         returnTo={currentPath}
+        decodaSession={user?.identity?.auth_method === 'workos'}
       />
     );
   }

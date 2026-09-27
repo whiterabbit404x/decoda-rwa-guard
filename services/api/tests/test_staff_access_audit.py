@@ -871,6 +871,9 @@ _KEYWORD_ALLOWLIST = {
     'services/api/app/decoda_identity/workos_api.py',
     'services/api/tests/decoda_identity_support.py',
     'services/api/tests/test_decoda_identity_postgres.py',
+    # The web app's screen for that refusal (IMPERSONATION_NOT_ALLOWED → "cannot
+    # open RWA Guard"): explaining the refusal, not a way around it.
+    'apps/web/app/decoda-identity-shared.ts',
 }
 
 # ``(?:\b|_)`` on BOTH sides rather than ``\b``: an underscore is a word

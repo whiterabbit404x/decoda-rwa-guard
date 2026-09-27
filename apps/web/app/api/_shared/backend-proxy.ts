@@ -2,6 +2,7 @@ import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
 import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
 import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
+import { forwardIdentityHeaders } from 'app/api/_shared/identity-headers';
 
 // Same-origin JSON proxy helper for backend endpoints that the browser must NOT call
 // directly. The backend base URL is resolved server-side from getRuntimeConfig() (API_URL),
@@ -56,6 +57,7 @@ export async function proxyJsonToBackend(
   const headers = new Headers();
   headers.set('Accept', 'application/json');
   headers.set('Authorization', authorization);
+  forwardIdentityHeaders(request.headers, headers);
   const workspaceId = normalizeWorkspaceHeaderValue(request.headers.get('x-workspace-id'));
   if (workspaceId) {
     headers.set('X-Workspace-Id', workspaceId);

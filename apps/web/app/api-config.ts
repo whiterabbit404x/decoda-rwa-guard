@@ -1,5 +1,29 @@
 const EXPLICIT_LOCAL_FALLBACK_API_URL = 'http://127.0.0.1:8000';
 
+/**
+ * Where BROWSER code sends RWA Guard API calls: the same-origin BFF proxy
+ * (app/api/backend), which attaches the session from the HttpOnly cookie. The
+ * browser never calls the API directly and never holds a session token.
+ */
+export const BROWSER_API_BASE = '/api/backend';
+
+/** The API base a client component may use: the same-origin proxy when the API is configured, never the API itself. */
+export function browserApiUrl(serverApiUrl: string | null | undefined): string | null {
+  return serverApiUrl && serverApiUrl.trim() ? BROWSER_API_BASE : null;
+}
+
+/**
+ * Whether a client component was handed an API base it can work with: the
+ * same-origin proxy (what pages hand the browser), or an absolute http(s) URL.
+ * Empty means the deployment has no API configured. It says nothing about
+ * the session — the BFF attaches that server-side from the HttpOnly cookie.
+ */
+export function isUsableClientApiBase(value: string | null | undefined): boolean {
+  const normalized = normalizeApiBaseUrl(value);
+  if (!normalized) return false;
+  return normalized === BROWSER_API_BASE || isValidApiBaseUrl(normalized);
+}
+
 const LOCAL_API_HOSTS = new Set(['127.0.0.1', 'localhost', '0.0.0.0', '::1']);
 
 export type ApiUrlSource =

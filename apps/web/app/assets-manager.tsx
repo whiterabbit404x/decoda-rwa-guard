@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { usePilotAuth } from './pilot-auth-context';
 import { parseTagInput } from './policy-builders';
 import { classifyApiTransportError } from './auth-diagnostics';
-import { normalizeApiBaseUrl, isValidApiBaseUrl } from './api-config';
+import { isUsableClientApiBase } from './api-config';
+import { followDecodaRefusal } from './decoda-identity-shared';
 import { DataTable, StatusPill, TabStrip, type PillVariant } from './components/ui-primitives';
 import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
 import AssetIntegrityPanel from './asset-integrity-panel';
@@ -437,21 +438,20 @@ export default function AssetsManager({ apiUrl }: Props) {
 
   const load = useCallback(async () => {
     setLoadError('');
-    const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
-    if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
+    // The page hands the browser the same-origin proxy (/api/backend) when the
+    // API is configured, never an absolute API URL.
+    if (!isUsableClientApiBase(apiUrl)) {
       setLoadError('Unable to load assets: API endpoint is not configured. Contact your administrator or check System Health.');
       setLoading(false);
       return;
     }
+    // No token check here: the session is the HttpOnly cookie, attached by the
+    // server. A missing or expired session is the 401 handled below.
     const headers = authHeaders();
-    if (!headers.Authorization) {
-      setLoadError('Your session is missing or expired. Please sign in again.');
-      setLoading(false);
-      return;
-    }
     try {
       const response = await fetch(`/api/assets?${queryString}`, { headers: { ...headers }, cache: 'no-store' });
       if (response.status === 401 || response.status === 403) {
+        if (await followDecodaRefusal(response)) return;
         await signOut();
         setLoadError('Your session is missing or expired. Please sign in again.');
         return;
@@ -531,16 +531,13 @@ export default function AssetsManager({ apiUrl }: Props) {
     }
     setSubmitting(true);
     try {
-      const normalizedApiUrl = normalizeApiBaseUrl(apiUrl);
-      if (!normalizedApiUrl || !isValidApiBaseUrl(normalizedApiUrl)) {
+      if (!isUsableClientApiBase(apiUrl)) {
         setSubmitError('Unable to create asset: API endpoint is not configured. Contact your administrator or check System Health.');
         return;
       }
+      // The session is the HttpOnly cookie (attached server-side); a missing or
+      // expired one is the 401 handled below.
       const headers = authHeaders();
-      if (!headers.Authorization) {
-        setSubmitError('Your session is missing or expired. Please sign in again.');
-        return;
-      }
       const assetBody = JSON.stringify({ ...form, tags: form.tags });
       let response = await fetch('/api/assets', {
         method: 'POST',
@@ -549,6 +546,7 @@ export default function AssetsManager({ apiUrl }: Props) {
       });
       // On CSRF expired/invalid, refresh the token once and retry automatically.
       if (response.status === 403) {
+        if (await followDecodaRefusal(response)) return;
         const initialPayload = await response.json().catch(() => ({}));
         const isCsrfFailure = initialPayload?.code === 'CSRF_INVALID' || initialPayload?.code === 'csrf_invalid'
           || initialPayload?.code === 'CSRF_EXPIRED' || initialPayload?.code === 'csrf_expired';
@@ -650,6 +648,7 @@ export default function AssetsManager({ apiUrl }: Props) {
       const headers = authHeaders();
       let response = await fetch(`/api/assets/${asset.id}/risk-assessment`, { method: 'POST', headers: { ...headers } });
       if (response.status === 403) {
+        if (await followDecodaRefusal(response)) return null;
         const initial = await response.json().catch(() => ({}));
         if (initial?.code === 'CSRF_INVALID' || initial?.code === 'csrf_invalid' || initial?.code === 'CSRF_EXPIRED') {
           const freshToken = await refreshCsrfToken();

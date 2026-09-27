@@ -8,7 +8,7 @@ export const revalidate = 0;
 
 const PROXY_TIMEOUT_MS = 45000;
 const MAX_TIMEOUT_RETRIES = 1;
-const FORWARDED_HEADERS = ['authorization', 'x-workspace-id', 'x-csrf-token', 'cookie'] as const;
+const FORWARDED_HEADERS = ['authorization', 'x-guard-proxy-secret', 'x-guard-identity-session', 'x-workspace-id', 'x-csrf-token', 'cookie'] as const;
 
 function jsonError(status: number, body: Record<string, unknown>) {
   return Response.json(body, {

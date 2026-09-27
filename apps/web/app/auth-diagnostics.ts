@@ -54,6 +54,15 @@ export function classifyApiTransportError(actionLabel: string, apiUrl: string | 
     return `Cannot ${actionLabel} because API_URL / NEXT_PUBLIC_API_URL is missing or empty for this deployment.`;
   }
 
+  if (normalizedApiUrl.startsWith('/') && !normalizedApiUrl.startsWith('//')) {
+    // The same-origin proxy (/api/backend): the API behind it answers with an
+    // HTTP status, so a transport failure means this site itself was unreachable.
+    if (isTimeoutError(error, lowerMessage)) {
+      return `Unable to ${actionLabel} because the request timed out. Please retry.`;
+    }
+    return `Unable to ${actionLabel} right now. The browser could not reach this site (${normalizedApiUrl}). Check your connection and retry.`;
+  }
+
   if (!isValidUrl(normalizedApiUrl)) {
     return `Cannot ${actionLabel} because the API base URL is invalid: ${normalizedApiUrl}.`;
   }

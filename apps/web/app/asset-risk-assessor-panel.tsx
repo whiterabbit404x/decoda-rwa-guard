@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { followDecodaRefusal } from './decoda-identity-shared';
 import { usePilotAuth } from './pilot-auth-context';
 import { StatusPill } from './components/ui-primitives';
 import {
@@ -105,15 +106,13 @@ export default function AssetRiskAssessorPanel({
 
   const load = useCallback(async () => {
     setError('');
+    // No token check here: the session is the HttpOnly cookie, attached by the
+    // server. A missing or expired session is the 401 handled below.
     const headers = authHeaders();
-    if (!headers.Authorization) {
-      setError('Your session is missing or expired. Please sign in again.');
-      setLoading(false);
-      return;
-    }
     try {
       const response = await fetch('/api/assets/risk-summary', { headers: { ...headers }, cache: 'no-store' });
       if (response.status === 401 || response.status === 403) {
+        if (await followDecodaRefusal(response)) return;
         await signOut();
         setError('Your session is missing or expired. Please sign in again.');
         return;

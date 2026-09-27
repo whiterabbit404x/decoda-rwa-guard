@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { EmptyStateBlocker, Select, StatusPill, TabStrip, TableShell } from '../components/ui-primitives';
+import { followDecodaRefusal } from '../decoda-identity-shared';
 import { usePilotAuth } from '../pilot-auth-context';
 import { useRuntimeSummary } from '../runtime-summary-context';
 import {
@@ -119,16 +120,14 @@ function ThreatMonitoringScreenInner() {
 
   const loadSummary = useCallback(async () => {
     setError('');
+    // No token check here: the session is the HttpOnly cookie, attached by the
+    // server. A missing or expired session is the 401 handled below.
     const headers = authHeaders();
-    if (!headers.Authorization) {
-      setError('Your session is missing or expired. Please sign in again.');
-      setLoading(false);
-      return;
-    }
     try {
       // GET only — opening/refreshing/switching windows never writes.
       const res = await fetch(`/api/threat-monitoring/summary?window=${windowKey}`, { headers: { ...headers }, cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
+        if (await followDecodaRefusal(res)) return;
         await signOut();
         setError('Your session is missing or expired. Please sign in again.');
         return;

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
+import { decodaReauthenticationPath } from 'app/decoda-identity-shared';
 import { usePilotAuth } from 'app/pilot-auth-context';
 import { safeInternalReturnTo } from 'app/safe-internal-return-to';
 
@@ -26,6 +27,9 @@ export default function SecuritySettingsPageClient() {
   // operator is sent to, so the requirement never reads as one more optional
   // hardening step they can skip.
   const mfaRequired = Boolean(user?.mfa?.required) && user?.mfa?.satisfied === false;
+  // A Decoda session: sign-in, MFA and session verification belong to the
+  // Decoda account (enforced by WorkOS); RWA Guard TOTP does not apply to it.
+  const decodaSession = user?.identity?.auth_method === 'workos';
   const resolvedWorkspace = user?.current_workspace ?? user?.memberships?.[0]?.workspace ?? null;
 
   const [submitting, setSubmitting] = useState(false);
@@ -288,7 +292,25 @@ export default function SecuritySettingsPageClient() {
         <div className="buttonRow">
           <Link href="/settings" prefetch={false}>← Back to workspace settings</Link>
         </div>
-        {mfaRequired ? (
+        {decodaSession ? (
+          <article className="dataCard" style={{ marginTop: '0.75rem' }} data-testid="decoda-managed-security">
+            <p style={{ margin: '0 0 0.5rem' }}>
+              <strong>Sign-in and multi-factor authentication are managed by your Decoda account.</strong>
+            </p>
+            <p className="muted" style={{ margin: '0 0 0.5rem' }}>
+              Sensitive actions ask you to verify again with Decoda; RWA Guard never asks this account for a separate code.
+            </p>
+            <div className="buttonRow">
+              <a
+                className="btn btn-primary"
+                href={decodaReauthenticationPath(returnTo ?? '/settings/security')}
+              >
+                Verify with Decoda
+              </a>
+            </div>
+          </article>
+        ) : null}
+        {mfaRequired && !decodaSession ? (
           <article className="dataCard" style={{ marginTop: '0.75rem' }} data-testid="mfa-mandatory-notice">
             <p style={{ margin: '0 0 0.5rem' }}>
               <strong>Multi-factor authentication is required for Pilot access.</strong>
@@ -317,6 +339,7 @@ export default function SecuritySettingsPageClient() {
         ) : null}
       </section>
 
+      {decodaSession ? null : (
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Account</p><h2>Multi-factor authentication</h2></div></div>
         <article className="dataCard">
@@ -390,6 +413,7 @@ export default function SecuritySettingsPageClient() {
           {mfaStatus ? <p className="statusLine">{mfaStatus}</p> : null}
         </article>
       </section>
+      )}
 
       <section className="featureSection">
         <div className="sectionHeader"><div><p className="eyebrow">Workspace</p><h2>Access model</h2></div></div>

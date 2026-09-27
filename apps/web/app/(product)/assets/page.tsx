@@ -1,4 +1,5 @@
 import AssetsManager from '../../assets-manager';
+import { browserApiUrl } from 'app/api-config';
 import { resolveApiUrl } from '../../dashboard-data';
 
 export const dynamic = 'force-dynamic';
@@ -9,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export default async function AssetsPage() {
   return (
     <main className="container productPage">
-      <AssetsManager apiUrl={resolveApiUrl()} />
+      <AssetsManager apiUrl={browserApiUrl(resolveApiUrl()) ?? ''} />
     </main>
   );
 }

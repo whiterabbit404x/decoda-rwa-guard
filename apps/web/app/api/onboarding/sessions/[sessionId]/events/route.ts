@@ -11,6 +11,9 @@ export const revalidate = 0;
 // to polling GET /api/onboarding/sessions/{id} when this stream is unavailable.
 const FORWARDED_REQUEST_HEADERS = [
   'authorization',
+  // Server-attached identity binding (proxy.ts); never set by the browser.
+  'x-guard-proxy-secret',
+  'x-guard-identity-session',
   'x-workspace-id',
   'x-csrf-token',
   'cookie',

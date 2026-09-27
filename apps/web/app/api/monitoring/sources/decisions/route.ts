@@ -2,6 +2,7 @@ import { normalizeApiBaseUrl } from 'app/api-config';
 import { getRuntimeConfig } from 'app/runtime-config';
 import { normalizeWorkspaceHeaderValue } from 'app/workspace-header';
 import { FetchTimeoutError, fetchWithTimeout } from 'app/fetch-with-timeout';
+import { forwardIdentityHeaders } from 'app/api/_shared/identity-headers';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -32,6 +33,7 @@ export async function GET(request: Request) {
   const authorization = request.headers.get('authorization');
   if (authorization) {
     headers.set('Authorization', authorization);
+    forwardIdentityHeaders(request.headers, headers);
   }
   const workspaceId = normalizeWorkspaceHeaderValue(request.headers.get('x-workspace-id'));
   if (workspaceId) {

@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 
+import { decodaLinks, decodaSignInEnabled, guardIdentityMode, legacyPasswordsAllowed } from '../decoda-identity';
 import PreviewDeploymentNotice from '../preview-deployment-notice';
 import { getRuntimeConfig } from '../runtime-config';
 import { resolveInvitationToken } from '../signup-access';
@@ -8,7 +9,7 @@ import SignInPageClient from './sign-in-page-client';
 export const dynamic = 'force-dynamic';
 
 type SignInPageProps = {
-  searchParams?: any;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 export default async function SignInPage({ searchParams }: SignInPageProps) {
@@ -16,7 +17,9 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
   const runtimeConfig = getRuntimeConfig();
   const cookieStore = await cookies();
   const token = cookieStore.get('decoda_session')?.value;
-  const params = (searchParams ?? {}) as Record<string, string | string[] | undefined>;
+  // A Promise since Next.js 15; production Next.js 16 has no synchronous access
+  // (reading it directly yields nothing: no return path, invitation or notice).
+  const params = (await searchParams) ?? {};
   const firstValue = (name: string) => {
     const value = params[name];
     return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
@@ -50,11 +53,35 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
     // handles post-auth navigation after session validity is confirmed.
   }
 
+  // Shared Decoda identity (GUARD_IDENTITY_MODE dual/workos): "Sign in to
+  // Decoda" is the primary path; the password form stays only for accounts not
+  // yet moved, until the sunset. Decided here, on the server — the Guard API
+  // enforces the same rule.
+  const decodaEnabled = decodaSignInEnabled();
+  const reason = firstValue('reason');
+  const decodaSignIn = guardIdentityMode() === 'legacy'
+    ? undefined
+    : {
+        enabled: decodaEnabled,
+        passwordFormAllowed: legacyPasswordsAllowed(),
+        requestAccessUrl: decodaLinks().requestAccess,
+        notice: !decodaEnabled
+          ? 'Decoda sign-in is temporarily unavailable. Please try again shortly.'
+          : firstValue('signed_out')
+            ? 'You are signed out of Decoda.'
+            : reason === 'session'
+              ? 'Your session ended. Sign in with Decoda to continue.'
+              : reason === 'callback'
+                ? 'Sign-in could not be completed. Please try again.'
+                : null,
+      };
+
   return (
     <SignInPageClient
       nextPath={nextPath}
       invitationToken={invitationToken}
       previewNotice={isPreviewDeployment ? <PreviewDeploymentNotice /> : null}
+      decodaSignIn={decodaSignIn}
     />
   );
 }
