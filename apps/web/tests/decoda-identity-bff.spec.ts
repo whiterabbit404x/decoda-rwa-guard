@@ -6,7 +6,7 @@ import { POST as signInRoute } from '../app/api/auth/signin/route';
 import { GET as runtimeConfigRoute } from '../app/api/runtime-config/route';
 import { BROWSER_API_BASE, browserApiUrl, isUsableClientApiBase } from '../app/api-config';
 import { classifyApiTransportError } from '../app/auth-diagnostics';
-import { decodaSignInEnabled, guardIdentityMode, legacyPasswordsAllowed } from '../app/decoda-identity';
+import { decodaLinks, decodaSignInEnabled, guardIdentityMode, legacyPasswordsAllowed, productEntryUrl } from '../app/decoda-identity';
 import { accessReasonFor, decodaReauthenticationPath, followDecodaRefusal, safeNextPath } from '../app/decoda-identity-shared';
 import { attachApiCredentials, stripBrowserCredentials } from '../app/server-credentials';
 
@@ -77,6 +77,29 @@ test.describe('identity modes (server-decided)', () => {
     await withEnv({ GUARD_IDENTITY_MODE: 'workos', ...WORKOS_ENV }, () => expect(decodaSignInEnabled()).toBe(true));
     await withEnv({ GUARD_IDENTITY_MODE: 'workos', ...WORKOS_ENV, WORKOS_COOKIE_PASSWORD: 'short' }, () => expect(decodaSignInEnabled()).toBe(false));
     await withEnv({ GUARD_IDENTITY_MODE: 'legacy', ...WORKOS_ENV }, () => expect(decodaSignInEnabled()).toBe(false));
+  });
+});
+
+test.describe('product switcher destinations (server-configured)', () => {
+  test('Vault opens at its sign-in entry, not its home page', async () => {
+    await withEnv({ DECODA_WEBSITE_URL: undefined, DECODA_VAULT_URL: undefined }, () => {
+      const links = decodaLinks();
+      expect(links.vault).toBe('https://vault.decodasecurity.com/auth/sign-in');
+      expect(links.launcher).toBe('https://www.decodasecurity.com/launcher');
+      expect(links.requestAccess).toBe('https://www.decodasecurity.com/request-pilot?product=rwa_guard');
+    });
+    await withEnv({ DECODA_VAULT_URL: 'https://vault-staging.decoda.test/' }, () => {
+      expect(decodaLinks().vault).toBe('https://vault-staging.decoda.test/auth/sign-in');
+    });
+    expect(productEntryUrl('https://vault.decoda.test//')).toBe('https://vault.decoda.test/auth/sign-in');
+  });
+
+  test('a non-https destination is refused in production', async () => {
+    await withEnv({ NODE_ENV: 'production', DECODA_VAULT_URL: 'http://vault.decoda.test', DECODA_WEBSITE_URL: 'javascript:alert(1)' }, () => {
+      const links = decodaLinks();
+      expect(links.vault).toBe('https://vault.decodasecurity.com/auth/sign-in');
+      expect(links.website).toBe('https://www.decodasecurity.com');
+    });
   });
 });
 

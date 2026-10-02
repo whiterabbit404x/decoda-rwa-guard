@@ -112,6 +112,15 @@ function httpsUrl(raw: string | undefined, fallback: string): string {
   }
 }
 
+/**
+ * A Decoda product's sign-in entry (its WorkOS Initiate login URI). With a
+ * Decoda session already in the browser, AuthKit returns there without asking
+ * again, and that product decides access itself.
+ */
+export function productEntryUrl(productUrl: string): string {
+  return `${productUrl.replace(/\/+$/, '')}/auth/sign-in`;
+}
+
 /** Server-configured destinations for the product switcher (never user-supplied). */
 export function decodaLinks(): DecodaLinks {
   const website = httpsUrl(process.env.DECODA_WEBSITE_URL, 'https://www.decodasecurity.com');
@@ -120,7 +129,7 @@ export function decodaLinks(): DecodaLinks {
     launcher: `${website}/launcher`,
     account: `${website}/account`,
     requestAccess: `${website}/request-pilot?product=rwa_guard`,
-    vault: httpsUrl(process.env.DECODA_VAULT_URL, 'https://vault.decodasecurity.com'),
+    vault: productEntryUrl(httpsUrl(process.env.DECODA_VAULT_URL, 'https://vault.decodasecurity.com')),
   };
 }
 

@@ -67,13 +67,13 @@ Pilot plans require MFA for every member (unchanged). A Decoda session satisfies
 
 ### Organization switcher
 
-"Decoda ▾" in the header (Decoda sessions only) lists the Decoda products with this organization's state (Current / Open / Pilot / Not enabled + Request access / Coming soon) and the person's organizations. Switching posts a platform organization id to `/api/auth/switch-organization` (same-origin + CSRF). The API confirms active membership and RWA Guard entitlement (`ORGANIZATION_NOT_AVAILABLE` / `PRODUCT_ACCESS_DENIED` otherwise), AuthKit re-scopes the WorkOS session to that organization (WorkOS checks membership again), and the new token is exchanged for a new Guard session; the previous one is superseded.
+"Decoda ▾" in the header (Decoda sessions only) lists the Decoda products with this organization's state (Current / Open / Pilot / Not enabled + Request access / Coming soon) and the person's organizations. An open product links to its sign-in entry (`<DECODA_VAULT_URL>/auth/sign-in`, its WorkOS Initiate login URI), never its home page: with the Decoda session already in the browser AuthKit returns there without asking again, and that product decides access itself. Switching posts a platform organization id to `/api/auth/switch-organization` (same-origin + CSRF). The API confirms active membership and RWA Guard entitlement (`ORGANIZATION_NOT_AVAILABLE` / `PRODUCT_ACCESS_DENIED` otherwise), AuthKit re-scopes the WorkOS session to that organization (WorkOS checks membership again), and the new token is exchanged for a new Guard session; the previous one is superseded.
 
 ## Configuration
 
 API (`services/api/.env.example`): `GUARD_IDENTITY_MODE`, `GUARD_LEGACY_PASSWORD_SUNSET`, `WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_ISSUER`, `DECODA_PLATFORM_DATABASE_URL` (the `decoda_platform_reader` role: `SELECT` on `platform_api` views only), `DECODA_IDP_MFA_REQUIRED`, `GUARD_BFF_SHARED_SECRET`, optional `DECODA_ACCESS_CACHE_TTL_SECONDS`, `DECODA_WEBSITE_URL`.
 
-Web (`apps/web/.env.example`): `GUARD_IDENTITY_MODE`, `GUARD_LEGACY_PASSWORD_SUNSET`, `WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD` (≥32 chars), `NEXT_PUBLIC_WORKOS_REDIRECT_URI` (**also at build time**; its origin is the public origin used for redirects and cookies), `GUARD_BFF_SHARED_SECRET` (same value as the API), `DECODA_WEBSITE_URL`, `DECODA_VAULT_URL`. The API is reached server-side through `API_URL`.
+Web (`apps/web/.env.example`): `GUARD_IDENTITY_MODE`, `GUARD_LEGACY_PASSWORD_SUNSET`, `WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD` (≥32 chars), `NEXT_PUBLIC_WORKOS_REDIRECT_URI` (**also at build time**; its origin is the public origin used for redirects and cookies), `GUARD_BFF_SHARED_SECRET` (same value as the API), `DECODA_WEBSITE_URL`, `DECODA_VAULT_URL` (Vault's origin, exactly the host of Vault's WorkOS redirect URI). The API is reached server-side through `API_URL`.
 
 ### WorkOS application (RWA Guard) — register in the shared Decoda environment
 
