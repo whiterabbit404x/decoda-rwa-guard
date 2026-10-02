@@ -97,7 +97,7 @@ Accounts move by **invitation**, never by copying credentials:
 
 ## Rollback
 
-Migration `0158_decoda_shared_identity.sql` is additive (nullable columns, partial unique indexes, format checks), so the previous release runs against it unchanged. To roll back, set `GUARD_IDENTITY_MODE=legacy` (or redeploy the previous release): Decoda sessions are revoked on next use and Guard's own sign-in works again for every account that has a password. Accounts created through Decoda have an unusable random password and need a password reset (or a re-link) to sign in under `legacy`. No data is lost either way.
+Migration `0158_decoda_shared_identity.sql` is additive (nullable columns, partial unique indexes, format checks), so the previous release runs against it unchanged. In `legacy` mode this release never reads the columns it adds, so it can be deployed before the migration is applied; `dual` and `workos` require it. To roll back, set `GUARD_IDENTITY_MODE=legacy` (or redeploy the previous release): Decoda sessions are revoked on next use and Guard's own sign-in works again for every account that has a password. Accounts created through Decoda have an unusable random password and need a password reset (or a re-link) to sign in under `legacy`. No data is lost either way.
 
 ## Verification
 

@@ -2518,6 +2518,21 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return payload
 
 
+_SESSION_SECURITY_SQL = '''
+        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods,
+               auth_mode, workos_session_id, metadata
+        FROM auth_sessions
+        WHERE session_token_hash = %s
+        '''
+# Legacy mode never reads the WorkOS binding (migration 0158), so it does not select it.
+_LEGACY_SESSION_SECURITY_SQL = '''
+        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods,
+               auth_mode, NULL::text AS workos_session_id, metadata
+        FROM auth_sessions
+        WHERE session_token_hash = %s
+        '''
+
+
 def _validate_session(connection: Any, token: str, payload: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
     """Validate the bearer session and return its server-side security record.
 
@@ -2535,12 +2550,7 @@ def _validate_session(connection: Any, token: str, payload: dict[str, Any], requ
     if _is_session_blacklisted(session_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Session is no longer active.')
     session = connection.execute(
-        '''
-        SELECT revoked_at, expires_at, mfa_verified_at, authentication_methods,
-               auth_mode, workos_session_id, metadata
-        FROM auth_sessions
-        WHERE session_token_hash = %s
-        ''',
+        _SESSION_SECURITY_SQL if decoda_session_gate.reads_workos_binding() else _LEGACY_SESSION_SECURITY_SQL,
         (session_hash,),
     ).fetchone()
     if session is None or session['revoked_at'] is not None:

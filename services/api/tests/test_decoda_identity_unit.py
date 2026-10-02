@@ -501,6 +501,34 @@ def test_a_guard_session_is_unbound_and_passes_in_legacy_and_early_dual(gate):
     assert gate['ended'] == []
 
 
+class _RecordingConnection:
+    """Records the session lookup and answers "no such session"."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(' '.join(sql.split()))
+        return self
+
+    def fetchone(self):
+        return None
+
+
+@pytest.mark.parametrize(('mode', 'reads_binding'), [('legacy', False), ('dual', True), ('workos', True)])
+def test_only_decoda_modes_read_the_workos_binding_so_legacy_runs_before_migration_0158(workos_env, monkeypatch, mode, reads_binding):
+    workos_env.setenv('GUARD_IDENTITY_MODE', mode)
+    monkeypatch.setattr(pilot, '_auth_token_hash', lambda token: 'hash')
+    monkeypatch.setattr(pilot, '_is_session_blacklisted', lambda session_hash: False)
+    connection = _RecordingConnection()
+    with pytest.raises(HTTPException) as info:
+        pilot._validate_session(connection, 'token', {'sub': 'user'}, None)
+    assert info.value.status_code == 401
+    (sql,) = connection.statements
+    assert ('auth_mode, workos_session_id, metadata' in sql) is reads_binding
+    assert ('auth_mode, NULL::text AS workos_session_id, metadata' in sql) is not reads_binding
+
+
 def test_guard_sessions_end_in_workos_mode_and_after_the_sunset(gate):
     assert _refusal({'auth_mode': 'bearer_token'}, None)[0] == 401
     gate['env'].setenv('GUARD_IDENTITY_MODE', 'dual')

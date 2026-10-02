@@ -83,6 +83,16 @@ def _unauthorized() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=SESSION_ENDED)
 
 
+def reads_workos_binding() -> bool:
+    """Whether ``check_session`` needs ``auth_sessions.workos_session_id``.
+
+    Only ``dual`` and ``workos`` read it (both require migration 0158). Legacy
+    mode never does, so it keeps serving every session on a database that has
+    not applied that migration yet.
+    """
+    return load_identity_settings().uses_workos
+
+
 def check_session(session: dict[str, Any], session_hash: str, request: Any | None) -> None:
     """Raise 401/403/503 when this session may not be used; otherwise bind the request."""
     _BOUND_ORGANIZATION.set(None)
