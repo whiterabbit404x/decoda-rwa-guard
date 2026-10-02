@@ -134,6 +134,22 @@ const CODE_REASONS: Record<string, AccessReason> = {
   BFF_REQUIRED: 'unavailable',
 };
 
+/**
+ * What /sign-in offers under the shared Decoda identity, decided on the server
+ * (decodaSignInOptions in app/decoda-identity.ts). Absent in `legacy` mode,
+ * where the screen is RWA Guard's own sign-in.
+ */
+export type DecodaSignInOptions = {
+  /** "Sign in with Decoda" (WorkOS AuthKit) is offered. */
+  enabled: boolean;
+  /** The legacy RWA Guard password form is still offered (dual mode, before the sunset). */
+  passwordFormAllowed: boolean;
+  /** Where people without access request it: the Decoda website, never RWA Guard. */
+  requestAccessUrl: string;
+  /** A message for why the visitor is here (signed out, session ended, …). */
+  notice: string | null;
+};
+
 export function isAccessReason(value: unknown): value is AccessReason {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(ACCESS_REASONS, value);
 }

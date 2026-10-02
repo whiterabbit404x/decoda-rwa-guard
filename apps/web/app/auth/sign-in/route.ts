@@ -1,5 +1,5 @@
 /**
- * GET /auth/sign-in — "Sign in to Decoda". RWA Guard's Initiate login URI in WorkOS.
+ * GET /auth/sign-in — "Sign in with Decoda". RWA Guard's Initiate login URI in WorkOS.
  *
  * Starts the shared AuthKit flow (PKCE + sealed state). After the callback the
  * browser lands on /auth/session, which exchanges the verified sign-in for an

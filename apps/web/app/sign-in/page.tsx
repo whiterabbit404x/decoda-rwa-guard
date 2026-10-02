@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 
-import { decodaLinks, decodaSignInEnabled, guardIdentityMode, legacyPasswordsAllowed } from '../decoda-identity';
+import { decodaSignInOptions } from '../decoda-identity';
 import PreviewDeploymentNotice from '../preview-deployment-notice';
 import { getRuntimeConfig } from '../runtime-config';
 import { resolveInvitationToken } from '../signup-access';
@@ -53,28 +53,11 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
     // handles post-auth navigation after session validity is confirmed.
   }
 
-  // Shared Decoda identity (GUARD_IDENTITY_MODE dual/workos): "Sign in to
+  // Shared Decoda identity (GUARD_IDENTITY_MODE dual/workos): "Sign in with
   // Decoda" is the primary path; the password form stays only for accounts not
   // yet moved, until the sunset. Decided here, on the server — the Guard API
   // enforces the same rule.
-  const decodaEnabled = decodaSignInEnabled();
-  const reason = firstValue('reason');
-  const decodaSignIn = guardIdentityMode() === 'legacy'
-    ? undefined
-    : {
-        enabled: decodaEnabled,
-        passwordFormAllowed: legacyPasswordsAllowed(),
-        requestAccessUrl: decodaLinks().requestAccess,
-        notice: !decodaEnabled
-          ? 'Decoda sign-in is temporarily unavailable. Please try again shortly.'
-          : firstValue('signed_out')
-            ? 'You are signed out of Decoda.'
-            : reason === 'session'
-              ? 'Your session ended. Sign in with Decoda to continue.'
-              : reason === 'callback'
-                ? 'Sign-in could not be completed. Please try again.'
-                : null,
-      };
+  const decodaSignIn = decodaSignInOptions({ signedOut: Boolean(firstValue('signed_out')), reason: firstValue('reason') });
 
   return (
     <SignInPageClient

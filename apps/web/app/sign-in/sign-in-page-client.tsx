@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BuildInfo } from '../build-info';
 import { resolveAuthFormState } from '../auth-form-state';
 import { acceptInvitationPath, invitationSignUpHref } from '../invitation-routing';
+import type { DecodaSignInOptions } from '../decoda-identity-shared';
 import { buildResetPasswordHref } from '../password-reset-request';
 import { safeInternalReturnTo } from '../safe-internal-return-to';
 import {
@@ -242,18 +243,6 @@ type SignInInvitation = {
   email: string;
   company_name: string | null;
   account_exists?: boolean | null;
-};
-
-/** How this deployment signs people in (decided server-side; see app/decoda-identity.ts). */
-export type DecodaSignInOptions = {
-  /** "Sign in to Decoda" (WorkOS AuthKit) is offered. */
-  enabled: boolean;
-  /** The legacy RWA Guard password form is still offered (dual mode, before the sunset). */
-  passwordFormAllowed: boolean;
-  /** Where to request access (the Decoda website). */
-  requestAccessUrl: string;
-  /** A message for why the visitor is here (signed out, session ended, …). */
-  notice: string | null;
 };
 
 export default function SignInPageClient({
@@ -698,11 +687,14 @@ export default function SignInPageClient({
                         className="siSubmitBtn siSubmitBtnLink"
                         href={`/auth/sign-in?next=${encodeURIComponent(safeInternalReturnTo(nextPath ?? null) ?? '/dashboard')}`}
                       >
-                        Sign in to Decoda
+                        Sign in with Decoda
                       </a>
                     ) : null}
+                    <p className="siMuted">Use your Decoda account to access RWA Guard.</p>
+                    {/* Accounts are created by Decoda invitation, never here:
+                        people without access ask on the Decoda website. */}
                     <p className="siMuted">
-                      One Decoda account for RWA Guard and every Decoda product. New to Decoda?{' '}
+                      No access to RWA Guard yet?{' '}
                       <a className="siLink" href={decodaSignIn.requestAccessUrl}>Request access</a>
                     </p>
                     {decodaSignIn.passwordFormAllowed ? (
@@ -790,7 +782,8 @@ export default function SignInPageClient({
                     <Link href={buildResetPasswordHref(email)} className="siLink" prefetch={false}>Forgot password?</Link>
                   </div>
 
-                  {invitation && invitation.account_exists === false ? (
+                  {/* Never under the shared Decoda identity, which has no RWA Guard sign-up. */}
+                  {invitation && invitation.account_exists === false && !decodaSignIn ? (
                     <div className="siAlert siAlertWarn" role="status">
                       There is no Decoda account for <strong>{invitation.email}</strong> yet.{' '}
                       <Link href={invitationSignUpHref(invitationToken ?? '')} className="siLink" prefetch={false}>

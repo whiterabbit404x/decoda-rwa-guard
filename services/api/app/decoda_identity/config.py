@@ -153,7 +153,7 @@ def require_legacy_password_sign_in(auth_provider: str | None = None) -> None:
     if not s.legacy_passwords_allowed():
         raise _gone('LEGACY_AUTH_DISABLED', 'RWA Guard uses your Decoda account. Sign in with Decoda.')
     if auth_provider == 'workos':
-        raise _gone('DECODA_ACCOUNT_LINKED', 'This account signs in with Decoda. Use "Sign in to Decoda".')
+        raise _gone('DECODA_ACCOUNT_LINKED', 'This account signs in with Decoda. Use "Sign in with Decoda".')
 
 
 def require_new_password_accounts() -> None:

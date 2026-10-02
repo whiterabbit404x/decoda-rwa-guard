@@ -9,10 +9,10 @@ RWA Guard can sign people in with their **Decoda account**: one WorkOS AuthKit i
 | Mode | Sign-in | Legacy Guard sessions |
 |---|---|---|
 | `legacy` (default) | Guard's own sign-in, exactly as before (passwords, Guard TOTP, workspace OIDC). | Unchanged. |
-| `dual` | **Sign in to Decoda** is the primary path. The Guard password form stays only for accounts **not yet linked** to a Decoda identity, and only until `GUARD_LEGACY_PASSWORD_SUNSET` (required in staging/production). Sign-up, invitation sign-up and the public pilot-request intake are closed (`SIGN_UP_MOVED`, `PILOT_REQUESTS_MOVED`): new people arrive through Decoda invitations. A linked account's password answers `410 DECODA_ACCOUNT_LINKED`. | Honoured until the sunset, then refused and revoked on next use. |
+| `dual` | **Sign in with Decoda** is the primary path. The Guard password form stays only for accounts **not yet linked** to a Decoda identity, and only until `GUARD_LEGACY_PASSWORD_SUNSET` (required in staging/production). Sign-up, invitation sign-up and the public pilot-request intake are closed (`SIGN_UP_MOVED`, `PILOT_REQUESTS_MOVED`): new people arrive through Decoda invitations. A linked account's password answers `410 DECODA_ACCOUNT_LINKED`. | Honoured until the sunset, then refused and revoked on next use. |
 | `workos` | Decoda sign-in only. Every legacy sign-in path (password, workspace OIDC, sign-up, local onboarding) answers `410 LEGACY_AUTH_DISABLED` / `SIGN_UP_MOVED` / `PILOT_REQUESTS_MOVED`. | Refused and revoked on next use. |
 
-**Fail closed.** In `dual`/`workos` the API refuses to start without `WORKOS_CLIENT_ID`, `WORKOS_API_KEY` and `DECODA_PLATFORM_DATABASE_URL`; staging/production additionally require `WORKOS_ISSUER`, `GUARD_BFF_SHARED_SECRET` (≥32 chars), `DECODA_IDP_MFA_REQUIRED=true` and, in `dual`, the sunset date. If the web app lacks its WorkOS settings, "Sign in to Decoda" is **unavailable** (it says so); it never falls back to the password form in `workos` mode, and an unknown mode value is treated as `workos`. A platform or WorkOS outage refuses sign-ins and requests (`503`), never grants them.
+**Fail closed.** In `dual`/`workos` the API refuses to start without `WORKOS_CLIENT_ID`, `WORKOS_API_KEY` and `DECODA_PLATFORM_DATABASE_URL`; staging/production additionally require `WORKOS_ISSUER`, `GUARD_BFF_SHARED_SECRET` (≥32 chars), `DECODA_IDP_MFA_REQUIRED=true` and, in `dual`, the sunset date. If the web app lacks its WorkOS settings, "Sign in with Decoda" is **unavailable** (it says so); it never falls back to the password form in `workos` mode, and an unknown mode value is treated as `workos`. A platform or WorkOS outage refuses sign-ins and requests (`503`), never grants them.
 
 `legacy` stays the default so an existing deployment behaves exactly as before until an operator opts in, and it is the rollback (below).
 
@@ -20,7 +20,7 @@ RWA Guard can sign people in with their **Decoda account**: one WorkOS AuthKit i
 
 ```
 browser ──► rwa.decodasecurity.com (Next.js BFF)                                RWA Guard API (FastAPI)
-   │  /sign-in  "Sign in to Decoda"                                                    │
+   │  /sign-in  "Sign in with Decoda"                                                  │
    │  /auth/sign-in ──► AuthKit (PKCE + sealed state) ──► /auth/callback               │
    │                    AuthKit seals the session in this host's HttpOnly              │
    │                    `wos-session` cookie                                           │
@@ -108,5 +108,5 @@ Migration `0158_decoda_shared_identity.sql` is additive (nullable columns, parti
 
 ## Known limitations
 
-- A direct visit to a product URL without any session is redirected to `/sign-in` without the return path (the product layout's server-side redirect, unchanged by this work). A session that expires inside the app keeps its return path through "Sign in to Decoda".
+- A direct visit to a product URL without any session is redirected to `/sign-in` without the return path (the product layout's server-side redirect, unchanged by this work). A session that expires inside the app keeps its return path through "Sign in with Decoda".
 - Not yet verified against a real WorkOS environment (no credentials in development): do a live sign-in on staging once the RWA Guard application is registered.
