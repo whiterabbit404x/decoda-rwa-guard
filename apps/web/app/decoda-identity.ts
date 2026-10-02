@@ -3,10 +3,14 @@
  *
  * GUARD_IDENTITY_MODE (set to the same value as the Guard API)
  *   legacy  Guard's own sign-in, exactly as before (the default).
- *   dual    "Sign in to Decoda" (WorkOS AuthKit) is the primary path; the
+ *   dual    "Sign in with Decoda" (WorkOS AuthKit) is the primary path; the
  *           legacy password form stays for accounts not yet linked, until
  *           GUARD_LEGACY_PASSWORD_SUNSET.
- *   workos  "Sign in to Decoda" only.
+ *   workos  "Sign in with Decoda" only.
+ *
+ * In both shared modes nobody registers here: Decoda accounts are created by
+ * invitation, and people without access are sent to the Decoda website's
+ * Request pilot page.
  *
  * The browser never holds an RWA Guard token: sessions live in the HttpOnly
  * `decoda_session` cookie, and this server attaches the bearer token, the BFF
@@ -17,7 +21,7 @@
 import type { NextResponse } from 'next/server';
 
 import { normalizeApiBaseUrl } from './api-config';
-import { accessReasonFor, type AccessReason } from './decoda-identity-shared';
+import { accessReasonFor, type AccessReason, type DecodaSignInOptions } from './decoda-identity-shared';
 import { getRuntimeConfig } from './runtime-config';
 
 export type GuardIdentityMode = 'legacy' | 'dual' | 'workos';
@@ -52,7 +56,7 @@ export function workosConfigured(): boolean {
   );
 }
 
-/** Whether this deployment offers "Sign in to Decoda" (and runs AuthKit's session handling). */
+/** Whether this deployment offers "Sign in with Decoda" (and runs AuthKit's session handling). */
 export function decodaSignInEnabled(): boolean {
   return guardIdentityMode() !== 'legacy' && workosConfigured();
 }
@@ -130,6 +134,31 @@ export function decodaLinks(): DecodaLinks {
     account: `${website}/account`,
     requestAccess: `${website}/request-pilot?product=rwa_guard`,
     vault: productEntryUrl(httpsUrl(process.env.DECODA_VAULT_URL, 'https://vault.decodasecurity.com')),
+  };
+}
+
+/**
+ * What /sign-in offers, from the identity mode: nothing extra in `legacy` (RWA
+ * Guard's own sign-in, unchanged); otherwise "Sign in with Decoda", the legacy
+ * password form only while `dual` still allows it, and "Request access" on the
+ * Decoda website. Never a way to create an RWA Guard account.
+ */
+export function decodaSignInOptions(query: { signedOut?: boolean; reason?: string | null } = {}): DecodaSignInOptions | undefined {
+  if (guardIdentityMode() === 'legacy') return undefined;
+  const enabled = decodaSignInEnabled();
+  return {
+    enabled,
+    passwordFormAllowed: legacyPasswordsAllowed(),
+    requestAccessUrl: decodaLinks().requestAccess,
+    notice: !enabled
+      ? 'Decoda sign-in is temporarily unavailable. Please try again shortly.'
+      : query.signedOut
+        ? 'You are signed out of Decoda.'
+        : query.reason === 'session'
+          ? 'Your session ended. Sign in with Decoda to continue.'
+          : query.reason === 'callback'
+            ? 'Sign-in could not be completed. Please try again.'
+            : null,
   };
 }
 

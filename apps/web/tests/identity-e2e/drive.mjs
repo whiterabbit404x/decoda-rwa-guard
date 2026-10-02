@@ -109,15 +109,22 @@ const ctx = await browser.newContext({ viewport: { width: 1360, height: 900 } })
 const page = await newPage(ctx);
 await page.goto(`${WEB}/assets`);
 await page.waitForURL(/\/sign-in/, { timeout: 30000 });
-await page.getByRole('link', { name: 'Sign in to Decoda' }).waitFor({ timeout: 30000 });
-check('an unauthenticated product page lands on "Sign in to Decoda"', true, page.url().replace(WEB, ''));
+await page.getByRole('link', { name: 'Sign in with Decoda' }).waitFor({ timeout: 30000 });
+check('an unauthenticated product page lands on "Sign in with Decoda"', true, page.url().replace(WEB, ''));
 check('no password form in `workos` mode', (await page.locator('input[type=password]').count()) === 0);
+check('…explained as one Decoda account', await page.getByText('Use your Decoda account to access RWA Guard.').isVisible());
+{
+  const requestAccess = await page.getByRole('link', { name: 'Request access' }).getAttribute('href');
+  check('"Request access" goes to Request pilot on the Decoda website', requestAccess === 'https://www.decodasecurity.com/request-pilot?product=rwa_guard', requestAccess);
+  const signUpLinks = await page.locator('a[href*="sign-up"], a[href*="signup"], a[href*="register"]').count();
+  check('no RWA Guard account can be created from the sign-in page', signUpLinks === 0, String(signUpLinks));
+}
 await page.screenshot({ path: `${SHOTS}01-sign-in.png` });
 // The route guard's return path (an expired session on /assets) survives the AuthKit round trip.
 await page.goto(`${WEB}/sign-in?next=%2Fassets`);
-const decodaLink = page.getByRole('link', { name: 'Sign in to Decoda' });
+const decodaLink = page.getByRole('link', { name: 'Sign in with Decoda' });
 await decodaLink.waitFor({ timeout: 30000 });
-check('"Sign in to Decoda" carries the return path', (await decodaLink.getAttribute('href')) === '/auth/sign-in?next=%2Fassets', await decodaLink.getAttribute('href'));
+check('"Sign in with Decoda" carries the return path', (await decodaLink.getAttribute('href')) === '/auth/sign-in?next=%2Fassets', await decodaLink.getAttribute('href'));
 await login('user_01MORGANE2E', 'org_01HARBORE2E', 'password');
 await decodaLink.click();
 await page.waitForURL((url) => url.pathname === '/assets', { timeout: 30000 });
@@ -395,7 +402,7 @@ check('restored entitlement works immediately (denials are never cached)', (awai
   await sleep(16000);
   await priya.goto(`${WEB}/dashboard`);
   await priya.waitForURL(/\/sign-in/, { timeout: 30000 });
-  await priya.getByRole('link', { name: 'Sign in to Decoda' }).waitFor({ timeout: 30000 });
+  await priya.getByRole('link', { name: 'Sign in with Decoda' }).waitFor({ timeout: 30000 });
   const landed = priya.url();
   await sleep(2000);
   check('revoked WorkOS session ends the RWA Guard session and does not loop', priya.url() === landed, landed);
