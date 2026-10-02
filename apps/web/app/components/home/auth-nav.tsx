@@ -69,7 +69,10 @@ export function AuthNav({
   const handleSignOut = useCallback(async () => {
     setMenuOpen(false);
     onNavigate?.();
-    await signOut();
+    const next = await signOut();
+    // Shared Decoda identity: continue to the WorkOS logout URL so the Decoda
+    // session ends as well; otherwise stay on this page, signed out.
+    if (next) window.location.href = next;
   }, [onNavigate, signOut]);
 
   if (state === 'checking') {

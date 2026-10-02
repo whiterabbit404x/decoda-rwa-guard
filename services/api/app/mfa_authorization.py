@@ -284,8 +284,10 @@ def resolve_plan_floor(
 # ── Session MFA state ────────────────────────────────────────────────────────
 #: Authentication methods that count as a completed SECOND factor when an
 #: identity provider (rather than Decoda) performed the challenge. 'totp' and
-#: 'recovery_code' are Decoda's own; the rest are OIDC ``amr`` values.
-FEDERATED_MFA_METHODS: frozenset[str] = frozenset({'mfa', 'otp', 'hwk', 'swk', 'webauthn'})
+#: 'recovery_code' are Decoda's own; 'idp_mfa' is a shared Decoda sign-in whose
+#: WorkOS environment the operator attests enforces MFA (decoda_identity); the
+#: rest are OIDC ``amr`` values.
+FEDERATED_MFA_METHODS: frozenset[str] = frozenset({'mfa', 'otp', 'hwk', 'swk', 'webauthn', 'idp_mfa'})
 LOCAL_MFA_METHODS: frozenset[str] = frozenset({'totp', 'recovery_code'})
 
 

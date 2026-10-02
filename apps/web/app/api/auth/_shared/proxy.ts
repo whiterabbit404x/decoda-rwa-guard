@@ -5,6 +5,7 @@ import { normalizeApiBaseUrl } from '../../../api-config';
 import { FetchTimeoutError, fetchWithTimeout } from '../../../fetch-with-timeout';
 import { getRuntimeConfig } from '../../../runtime-config';
 import { normalizeWorkspaceHeaderValue } from '../../../workspace-header';
+import { forwardIdentityHeaders } from 'app/api/_shared/identity-headers';
 
 // Every auth call previously used a bare fetch with no timeout, so a backend
 // that accepted the connection and then stalled held the request open
@@ -18,7 +19,9 @@ const AUTH_PROXY_TIMEOUT_MS = (() => {
 
 const SESSION_COOKIE_NAME = 'decoda_session';
 const CSRF_COOKIE_NAME = 'decoda_csrf';
-const ACCESS_TOKEN_COOKIE_NAME = 'decoda_access_token';
+// Retired: a JavaScript-readable copy of the session token. The session now
+// lives ONLY in the HttpOnly cookie; this name is only ever cleared.
+const RETIRED_ACCESS_TOKEN_COOKIE_NAME = 'decoda_access_token';
 const JSON_HEADERS = {
   'Cache-Control': 'no-store',
   'Content-Type': 'application/json',
@@ -93,15 +96,26 @@ function csrfCookieOptions() {
   };
 }
 
-function accessTokenCookieOptions() {
+function retiredCookieClearOptions() {
   const isProd = process.env.NODE_ENV === 'production';
   return {
     httpOnly: false,
     secure: isProd,
     sameSite: 'lax' as const,
     path: '/',
-    maxAge: 60 * 60 * 24,
+    maxAge: 0,
   };
+}
+
+/**
+ * The browser never receives a session token: it lives only in the HttpOnly
+ * cookie, and proxy.ts attaches it to backend calls server-side.
+ */
+function withoutSessionToken(body: Record<string, unknown>): Record<string, unknown> {
+  if (!body || typeof body !== 'object' || !('access_token' in body)) return body;
+  const { access_token: _dropped, ...rest } = body;
+  void _dropped;
+  return rest;
 }
 
 function readRequestSessionToken(request: Request) {
@@ -145,12 +159,14 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
       detail: (await response.text().catch(() => '')).trim() || (response.ok ? 'Request completed.' : 'Request failed. Please try again.'),
     };
 
-  const proxyResponse = NextResponse.json(responseBody, {
+  const proxyResponse = NextResponse.json(withoutSessionToken(responseBody), {
     status: response.status,
     headers: {
       'Cache-Control': 'no-store',
     },
   });
+  // Any readable token cookie left by an earlier release is removed on sight.
+  proxyResponse.cookies.set(RETIRED_ACCESS_TOKEN_COOKIE_NAME, '', retiredCookieClearOptions());
 
   if (cookieAction === 'set-session') {
     const responseAccessToken = typeof responseBody.access_token === 'string' ? responseBody.access_token : '';
@@ -162,14 +178,12 @@ async function buildBackendResponse(response: Response, cookieAction: AuthCookie
       const csrfToken = crypto.randomUUID().replace(/-/g, '');
       proxyResponse.cookies.set(SESSION_COOKIE_NAME, sessionToken, authCookieOptions());
       proxyResponse.cookies.set(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
-      proxyResponse.cookies.set(ACCESS_TOKEN_COOKIE_NAME, sessionToken, accessTokenCookieOptions());
     }
   }
 
   if (cookieAction === 'clear-session') {
     proxyResponse.cookies.set(SESSION_COOKIE_NAME, '', { ...authCookieOptions(), maxAge: 0 });
     proxyResponse.cookies.set(CSRF_COOKIE_NAME, '', { ...csrfCookieOptions(), maxAge: 0 });
-    proxyResponse.cookies.set(ACCESS_TOKEN_COOKIE_NAME, '', { ...accessTokenCookieOptions(), maxAge: 0 });
   }
 
   return proxyResponse;
@@ -220,6 +234,7 @@ export async function proxyAuthRequest(request: Request, backendPath: string, me
   const authorization = readRequestSessionToken(request);
   if (authorization) {
     headers.set('Authorization', authorization);
+    forwardIdentityHeaders(request.headers, headers);
   } else if (options?.requireAuth) {
     return errorResponse(401, {
       detail: 'Authorization is required for this auth action.',

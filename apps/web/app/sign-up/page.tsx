@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { Suspense } from 'react';
 
+import { decodaLinks, guardIdentityMode } from '../decoda-identity';
 import PreviewDeploymentNotice from '../preview-deployment-notice';
 import { getRuntimeConfig } from '../runtime-config';
 import { acceptInvitationPath, resolveInvitationToken } from '../signup-access';
@@ -24,6 +25,11 @@ export default async function SignUpPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  if (guardIdentityMode() !== 'legacy') {
+    // Shared Decoda identity: people join by Decoda invitation; access is
+    // requested on the Decoda website (the Guard API refuses sign-up too).
+    redirect(decodaLinks().requestAccess);
+  }
   const isPreviewDeployment = process.env.VERCEL_ENV === 'preview';
   const runtimeConfig = getRuntimeConfig();
   const cookieStore = await cookies();

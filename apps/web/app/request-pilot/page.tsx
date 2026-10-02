@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+
+import { decodaLinks, guardIdentityMode } from '../decoda-identity';
 
 import RequestPilotClient from './request-pilot-client';
 
@@ -32,6 +35,11 @@ function SmallShield() {
  * with no data behind it.
  */
 export default function RequestPilotPage() {
+  if (guardIdentityMode() !== 'legacy') {
+    // Shared Decoda identity: Pilot access is requested on the Decoda website,
+    // which owns review and invitations (the Guard API refuses this intake too).
+    redirect(decodaLinks().requestAccess);
+  }
   return (
     <>
       <a href="#request-pilot-main" className="skipToContent">Skip to main content</a>

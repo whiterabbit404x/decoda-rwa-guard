@@ -4467,6 +4467,12 @@ td .tableMeta {
   margin: 0;
 }
 
+/* In a stylesheet, not a style attribute: the CSP (style-src without
+   'unsafe-inline') refuses server-rendered style attributes. */
+.siTrustLine svg {
+  flex-shrink: 0;
+}
+
 .siFormPanel {
   background: var(--bg-surface);
   padding: 2.75rem 2.5rem;

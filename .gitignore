@@ -23,6 +23,8 @@ contracts/core/cache/
 .env.local
 test-results/
 playwright-report/
+# Shared-identity e2e run output (scripts/identity-e2e.sh): logs + screenshots.
+.identity-e2e-logs/
 *.tsbuildinfo
 
 # Local-mode proof artifacts (non-staging test outputs — never commit these)

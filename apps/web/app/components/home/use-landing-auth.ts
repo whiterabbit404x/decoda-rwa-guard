@@ -16,7 +16,8 @@ import { resolveAuthNavState, type AuthNavState } from './auth-nav-state';
 export function useLandingAuth(sessionHint: LandingSessionHint): {
   state: AuthNavState;
   user: PilotUser | null;
-  signOut: () => Promise<void>;
+  /** Resolves to the WorkOS logout URL for a Decoda session (continue there), else null. */
+  signOut: () => Promise<string | null>;
 } {
   const { loading, isAuthenticated, user, signOut } = usePilotAuth();
 

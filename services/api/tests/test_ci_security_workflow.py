@@ -24,5 +24,9 @@ def test_workflow_does_not_publish_mutable_latest_claims() -> None:
 
 
 def test_api_cryptography_dependency_includes_security_fix() -> None:
+    # The pin must stay at or above 46.0.5 (the release carrying the security
+    # fix). It is 50.x because the official WorkOS SDK requires cryptography~=50.0.
     requirements = (Path(__file__).resolve().parents[1] / 'requirements.txt').read_text()
-    assert 'cryptography==46.0.5' in requirements
+    pins = [line.split('==', 1)[1].strip() for line in requirements.splitlines() if line.startswith('cryptography==')]
+    assert len(pins) == 1
+    assert tuple(int(part) for part in pins[0].split('.')) >= (46, 0, 5)

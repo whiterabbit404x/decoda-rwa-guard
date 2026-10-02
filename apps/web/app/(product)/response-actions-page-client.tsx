@@ -52,6 +52,7 @@ import {
   hasRealTelemetryBackedChain,
   resolveWorkspaceMonitoringTruth,
 } from '../workspace-monitoring-truth';
+import { decodaReauthenticationPath } from 'app/decoda-identity-shared';
 
 type ActionRow = {
   id: string;
@@ -2007,7 +2008,10 @@ function ActionDetailPanel({
   // the enrollment fallback (not yet enrolled). Enrollment and session reauthentication
   // are SEPARATE workflows, so an enrolled operator is never sent back through enrollment.
   const { user, verifySessionStepUp } = usePilotAuth();
-  const mfaEnrolled = user?.mfa_enabled === true;
+  // A Decoda session verifies with Decoda (a fresh sign-in, MFA enforced by
+  // WorkOS) instead of an RWA Guard authenticator code.
+  const decodaSession = user?.identity?.auth_method === 'workos';
+  const mfaEnrolled = user?.mfa_enabled === true || decodaSession;
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const [stepUpCode, setStepUpCode] = useState('');
   const [stepUpError, setStepUpError] = useState<string | null>(null);
@@ -2141,9 +2145,11 @@ function ActionDetailPanel({
         🔒 {mfaEnrolled ? 'Verify your session to approve' : 'Enable MFA to approve'}
       </p>
       <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-        {mfaEnrolled
-          ? 'Enter your current authenticator code to approve this action.'
-          : 'Enroll multi-factor authentication before approving this response action.'}
+        {decodaSession
+          ? 'Verify with Decoda to approve this action.'
+          : mfaEnrolled
+            ? 'Enter your current authenticator code to approve this action.'
+            : 'Enroll multi-factor authentication before approving this response action.'}
       </p>
       <p style={{ margin: '0.15rem 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
         {gate?.blockedReason ?? 'Complete a session verification before approving this response action.'}
@@ -2164,7 +2170,16 @@ function ActionDetailPanel({
         >
           🔒 Approve
         </button>
-        {mfaEnrolled ? (
+        {decodaSession ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ fontSize: '0.8rem' }}
+            onClick={() => { window.location.assign(decodaReauthenticationPath(`${window.location.pathname}${window.location.search}`)); }}
+          >
+            Verify with Decoda
+          </button>
+        ) : mfaEnrolled ? (
           <button
             type="button"
             className="btn btn-primary"
@@ -2191,7 +2206,7 @@ function ActionDetailPanel({
   // The focused session step-up form (inline). Rendered whenever step-up is open AND
   // the operator is enrolled — driven either by the Verify Session button above or by
   // an approval command that came back needing a fresh step-up (assurance lapsed).
-  const stepUpForm = stepUpOpen && mfaEnrolled ? (
+  const stepUpForm = stepUpOpen && mfaEnrolled && !decodaSession ? (
     <form
       role="dialog"
       aria-label="Session verification"

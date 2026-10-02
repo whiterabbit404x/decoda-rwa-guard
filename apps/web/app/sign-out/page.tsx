@@ -11,7 +11,11 @@ export default function SignOutPage() {
   const { signOut } = usePilotAuth();
 
   useEffect(() => {
-    void signOut().finally(() => {
+    // With the shared Decoda identity this is the WorkOS logout URL (which then
+    // returns to /sign-in); otherwise the landing page.
+    void signOut().then((next) => {
+      window.location.href = next ?? '/';
+    }, () => {
       window.location.href = '/';
     });
   }, [signOut]);

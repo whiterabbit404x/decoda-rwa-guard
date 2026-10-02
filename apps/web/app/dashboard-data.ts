@@ -1,4 +1,4 @@
-import { ApiConfig, resolveApiConfig } from './api-config';
+import { ApiConfig, BROWSER_API_BASE, browserApiUrl, resolveApiConfig } from './api-config';
 import {
   DashboardPresentationState,
   getDashboardFreshnessLabel,
@@ -1024,6 +1024,10 @@ export function normalizeDashboardResponse(payload: unknown): DashboardResponse 
 }
 
 export function resolveApiUrl(requestedApiUrl?: string | null) {
+  if (typeof window !== 'undefined') {
+    // In the browser the only API base is the same-origin proxy (HttpOnly session).
+    return BROWSER_API_BASE;
+  }
   const apiConfig = resolveApiConfig({ requestedApiUrl });
   return apiConfig.apiUrl ?? '';
 }
@@ -1725,7 +1729,8 @@ export async function fetchDashboardPageData(
     };
     const diagnostics = buildDashboardDiagnostics(apiConfig, endpoints);
     return {
-      apiUrl: resolvedApiUrl,
+      // Handed to client panels: the same-origin proxy, never the API itself.
+      apiUrl: browserApiUrl(resolvedApiUrl) ?? '',
       dashboard,
       riskDashboard: aggregatePayload.risk_dashboard,
       threatDashboard: normalizeThreatDashboardPayload(aggregatePayload.threat_dashboard),
@@ -1855,7 +1860,8 @@ export async function fetchDashboardPageData(
   }
 
   return {
-    apiUrl: resolvedApiUrl,
+    // Handed to client panels: the same-origin proxy, never the API itself.
+    apiUrl: browserApiUrl(resolvedApiUrl) ?? '',
     dashboard,
     riskDashboard,
     threatDashboard,

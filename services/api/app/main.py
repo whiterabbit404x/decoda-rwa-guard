@@ -35,6 +35,8 @@ from services.api.app.domains.governance_policy import endpoints as governance_p
 from services.api.app.domains.threat_detection import endpoints as threat_detection_endpoints
 from services.api.app.domains.alert_triage import endpoints as alert_triage_endpoints
 from services.api.app.domains.tenancy import endpoints as tenancy_endpoints
+from services.api.app.decoda_identity import context as decoda_identity_context
+from services.api.app.decoda_identity import exchange as decoda_identity_exchange
 from services.api.app.domains.external_watchlist import endpoints as external_watchlist_endpoints
 from services.api.app.domains.rate_limit import rate_limit_connectivity
 from services.api.app.quicknode_streams import (
@@ -2260,6 +2262,13 @@ _CSRF_EXEMPT_PREFIXES = (
     # prefix match would otherwise cover /pilot-invitations/accept, which is an
     # authenticated mutation and keeps full CSRF enforcement.
     '/pilot-invitations/signup',
+    # Shared Decoda identity, BFF-only: both require the web BFF's shared secret
+    # (x-guard-proxy-secret, mandatory in production), which no browser holds.
+    # The exchange carries no Guard session at all (it creates one from a
+    # verified WorkOS access token); switch-target only resolves which WorkOS
+    # organization the BFF may re-scope the AuthKit session to.
+    '/auth/identity/exchange',
+    '/auth/identity/switch-target',
 )
 
 
@@ -2919,6 +2928,24 @@ def auth_oidc_start(payload: dict[str, Any], request: Request) -> dict[str, Any]
 def auth_oidc_callback(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     enforce_auth_rate_limit(request, 'oidc_callback')
     return with_auth_schema_json(lambda: oidc_complete_signin(payload, request))
+
+
+@app.post('/auth/identity/exchange', summary='Exchange a verified Decoda (WorkOS) sign-in for an RWA Guard session')
+def auth_identity_exchange(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    # Called by the Guard web BFF after the AuthKit callback. Not IP rate
+    # limited: every call comes from the BFF, and nothing is issued without a
+    # WorkOS-signed access token, a live WorkOS session and a platform grant.
+    return with_auth_schema_json(lambda: decoda_identity_exchange.exchange_identity(payload, request))
+
+
+@app.get('/auth/identity/context', summary='Decoda organizations and products for the signed-in user')
+def auth_identity_context(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: decoda_identity_context.identity_context(request))
+
+
+@app.post('/auth/identity/switch-target', summary='Resolve a Decoda organization switch (BFF only)')
+def auth_identity_switch_target(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: decoda_identity_context.switch_target(payload, request))
 
 
 @app.post('/auth/signout', summary='Sign out a live-mode pilot user')

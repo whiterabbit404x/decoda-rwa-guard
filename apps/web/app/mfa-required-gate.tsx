@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 
+import { decodaReauthenticationPath } from 'app/decoda-identity-shared';
 import type { PilotMfaState } from 'app/pilot-auth-context';
 
 /**
@@ -60,22 +61,38 @@ export function isMfaSetupPath(pathname: string | null | undefined): boolean {
 export function MfaRequired({
   variant,
   returnTo,
+  decodaSession = false,
 }: {
   variant: 'enroll' | 'verify';
   returnTo?: string | null;
+  /** A shared-Decoda session: its second factor comes from a Decoda sign-in, never an RWA Guard authenticator. */
+  decodaSession?: boolean;
 }) {
-  const copy = COPY[variant];
-  const href = returnTo
-    ? `${MFA_SETUP_PATH}?return_to=${encodeURIComponent(returnTo)}`
-    : MFA_SETUP_PATH;
+  const copy = decodaSession
+    ? {
+        title: 'Multi-factor authentication is required for Pilot access.',
+        body: 'Your current Decoda sign-in did not include multi-factor authentication. Sign in again with Decoda to continue.',
+        action: 'Verify with Decoda',
+      }
+    : COPY[variant];
+  const href = decodaSession
+    ? decodaReauthenticationPath(returnTo ?? '/dashboard')
+    : returnTo
+      ? `${MFA_SETUP_PATH}?return_to=${encodeURIComponent(returnTo)}`
+      : MFA_SETUP_PATH;
   return (
     <section className="emptyStatePanel" aria-live="polite" data-testid="mfa-required-gate">
       <h1>{copy.title}</h1>
       <p>{copy.body}</p>
       <p>
-        <Link href={href} prefetch={false} className="btn btn-primary">
-          {copy.action}
-        </Link>
+        {decodaSession ? (
+          // A full navigation: /auth/sign-in is a route handler that starts the Decoda sign-in.
+          <a href={href} className="btn btn-primary">{copy.action}</a>
+        ) : (
+          <Link href={href} prefetch={false} className="btn btn-primary">
+            {copy.action}
+          </Link>
+        )}
       </p>
       <p className="muted">
         Decoda enforces this on the server: Pilot monitoring, evidence, and audit data stay

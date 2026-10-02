@@ -1,6 +1,8 @@
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { Suspense } from 'react';
 
+import { guardIdentityMode } from '../decoda-identity';
 import AcceptInvitationClient from './accept-invitation-client';
 
 export const dynamic = 'force-dynamic';
@@ -47,6 +49,11 @@ function AcceptInvitationLoading() {
  * the two pages cannot bounce a stale one between them.
  */
 export default async function AcceptInvitationPage() {
+  if (guardIdentityMode() !== 'legacy') {
+    // Shared Decoda identity: invitations are Decoda invitations, accepted
+    // through Decoda sign-in; this RWA Guard-only flow is closed.
+    redirect('/sign-in');
+  }
   const cookieStore = await cookies();
   const hasSessionCookie = Boolean(cookieStore.get('decoda_session')?.value);
 

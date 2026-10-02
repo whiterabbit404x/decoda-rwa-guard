@@ -8,8 +8,8 @@ export default function PilotModeBanner() {
   const { liveModeConfigured, isAuthenticated, user, loading, signOut } = usePilotAuth();
 
   async function handleSignOut() {
-    await signOut();
-    window.location.href = '/';
+    const next = await signOut();
+    window.location.href = next ?? '/';
   }
 
   return (

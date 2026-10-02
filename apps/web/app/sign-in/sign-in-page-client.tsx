@@ -244,14 +244,28 @@ type SignInInvitation = {
   account_exists?: boolean | null;
 };
 
+/** How this deployment signs people in (decided server-side; see app/decoda-identity.ts). */
+export type DecodaSignInOptions = {
+  /** "Sign in to Decoda" (WorkOS AuthKit) is offered. */
+  enabled: boolean;
+  /** The legacy RWA Guard password form is still offered (dual mode, before the sunset). */
+  passwordFormAllowed: boolean;
+  /** Where to request access (the Decoda website). */
+  requestAccessUrl: string;
+  /** A message for why the visitor is here (signed out, session ended, …). */
+  notice: string | null;
+};
+
 export default function SignInPageClient({
   nextPath,
   invitationToken,
   previewNotice,
+  decodaSignIn,
 }: {
   nextPath?: string;
   invitationToken?: string;
   previewNotice?: React.ReactNode;
+  decodaSignIn?: DecodaSignInOptions;
 }) {
   const router = useRouter();
   const {
@@ -552,7 +566,7 @@ export default function SignInPageClient({
               <div className="siBrandFooter">
                 <div className="siBrandDecor" aria-hidden="true" />
                 <p className="siTrustLine">
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
                     <path d="M7.5 1.5L1.5 4v4.5c0 3.5 2.5 6 6 7 3.5-1 6-3.5 6-7V4L7.5 1.5z" fill="none" stroke="var(--success-fg)" strokeWidth="1.3" strokeLinejoin="round" />
                     <path d="M5 7.5l2 2 3-3" stroke="var(--success-fg)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
@@ -675,6 +689,28 @@ export default function SignInPageClient({
                   </button>
                 </form>
               ) : (
+                <>
+                {decodaSignIn ? (
+                  <div className="siVerifyPanel" data-testid="decoda-sign-in">
+                    {decodaSignIn.notice ? <div className="siAlert siAlertWarn" role="status">{decodaSignIn.notice}</div> : null}
+                    {decodaSignIn.enabled ? (
+                      <a
+                        className="siSubmitBtn siSubmitBtnLink"
+                        href={`/auth/sign-in?next=${encodeURIComponent(safeInternalReturnTo(nextPath ?? null) ?? '/dashboard')}`}
+                      >
+                        Sign in to Decoda
+                      </a>
+                    ) : null}
+                    <p className="siMuted">
+                      One Decoda account for RWA Guard and every Decoda product. New to Decoda?{' '}
+                      <a className="siLink" href={decodaSignIn.requestAccessUrl}>Request access</a>
+                    </p>
+                    {decodaSignIn.passwordFormAllowed ? (
+                      <p className="siMuted">Not moved to Decoda sign-in yet? Use your existing RWA Guard password below.</p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {!decodaSignIn || decodaSignIn.passwordFormAllowed ? (
                 <form onSubmit={handleSubmit} noValidate>
                   <div className="siFormGroup">
                     <label className="siLabel" htmlFor="si-email">Email address</label>
@@ -780,17 +816,21 @@ export default function SignInPageClient({
                       to /sign-up. A bare /sign-up would land an approved applicant
                       on the approval-only state and strand them one click from the
                       account they were invited to create. */}
-                  <p className="siAccountRow">
-                    Don&apos;t have an account?{' '}
-                    <Link
-                      href={invitationToken ? invitationSignUpHref(invitationToken) : '/sign-up'}
-                      className="siLink"
-                      prefetch={false}
-                    >
-                      Create one
-                    </Link>
-                  </p>
+                  {decodaSignIn ? null : (
+                    <p className="siAccountRow">
+                      Don&apos;t have an account?{' '}
+                      <Link
+                        href={invitationToken ? invitationSignUpHref(invitationToken) : '/sign-up'}
+                        className="siLink"
+                        prefetch={false}
+                      >
+                        Create one
+                      </Link>
+                    </p>
+                  )}
                 </form>
+                ) : null}
+                </>
               )}
             </section>
           </main>

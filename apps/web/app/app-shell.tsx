@@ -14,6 +14,7 @@ import RuntimeBanner from './components/runtime-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
 import ThemeToggle from './theme-toggle';
 import { APP_NAV_ITEMS } from './product-nav';
+import DecodaSwitcher from './decoda-switcher';
 
 function BellIcon() {
   return (
@@ -137,7 +138,13 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
   async function handleSignOut() {
     setUserMenuOpen(false);
-    await signOut();
+    const next = await signOut();
+    if (next) {
+      // Shared Decoda identity: WorkOS ends the Decoda session too, then
+      // returns the browser to /sign-in.
+      window.location.href = next;
+      return;
+    }
     router.push('/sign-in');
   }
 
@@ -275,6 +282,8 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
               <span className="shellHeaderSpacer" />
 
               <div className="shellHeaderActions">
+                {/* Shared Decoda identity: products + organization switcher (renders only for a Decoda session). */}
+                <DecodaSwitcher />
                 <Link href="/workspaces" className="shellWorkspaceSelector" prefetch={false} aria-label="Switch workspace">
                   <span className="shellWorkspaceName">{workspaceName}</span>
                   <ChevronDownIcon />

@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
+import { browserApiUrl } from '../api-config';
 import AppShell from '../app-shell';
 import AuthenticatedRoute from '../authenticated-route';
 import { getRuntimeConfig } from '../runtime-config';
@@ -33,7 +34,7 @@ export default async function ProductLayout({ children }: { children: React.Reac
   }
 
   return (
-    <RuntimeSummaryProvider><AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={runtimeConfig.apiUrl} />}>
+    <RuntimeSummaryProvider><AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={browserApiUrl(runtimeConfig.apiUrl)} />}>
       <Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>
         <AuthenticatedRoute><div className="productShellContent">{children}</div></AuthenticatedRoute>
       </Suspense>
