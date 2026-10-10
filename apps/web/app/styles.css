@@ -12940,6 +12940,28 @@ tbody tr {
   backdrop-filter: blur(3px);
 }
 
+/* The plan / evaluation-usage popover drops from its chip like the menus. */
+.planPanel {
+  transform-origin: top right;
+  animation: dcPopIn var(--dur-base) var(--ease-out) backwards;
+}
+
+/* Accordions: the disclosed content settles in when a <details> opens.
+   The summary row itself never moves. */
+:where(.appShellFrame) :where(details[open]) > :where(:not(summary)) {
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+:where(.appShellFrame) :where(summary) {
+  cursor: pointer;
+}
+
+:where(.appShellFrame) :where(summary):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
 /* ── Empty, loading and notice states ────────────────────────────── */
 .emptyStatePanel {
   border-style: dashed;
@@ -12992,6 +13014,10 @@ tbody tr {
   animation: dcBrandShimmer 1.6s var(--ease-in-out) infinite;
 }
 
+.dcSkeletonPosture {
+  min-height: 4.75rem;
+}
+
 .statusBanner,
 .execFreshnessBanner,
 .execCoverageCaveat,
@@ -13005,6 +13031,62 @@ tbody tr {
   gap: 0.2rem 1.1rem;
   padding: 0.5rem 0 0.6rem;
 }
+
+/* ── Workspace selection ──────────────────────────────────────────── */
+.workspacesLayout {
+  align-items: start;
+}
+
+.workspaceOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.workspaceOptionText {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.workspaceOptionText h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.workspaceOptionRole {
+  justify-self: start;
+  text-transform: capitalize;
+}
+
+/* The active workspace carries an accent edge as well as its own label, so
+   the state is not colour alone. */
+.workspaceOption--current {
+  border-color: var(--border-accent);
+  box-shadow: inset 3px 0 0 var(--accent-blue), var(--shadow-xs);
+}
+
+.authForm .btn {
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.workspacesLayout h2 {
+  margin-bottom: 0.85rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+/* `.authForm button` paints a pale wash and out-ranks the variant classes;
+   a real button variant inside an auth form keeps its own fill. */
+.authForm .btn-primary { background: var(--accent-solid); color: var(--on-accent); }
+.authForm .btn-primary:hover:not(:disabled) { background: var(--accent-solid-hover); }
+.authForm .btn-secondary { background: var(--bg-surface); color: var(--text-primary); }
 
 /* ── Product page headings ───────────────────────────────────────── */
 .dashboardPageTitle,
@@ -13127,6 +13209,11 @@ tbody tr {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.execSkeleton .dcPosture {
+  margin-bottom: 0;
 }
 
 .dcPostureItem {

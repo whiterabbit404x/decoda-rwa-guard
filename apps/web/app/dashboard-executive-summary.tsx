@@ -1022,6 +1022,11 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
 function LoadingSkeleton() {
   return (
     <div className="execSkeleton" aria-hidden="true">
+      <div className="dcPosture">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="dcPostureItem execSkeletonCard dcSkeletonPosture" />
+        ))}
+      </div>
       <div className="execMetricRow execMetricRowScreen2">
         <div className="execBriefCard dataCard execSkeletonCard execSkeletonBrief" />
         <div className="execMetricCluster">

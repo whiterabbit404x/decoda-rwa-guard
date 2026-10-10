@@ -70,15 +70,23 @@ export default function WorkspacesPageClient() {
           <p>If this is your first sign-in, choose a workspace below or create one to continue.</p>
         </section>
       ) : null}
-      <section className="threeColumnSection">
+      <section className="threeColumnSection workspacesLayout">
         <div className="dataCard">
           <h2>Your workspaces</h2>
-          {user?.memberships.map((membership) => (
-            <article key={membership.workspace_id} className="dataCard nestedCard">
-              <h3>{membership.workspace.name}</h3>
-              <p className="muted">{membership.role}</p>
+          {user?.memberships.map((membership) => {
+            const isCurrent = user.current_workspace?.id === membership.workspace_id;
+            return (
+            <article
+              key={membership.workspace_id}
+              className={`dataCard nestedCard workspaceOption${isCurrent ? ' workspaceOption--current' : ''}`}
+            >
+              <div className="workspaceOptionText">
+                <h3>{membership.workspace.name}</h3>
+                <span className="ruleChip sharedStatusPill workspaceOptionRole">{membership.role}</span>
+              </div>
               <button
                 type="button"
+                className={`btn ${isCurrent ? 'btn-secondary' : 'btn-primary'}`}
                 onClick={() => {
                   setSelectionLoading(true);
                   setSelectionError(null);
@@ -92,13 +100,14 @@ export default function WorkspacesPageClient() {
                 {user.current_workspace?.id === membership.workspace_id ? 'Current workspace' : 'Use this workspace'}
               </button>
             </article>
-          ))}
+            );
+          })}
         </div>
         <form className="dataCard authForm" onSubmit={handleCreateWorkspace}>
           <h2>Create a workspace</h2>
-          <label className="label">Workspace name</label>
-          <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
-          <button type="submit" disabled={submitting}>{submitting ? 'Creating…' : 'Create workspace'}</button>
+          <label className="label" htmlFor="workspace-create-name">Workspace name</label>
+          <input id="workspace-create-name" value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} required />
+          <button type="submit" className="btn btn-primary" disabled={submitting}>{submitting ? 'Creating…' : 'Create workspace'}</button>
           {error ? <p className="statusLine">{error}</p> : null}
           {selectionError ? <p className="statusLine">{selectionError}</p> : null}
           {selectionLoading ? <p className="statusLine">Applying workspace selection…</p> : null}
@@ -106,7 +115,7 @@ export default function WorkspacesPageClient() {
         <div className="dataCard">
           <h2>Next step</h2>
           <p className="muted">After selecting a workspace, return to the dashboard to review live status, recent alerts, recent incidents, and saved history in one place.</p>
-          <Link href="/dashboard" prefetch={false}>Back to dashboard</Link>
+          <Link href="/dashboard" prefetch={false} className="btn btn-secondary">Back to dashboard</Link>
         </div>
       </section>
     </main>
