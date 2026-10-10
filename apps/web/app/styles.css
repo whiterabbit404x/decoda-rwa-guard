@@ -15,16 +15,20 @@
    dark navy structural navigation beside a light operational workspace.
    ---------------------------------------------------------------- */
 :root {
-  font-family: Inter, system-ui, Arial, sans-serif;
+  font-family: var(--font-sans);
 
   /* ═══ Raw palette — LIGHT ═══════════════════════════════════════
-     Matches the public site's institutional palette so the product and
-     the marketing surface read as one brand. */
-  --l-bg-base:      #f7f9fc;
+     The Decoda Security identity: white and soft-slate surfaces, deep
+     navy ink, and a teal/cyan interactive accent. Teal is reserved for
+     interaction (primary actions, focus, selection, active navigation);
+     it is never a status colour, so it cannot be read as "healthy".
+     Severity keeps its own distinct semantic hues below, and blue stays
+     the informational / low-severity colour. */
+  --l-bg-base:      #f8fafc;
   --l-bg-surface:   #ffffff;
   --l-bg-card:      #ffffff;
   --l-bg-subtle:    #f1f5f9;
-  --l-bg-hover:     #f8fafc;
+  --l-bg-hover:     #f5f8fb;
   --l-bg-header:    #ffffff;
   --l-bg-input:     #ffffff;
   --l-bg-inset:     #f8fafc;
@@ -34,9 +38,9 @@
      structure without becoming a drawn box. */
   --l-border:       #d6dee9;
   --l-border-strong:#b4c2d6;
-  --l-border-accent:rgba(37, 99, 235, 0.24);
-  --l-border-hover: #2563eb;
-  --l-text-primary: #0f172a;
+  --l-border-accent:rgba(13, 148, 136, 0.30);
+  --l-border-hover: #0d9488;
+  --l-text-primary: #0b172a;
   --l-text-secondary:#475569;
   /* #64748b measured 4.34:1 on the subtle surface and #5a6678 5.32:1 —
      both clear AA, both read as washed-out beside the primary ink on a
@@ -44,14 +48,18 @@
      still a clear step below --l-text-secondary (6.92 / 7.58) so the
      three-level text hierarchy survives the change. */
   --l-text-muted:   #535e71;
-  --l-text-accent:  #1d4ed8;
-  --l-accent-blue:  #2563eb;
-  --l-accent-strong:#1d4ed8;
-  /* Filled-surface blue. White ink on it clears AA in both themes:
-     5.9:1 here, and the dark palette keeps the same value rather than
-     brightening to #3b82f6, which drops white ink to 3.7:1. */
-  --l-accent-solid: #2563eb;
-  --l-accent-bg:    rgba(37, 99, 235, 0.08);
+  /* The `accent-blue` names are historical: every interactive accent in
+     the product reads these tokens, so re-pointing them here re-brands
+     focus rings, selection, links and primary actions in one place.
+     teal-700 (#0f766e) carries text and the filled primary surface —
+     5.5:1 against white ink and against a white card, where the brand
+     teal #0d9488 measures 3.7:1 and is kept for non-text marks only. */
+  --l-text-accent:  #0f766e;
+  --l-accent-blue:  #0f766e;
+  --l-accent-strong:#115e59;
+  --l-accent-solid: #0f766e;
+  --l-accent-solid-hover: #115e59;
+  --l-accent-bg:    rgba(13, 148, 136, 0.09);
   --l-success-fg:   #166534;
   --l-success-bg:   rgba(21, 128, 61, 0.09);
   --l-success-bdr:  rgba(21, 128, 61, 0.26);
@@ -81,11 +89,13 @@
   --l-overlay-04:   rgba(15, 23, 42, 0.06);
   --l-overlay-06:   rgba(15, 23, 42, 0.08);
   --l-overlay-10:   rgba(15, 23, 42, 0.12);
-  --l-shadow-xs:    0 1px 2px rgba(15, 23, 42, 0.05);
-  --l-shadow-sm:    0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --l-shadow-md:    0 4px 12px rgba(15, 23, 42, 0.08);
-  --l-shadow-lg:    0 12px 32px rgba(15, 23, 42, 0.12);
-  --l-scrim:        rgba(15, 23, 42, 0.42);
+  /* Layered, navy-tinted elevation: a tight contact shadow plus a soft
+     ambient one, so raised surfaces read as lifted rather than outlined. */
+  --l-shadow-xs:    0 1px 2px rgba(11, 23, 42, 0.05);
+  --l-shadow-sm:    0 1px 2px rgba(11, 23, 42, 0.04), 0 2px 8px -2px rgba(11, 23, 42, 0.07);
+  --l-shadow-md:    0 2px 4px -1px rgba(11, 23, 42, 0.05), 0 12px 28px -8px rgba(11, 23, 42, 0.14);
+  --l-shadow-lg:    0 4px 10px -2px rgba(11, 23, 42, 0.06), 0 28px 56px -14px rgba(11, 23, 42, 0.24);
+  --l-scrim:        rgba(11, 23, 42, 0.46);
   --l-code-bg:      #f1f5f9;
 
   /* ═══ Raw palette — DARK ════════════════════════════════════════
@@ -100,16 +110,18 @@
   --d-bg-inset:     #0a1322;
   --d-border:       #263449;
   --d-border-strong:#33455f;
-  --d-border-accent:rgba(125, 174, 255, 0.26);
-  --d-border-hover: #60a5fa;
+  --d-border-accent:rgba(45, 212, 191, 0.30);
+  --d-border-hover: #2dd4bf;
   --d-text-primary: #f8fafc;
   --d-text-secondary:#cbd5e1;
   --d-text-muted:   #94a3b8;
-  --d-text-accent:  #7daeff;
-  --d-accent-blue:  #3b82f6;
-  --d-accent-strong:#2563eb;
-  --d-accent-solid: #2563eb;
-  --d-accent-bg:    rgba(59, 130, 246, 0.16);
+  --d-text-accent:  #5eead4;
+  --d-accent-blue:  #2dd4bf;
+  --d-accent-strong:#14b8a6;
+  /* White ink stays AA on the filled surface in dark, too. */
+  --d-accent-solid: #0f766e;
+  --d-accent-solid-hover: #115e59;
+  --d-accent-bg:    rgba(45, 212, 191, 0.14);
   --d-success-fg:   #4ade80;
   --d-success-bg:   rgba(34, 197, 94, 0.14);
   --d-success-bdr:  rgba(34, 197, 94, 0.34);
@@ -171,6 +183,7 @@
   /* accent colours */
   --accent-blue:        var(--l-accent-blue);
   --accent-solid:       var(--l-accent-solid);
+  --accent-solid-hover: var(--l-accent-solid-hover);
   --accent-blue-strong: var(--l-accent-strong);
   --accent-blue-bg:     var(--l-accent-bg);
 
@@ -219,23 +232,55 @@
 
   /* ═══ Sidebar — dark navy in BOTH themes ════════════════════════ */
   --sidebar-bg:          #081426;
-  --sidebar-surface:     #0e1b2e;
-  --sidebar-hover:       rgba(255, 255, 255, 0.06);
-  --sidebar-border:      rgba(148, 163, 184, 0.16);
+  --sidebar-surface:     #0d1c33;
+  --sidebar-hover:       rgba(255, 255, 255, 0.055);
+  --sidebar-border:      rgba(148, 163, 184, 0.14);
   --sidebar-text:        #94a3b8;
   --sidebar-text-strong: #e2e8f0;
   --sidebar-text-active: #ffffff;
-  --sidebar-active-bg:   rgba(37, 99, 235, 0.28);
-  --sidebar-accent:      #7daeff;
+  --sidebar-active-bg:   rgba(45, 212, 191, 0.12);
+  --sidebar-accent:      #5eead4;
   --sidebar-danger:      #fca5a5;
+  --sidebar-section:     #8393ab;
+  --sidebar-glow:        rgba(45, 212, 191, 0.45);
+  --sidebar-grid:        rgba(94, 234, 212, 0.05);
   --bg-sidebar:          var(--sidebar-bg);
 
+  /* ═══ Brand marks — fixed in BOTH themes ════════════════════════
+     The Decoda shield and decorative brand surfaces (logo, progress
+     fills, chart strokes). Never used to signal a status. */
+  --brand-teal:        #0d9488;
+  --brand-cyan:        #0891b2;
+  --brand-mint:        #2dd4bf;
+  --brand-navy:        #0b172a;
+  --brand-teal-wash:   #f0fdfa;
+  --brand-grid-line:   rgba(13, 148, 136, 0.07);
+  --btn-highlight:     rgba(255, 255, 255, 0.14);
+  --on-accent-muted:   rgba(255, 255, 255, 0.78);
+
+  /* ═══ Typography ═══════════════════════════════════════════════
+     Inter is self-hosted through next/font (no third-party font host,
+     so `font-src 'self'` holds). The fallback stack keeps metrics close
+     when the font has not loaded. */
+  --font-sans: var(--font-inter, Inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* ═══ Motion ═══════════════════════════════════════════════════
+     One easing family and three durations for every transition in the
+     product. Motion is functional: it confirms a change, it never
+     delays one. prefers-reduced-motion collapses all of it below. */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dur-fast:    120ms;
+  --dur-base:    200ms;
+  --dur-slow:    300ms;
+
   /* radii */
-  --radius-xs: 0.35rem;
+  --radius-xs: 0.375rem;
   --radius-sm: 0.5rem;
-  --radius-md: 0.65rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 0.875rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1rem;
 
   /* ═══ Shared control metrics ════════════════════════════════════
      ONE height for every control an analyst can put a cursor in or
@@ -255,13 +300,14 @@
   --control-fs:   0.85rem;
 
   /* sidebar width */
-  --sidebar-w: 240px;
+  --sidebar-w: 248px;
+  --sidebar-w-collapsed: 72px;
 
   /* semantic surface aliases used by shared controls (Select popover,
      dialogs, tooltips) so overlay chrome follows the active theme. */
   --popover:     var(--bg-surface);
   --popover-fg:  var(--text-primary);
-  --ring:        var(--accent-blue);
+  --ring:        var(--border-hover);
   --on-accent:   #ffffff;
 
   /* Legacy alias names still referenced by individual screens. Each is an
@@ -314,6 +360,7 @@
 
   --accent-blue:        var(--d-accent-blue);
   --accent-solid:       var(--d-accent-solid);
+  --accent-solid-hover: var(--d-accent-solid-hover);
   --accent-blue-strong: var(--d-accent-strong);
   --accent-blue-bg:     var(--d-accent-bg);
 
@@ -11800,4 +11847,1449 @@ a.mktTrustBadge:hover {
   font-size: 0.9rem;
   color: var(--text-primary);
   word-break: break-word;
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   DECODA BRAND LAYER — product redesign
+   ─────────────────────────────────────────────────────────────────────
+   Visual identity of the Decoda Security site carried into the product:
+   white / soft-slate surfaces, deep navy ink and navigation, a teal and
+   cyan interactive accent, faint geometric grid, layered soft elevation
+   and restrained, functional motion.
+
+   Rules this layer keeps:
+     • Tokens only. Colours come from the palette in :root; nothing here is
+       a literal, so Light and Dark stay one system.
+     • Severity hues are untouched. Teal is interaction, never status: it
+       cannot make "no data" or "unknown" read as healthy.
+     • Motion is entrance-only and short (120–300ms). Entrance animations
+       sit at zero specificity (`:where`) so any element with its own
+       animation (skeleton shimmer, spinner) keeps it, and they run once on
+       mount — polling re-renders never replay them. Table rows are never
+       animated. `prefers-reduced-motion` collapses all of it (top of file).
+     • Fill mode is `backwards`: once an entrance ends the element carries
+       no transform, so fixed-position dialogs inside it are unaffected.
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ── Motion keyframes ─────────────────────────────────────────────── */
+@keyframes dcFadeUp {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+}
+
+@keyframes dcFadeIn {
+  from { opacity: 0; }
+}
+
+@keyframes dcPopIn {
+  from { opacity: 0; transform: translate3d(0, -4px, 0) scale(0.98); }
+}
+
+@keyframes dcModalIn {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(0.985); }
+}
+
+@keyframes dcSlideFromRight {
+  from { opacity: 0.6; transform: translate3d(24px, 0, 0); }
+}
+
+@keyframes dcGrowX {
+  from { transform: scaleX(0); }
+}
+
+@keyframes dcDrawStroke {
+  from { stroke-dashoffset: 1; }
+}
+
+@keyframes dcRailIn {
+  from { opacity: 0; transform: translateY(-50%) scaleY(0.3); }
+}
+
+@keyframes dcBrandShimmer {
+  from { background-position: 120% 0; }
+  to   { background-position: -20% 0; }
+}
+
+/* ── Typography ───────────────────────────────────────────────────── */
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+::selection {
+  background: var(--accent-blue-bg);
+  color: var(--text-primary);
+}
+
+:where(.appShellFrame) :where(h1, h2, h3, h4) {
+  color: var(--text-primary);
+  letter-spacing: -0.012em;
+}
+
+:where(.appShellFrame) :where(code, kbd, samp, pre) {
+  font-family: var(--font-mono);
+}
+
+/* Figures that analysts compare across rows and refreshes line up. */
+:where(.appShellFrame) :where(table, .metricValue, .execMetricValue, .execBottomMetricValue,
+  .riskBadge, .execDriverPercent, .execAlertTime, .tableMeta, .dcAnimatedNumber,
+  .runtimeBannerValue, .dcPostureValue, .dcActivityValue) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Native <option> lists inherit the OS popup surface; in Dark that was
+   light ink on a white list. Pin them to the themed popover. */
+:where(.appShellFrame) select option,
+:where(.appShellFrame) select optgroup {
+  background-color: var(--popover);
+  color: var(--popover-fg);
+}
+
+/* ── Shell frame ──────────────────────────────────────────────────── */
+.appShellFrame {
+  transition: grid-template-columns var(--dur-slow) var(--ease-out);
+}
+
+.appShellContent {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(1100px 380px at 100% -60px, var(--accent-blue-bg), transparent 70%),
+    var(--bg-base);
+}
+
+/* The Decoda grid: a faint geometric field behind the top of every screen,
+   fading out before it reaches the data. Purely decorative and static. */
+.appShellContent::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 360px;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--brand-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--brand-grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+
+/* One page padding, owned by the shell. The page <main class="container">
+   and the product wrapper each added their own on top, stacking to ~70px of
+   empty space above every screen's title. */
+.appShellPage {
+  width: 100%;
+  max-width: 1680px;
+  margin-inline: auto;
+  padding: 1.5rem clamp(1rem, 2.4vw, 2.25rem) 3rem;
+  gap: 1.25rem;
+}
+
+.appShellPage > .productShellContent {
+  padding: 0;
+  gap: 1.25rem;
+}
+
+.productShellContent > main.container,
+.productShellContent > .container,
+.productShellContent > div > main.container {
+  padding: 0;
+  min-height: 0;
+}
+
+/* Page entrance: the new screen settles in from 6px below. It runs when a
+   route mounts its page — never on a data refresh, which re-renders in place. */
+:where(.productShellContent) > :where(*) {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────── */
+.appSidebar {
+  gap: 0.25rem;
+  padding: 0.85rem 0.7rem 0.75rem;
+  background-color: var(--sidebar-bg);
+  background-image:
+    radial-gradient(130% 42% at 0% 0%, var(--sidebar-active-bg), transparent 70%),
+    linear-gradient(var(--sidebar-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sidebar-grid) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px, 24px 24px;
+  background-repeat: no-repeat, repeat, repeat;
+  background-attachment: local, local, local;
+  transition: padding var(--dur-slow) var(--ease-out);
+}
+
+.sidebarBrandRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.brandBlock {
+  flex: 1;
+  min-width: 0;
+  gap: 0.7rem;
+  margin-bottom: 0;
+  padding: 0.55rem 0.55rem;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.brandBlock:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+}
+
+.brandBlock:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: -2px;
+}
+
+/* The Decoda shield. Brand tokens only — identical in Light and Dark. */
+.brandMark {
+  display: block;
+  flex-shrink: 0;
+  width: 2.1rem;
+  height: 2.1rem;
+  filter: drop-shadow(0 4px 14px var(--sidebar-glow));
+  transition: transform var(--dur-base) var(--ease-spring);
+}
+
+.brandBlock:hover .brandMark {
+  transform: rotate(-4deg) scale(1.04);
+}
+
+.brandMarkOuter { fill: var(--sidebar-active-bg); }
+.brandMarkCheck { stroke: var(--sidebar-bg); }
+.brandMarkStopMint { stop-color: var(--brand-mint); }
+.brandMarkStopCyan { stop-color: var(--brand-cyan); }
+.brandMarkStopTeal { stop-color: var(--brand-teal); }
+
+.brandEyebrow {
+  color: var(--sidebar-accent);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+}
+
+.brandName {
+  font-size: 0.96rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.sidebarDrawerClose {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sidebar-border);
+  background: transparent;
+  color: var(--sidebar-text-strong);
+  cursor: pointer;
+}
+
+.sidebarDrawerClose:hover { background: var(--sidebar-hover); }
+
+.sidebarDrawerClose:focus-visible,
+.sidebarCollapseToggle:focus-visible {
+  outline: 2px solid var(--sidebar-accent);
+  outline-offset: 1px;
+}
+
+.appNavSection {
+  margin: 1.05rem 0 0.35rem;
+  padding: 0 0.7rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  color: var(--sidebar-section);
+}
+
+.appNav a {
+  gap: 0.7rem;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.84rem;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.appNavIcon {
+  transition: transform var(--dur-base) var(--ease-spring), color var(--dur-fast) var(--ease-out), opacity var(--dur-fast);
+}
+
+.appNav a:hover .appNavIcon {
+  opacity: 1;
+  transform: translateX(1px);
+}
+
+/* Active: a filled teal tint, a glowing left rail and a weight change —
+   three signals, so the state never rests on hue alone. The rail settles
+   in when the route changes. */
+.appNav a.active {
+  background-color: var(--sidebar-active-bg);
+  background-image: linear-gradient(90deg, var(--sidebar-active-bg), transparent 85%);
+}
+
+.appNav a.active::before {
+  left: -0.7rem;
+  width: 3px;
+  height: 1.3rem;
+  border-radius: 0 3px 3px 0;
+  background: var(--sidebar-accent);
+  box-shadow: 0 0 14px var(--sidebar-glow);
+  animation: dcRailIn var(--dur-base) var(--ease-spring) backwards;
+}
+
+.appNav a.active .appNavIcon {
+  color: var(--sidebar-accent);
+}
+
+.sidebarDivider {
+  margin: 0.6rem 0.35rem;
+}
+
+.sidebarMetaCard {
+  padding: 0.75rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: var(--sidebar-hover);
+}
+
+.sidebarMetaCard .sectionEyebrow {
+  margin-bottom: 0.3rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+  color: var(--sidebar-section);
+}
+
+.sidebarMetaCard a,
+.sidebarSignOut {
+  color: var(--sidebar-accent);
+  text-underline-offset: 2px;
+}
+
+.sidebarCollapseToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.sidebarCollapseToggle:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebarCollapseToggle svg {
+  flex-shrink: 0;
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+.mobileNavScrim {
+  display: none;
+}
+
+/* ── Icon rail: user-collapsed on desktop, automatic on tablet ───────
+   Labels stay in the DOM (visually hidden) so every link keeps its
+   accessible name; a tooltip shows the label on hover and focus. */
+@media (min-width: 1101px) {
+  .appShellFrame[data-sidebar="collapsed"] {
+    grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .sidebarCollapseToggle svg {
+    transform: scaleX(-1);
+  }
+}
+
+@media (min-width: 1101px) {
+  .appShellFrame[data-sidebar="collapsed"] .appSidebar {
+    overflow: visible;
+    padding-inline: 0.6rem;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] :is(.brandText, .appNavSection, .sidebarMetaCard, .sidebarDivider, .sidebarCollapseLabel) {
+    display: none;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .brandBlock {
+    justify-content: center;
+    padding: 0.5rem 0;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNavGroup + .appNavGroup {
+    margin-top: 0.55rem;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--sidebar-border);
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNav a {
+    justify-content: center;
+    padding: 0.45rem 0;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNav a.active::before {
+    left: -0.6rem;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNavLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNav a::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 0.75rem);
+    top: 50%;
+    z-index: 80;
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--radius-sm);
+    background: var(--brand-navy);
+    border: 1px solid var(--sidebar-border);
+    color: var(--sidebar-text-active);
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+    box-shadow: var(--shadow-md);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-4px, -50%);
+    transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .appNav a:hover::after,
+  .appShellFrame[data-sidebar="collapsed"] .appNav a:focus-visible::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+
+  .appShellFrame[data-sidebar="collapsed"] .sidebarCollapseToggle {
+    justify-content: center;
+    padding-inline: 0;
+  }
+}
+
+/* ── Header ───────────────────────────────────────────────────────── */
+.appShellTop {
+  padding: 0 clamp(1rem, 2.4vw, 2.25rem);
+  box-shadow: var(--shadow-xs);
+}
+
+.shellHeaderBar {
+  min-height: 3.6rem;
+  gap: 0.5rem 0.85rem;
+}
+
+.shellPageTitle h1 {
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.shellBreadcrumb {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.shellMenuBtn,
+.shellMobileBrand {
+  display: none;
+}
+
+.shellMenuBtn {
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.shellMenuBtn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+
+.shellMenuBtn:focus-visible,
+.shellIconBtn:focus-visible,
+.shellWorkspaceSelector:focus-visible,
+.shellUserChip:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.shellMobileBrand {
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.shellMobileBrand .brandMark {
+  width: 1.85rem;
+  height: 1.85rem;
+  filter: none;
+}
+
+.shellMobileBrand .brandMarkOuter { fill: var(--accent-blue-bg); }
+.shellMobileBrand .brandMarkCheck { stroke: var(--bg-surface); }
+
+.shellWorkspaceSelector,
+.shellUserChip,
+.shellIconBtn {
+  min-height: 2.25rem;
+  border-color: var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.shellIconBtn {
+  width: 2.25rem;
+  height: 2.25rem;
+  text-decoration: none;
+}
+
+.shellWorkspaceSelector:hover,
+.shellUserChip:hover,
+.shellIconBtn:hover {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.shellIconBtn:hover { color: var(--text-accent); background: var(--bg-surface); }
+
+/* Menus open with a short drop from their anchor. */
+.shellUserMenu {
+  border-radius: var(--radius-lg);
+  padding: 0.4rem;
+  transform-origin: top right;
+  animation: dcPopIn var(--dur-base) var(--ease-out) backwards;
+}
+
+.shellUserMenuItem {
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.dcSelectMenu {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  transform-origin: top center;
+  animation: dcPopIn var(--dur-fast) var(--ease-out) backwards;
+}
+
+.dcSelectMenu--up { transform-origin: bottom center; }
+
+/* ── Mobile: tablet rail, phone drawer ───────────────────────────── */
+@media (min-width: 768px) and (max-width: 1100px) {
+  .appShellFrame {
+    grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+  }
+
+  .appSidebar {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: visible;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    padding: 0.85rem 0.6rem;
+  }
+
+  .appNav,
+  .appNavGroup {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .appNavGroup + .appNavGroup {
+    margin-top: 0.55rem;
+    padding-top: 0.55rem;
+    border-top: 1px solid var(--sidebar-border);
+  }
+
+  .brandText,
+  .sidebarCollapseToggle {
+    display: none;
+  }
+
+  .sidebarSpacer {
+    display: block;
+  }
+
+  .brandBlock {
+    justify-content: center;
+    padding: 0.5rem 0;
+  }
+
+  .appNav a {
+    justify-content: center;
+    padding: 0.45rem 0;
+  }
+
+  .appNav a.active::before {
+    left: -0.6rem;
+  }
+
+  .appNavLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .appNav a::after {
+    content: attr(data-label);
+    position: absolute;
+    left: calc(100% + 0.75rem);
+    top: 50%;
+    z-index: 80;
+    padding: 0.35rem 0.6rem;
+    border-radius: var(--radius-sm);
+    background: var(--brand-navy);
+    border: 1px solid var(--sidebar-border);
+    color: var(--sidebar-text-active);
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+    box-shadow: var(--shadow-md);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-4px, -50%);
+    transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  }
+
+  .appNav a:hover::after,
+  .appNav a:focus-visible::after {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+@media (max-width: 767px) {
+  .appShellFrame {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The sidebar becomes an off-canvas drawer. `visibility` (not display)
+     hides it so it can slide, and so its links leave the tab order while
+     it is closed. */
+  .appSidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 90;
+    width: min(300px, 86vw);
+    height: 100vh;
+    height: 100dvh;
+    overflow-y: auto;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    padding: 0.85rem 0.75rem 1rem;
+    visibility: hidden;
+    transform: translate3d(-100%, 0, 0);
+    transition: transform var(--dur-slow) var(--ease-out), visibility 0s linear var(--dur-slow);
+  }
+
+  .appShellFrame[data-mobile-nav="open"] .appSidebar {
+    visibility: visible;
+    transform: none;
+    box-shadow: var(--shadow-lg);
+    transition: transform var(--dur-slow) var(--ease-out), visibility 0s;
+  }
+
+  .appNav,
+  .appNavGroup {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .appNavSection,
+  .sidebarDivider,
+  .sidebarMetaCard,
+  .sidebarSpacer {
+    display: block;
+  }
+
+  .sidebarDrawerClose {
+    display: inline-flex;
+  }
+
+  .sidebarCollapseToggle {
+    display: none;
+  }
+
+  .mobileNavScrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 85;
+    background: var(--scrim);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--dur-slow) var(--ease-out), visibility 0s linear var(--dur-slow);
+  }
+
+  .appShellFrame[data-mobile-nav="open"] .mobileNavScrim {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity var(--dur-slow) var(--ease-out), visibility 0s;
+  }
+
+  .shellMenuBtn,
+  .shellMobileBrand {
+    display: inline-flex;
+  }
+
+  .shellHeaderBar {
+    min-height: 3.25rem;
+  }
+
+  .shellPageTitle {
+    flex: 1 1 auto;
+    flex-basis: auto;
+    min-width: 0;
+  }
+
+  .shellBreadcrumb {
+    display: none;
+  }
+
+  .shellHeaderSpacer {
+    display: none;
+  }
+
+  .shellHeaderActions {
+    width: 100%;
+  }
+
+  .appShellPage {
+    padding: 1rem 0.9rem 2.5rem;
+  }
+}
+
+/* ── Cards & surfaces ─────────────────────────────────────────────── */
+.heroPanel,
+.card,
+.serviceCard,
+.metricCard,
+.dataCard {
+  border-radius: var(--radius-lg);
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+:where(.productShellContent) :where(.dataCard, .metricCard, .card, .heroPanel, .tableWrap) {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* A short cascade across a row of sibling cards, capped at 200ms so the
+   last card is never meaningfully late. */
+:where(.productShellContent) :where(.dataCard, .metricCard):nth-child(2) { animation-delay: 40ms; }
+:where(.productShellContent) :where(.dataCard, .metricCard):nth-child(3) { animation-delay: 80ms; }
+:where(.productShellContent) :where(.dataCard, .metricCard):nth-child(4) { animation-delay: 120ms; }
+:where(.productShellContent) :where(.dataCard, .metricCard):nth-child(5) { animation-delay: 160ms; }
+:where(.productShellContent) :where(.dataCard, .metricCard):nth-child(n + 6) { animation-delay: 200ms; }
+
+/* Lift only what is clickable: a card that is a link, or sits in one. */
+a.dataCard:hover,
+a.metricCard:hover,
+a:hover > .dataCard,
+a:hover > .metricCard,
+button.dataCard:hover:not(:disabled) {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+a.dataCard:focus-visible,
+a:focus-visible > .dataCard {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.sectionEyebrow {
+  letter-spacing: 0.1em;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  color: var(--text-accent);
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+.btn {
+  letter-spacing: -0.005em;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+.btn-primary {
+  box-shadow: inset 0 1px 0 var(--btn-highlight), var(--shadow-xs);
+}
+
+/* A dedicated hover fill: the dark palette's strong accent is a light teal,
+   and white ink on it would fall below AA. */
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+  filter: none;
+  box-shadow: inset 0 1px 0 var(--btn-highlight), 0 6px 16px -6px var(--sidebar-glow);
+}
+
+.btn-secondary {
+  box-shadow: var(--shadow-xs);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Disabled is visibly inert — flat, no elevation, no press — so it never
+   looks like a slow button. A loading button keeps its colour and shows a
+   spinner instead (see .btn[data-loading]). */
+.btn:disabled {
+  box-shadow: none;
+  transform: none;
+}
+
+/* `.buttonRow a` (a plain-link chip style) out-ranked every `.btn` variant,
+   so a <Link className="btn btn-secondary"> in a button row rendered as a
+   round blue pill beside square buttons of a different height. A real
+   button-styled link now matches the button system exactly. */
+.buttonRow a.btn {
+  min-height: var(--control-h);
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+}
+
+.buttonRow a.btn-primary { background: var(--accent-solid); color: var(--on-accent); border-color: transparent; }
+.buttonRow a.btn-secondary { background: var(--bg-surface); color: var(--text-primary); border-color: var(--border-strong); }
+.buttonRow a.btn-ghost { background: transparent; color: var(--text-secondary); border-color: var(--border); }
+.buttonRow a.btn-danger { background: var(--danger-bg); color: var(--danger-fg); border-color: var(--danger-bdr); }
+.buttonRow a.btn-primary:hover { background: var(--accent-solid-hover); }
+.buttonRow a.btn-secondary:hover { border-color: var(--border-hover); color: var(--text-accent); background: var(--bg-hover); }
+.buttonRow a.btn-ghost:hover { background: var(--overlay-03); color: var(--text-primary); }
+.buttonRow a.btn-danger:hover { border-color: var(--danger-fg); }
+
+/* Plain links in a button row, quick actions and demo toggles are
+   navigation, so they wear the interactive accent rather than the
+   informational blue they were hard-coded to. */
+.buttonRow a:not(.btn),
+.quickActionsRow button,
+.quickActionsRow a,
+.payloadToggle {
+  color: var(--text-accent);
+  background: var(--accent-blue-bg);
+  border-color: var(--border-accent);
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.buttonRow a:not(.btn):hover,
+.quickActionsRow button:hover,
+.quickActionsRow a:hover,
+.payloadToggle:hover,
+.demoButton:hover,
+.demoButtonActive {
+  border-color: var(--border-hover);
+  background: var(--accent-blue-bg);
+}
+
+.polishedCard,
+.monitoringHeaderCard {
+  border-color: var(--border-accent);
+}
+
+.execMetricLink:hover .execMetricCard,
+.execBottomMetric:hover,
+.execDrawerRef:hover {
+  border-color: var(--border-accent);
+}
+
+.execAlertRowLink:hover {
+  background: var(--bg-hover);
+}
+
+.execCopilotPanel,
+.execBottomMetric {
+  border-radius: var(--radius-lg);
+}
+
+/* The running-step pulse on onboarding is functional (a step is in
+   flight), so it stays — in the brand accent. */
+@keyframes onbPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--border-accent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+
+/* ── Form controls ────────────────────────────────────────────────── */
+:where(.appShellFrame, .dataCard)
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):hover:not(:disabled):not(:focus) {
+  border-color: var(--border-hover);
+}
+
+:where(.appShellFrame, .dataCard)
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus {
+  border-color: var(--border-hover);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+:where(.appShellFrame) :where(input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--accent-solid);
+}
+
+.fieldError,
+.onbFieldError {
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+.tableWrap {
+  border-radius: var(--radius-lg);
+}
+
+th {
+  font-size: 0.7rem;
+  letter-spacing: 0.07em;
+}
+
+tbody tr {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+/* ── Status pills ─────────────────────────────────────────────────── */
+.ruleChip,
+.statusBadge {
+  border-width: 1px;
+  border-style: solid;
+  line-height: 1.35;
+}
+
+.ruleChip {
+  padding: 0.18rem 0.55rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+}
+
+/* `.ruleChip` without a severity is informational; re-assert every severity
+   border after giving the base chip a visible one. */
+.ruleChip { border-color: var(--info-bdr); }
+.sharedStatusPill { border-color: var(--neutral-bdr); }
+.pill-success { border-color: var(--success-bdr); }
+.pill-warning { border-color: var(--warning-bdr); }
+.pill-danger  { border-color: var(--danger-bdr); }
+.pill-info    { border-color: var(--info-bdr); }
+.pill-neutral { border-color: var(--neutral-bdr); }
+.pill-violet  { border-color: var(--violet-bdr); }
+
+/* A severity pill keeps its severity colour inside chip rows and banners.
+   Those containers used to repaint every chip a fixed slate-blue wash, which
+   made a CRITICAL and a VERIFIED chip in the same row look alike. */
+:is(.chipRow, .muted, .statusBanner) .pill-success { background: var(--success-bg); border-color: var(--success-bdr); }
+:is(.chipRow, .muted, .statusBanner) .pill-warning { background: var(--warning-bg); border-color: var(--warning-bdr); }
+:is(.chipRow, .muted, .statusBanner) .pill-danger  { background: var(--danger-bg);  border-color: var(--danger-bdr); }
+:is(.chipRow, .muted, .statusBanner) .pill-info    { background: var(--info-bg);    border-color: var(--info-bdr); }
+:is(.chipRow, .muted, .statusBanner) .pill-neutral { background: var(--neutral-bg); border-color: var(--neutral-bdr); }
+:is(.chipRow, .muted, .statusBanner) .pill-violet  { background: var(--violet-bg);  border-color: var(--violet-bdr); }
+
+/* ── Tabs ─────────────────────────────────────────────────────────── */
+/* The underline is a real border (so it survives forced-colours mode) and
+   cross-fades between tabs; hover previews it at hairline strength. */
+.underlineTab {
+  transition:
+    color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
+}
+
+.underlineTab:hover:not([aria-selected="true"]) {
+  border-bottom-color: var(--border-strong);
+  background: var(--overlay-02);
+}
+
+.sharedTabStrip button {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+/* The selected segment keeps primary ink (counts and badges inside it stay
+   readable) and gains an accent edge. */
+.sharedTabStrip button.activeTab {
+  border-color: var(--border-accent);
+}
+
+/* ── Overlays: dialogs, drawers, popovers ────────────────────────── */
+:where(.appShellFrame) :where([role="dialog"][aria-modal="true"]),
+.modalOverlay,
+.drawerOverlay,
+.execDrawerBackdrop {
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+.modalCard {
+  border-radius: var(--radius-xl);
+  animation: dcModalIn var(--dur-slow) var(--ease-out) backwards;
+}
+
+.drawerCard,
+.execDrawer,
+.detailDrawer {
+  animation: dcSlideFromRight var(--dur-slow) var(--ease-out) backwards;
+}
+
+.modalOverlay,
+.drawerOverlay {
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+/* ── Empty, loading and notice states ────────────────────────────── */
+.emptyStatePanel {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(var(--brand-grid-line) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(90deg, var(--brand-grid-line) 1px, transparent 1px) 0 0 / 22px 22px,
+    var(--bg-surface);
+}
+
+/* An empty state is neutral: a dashed outline and a hollow marker, never a
+   tick or a green — "nothing here" must not read as "all clear". */
+.sharedEmptyStateBlocker {
+  text-align: center;
+  padding: 1.75rem 1.25rem;
+}
+
+.sharedEmptyStateBlocker::before {
+  content: '';
+  display: block;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 auto 0.85rem;
+  border-radius: 0.8rem;
+  border: 1px dashed var(--border-strong);
+  background:
+    radial-gradient(circle at 50% 50%, var(--neutral-fg) 0 2px, transparent 3px),
+    radial-gradient(circle at 50% 50%, transparent 0 8px, var(--neutral-bdr) 9px 10px, transparent 11px),
+    var(--bg-subtle);
+}
+
+.sharedEmptyStateBlocker h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.sharedEmptyStateBlocker .muted {
+  max-width: 52ch;
+  margin-inline: auto;
+}
+
+.skelBlock,
+.skeletonRow,
+.dashboardLoadingSkeleton,
+.execSkeletonCard {
+  background-image: linear-gradient(90deg, var(--overlay-03) 20%, var(--accent-blue-bg) 40%, var(--overlay-03) 60%);
+  background-size: 300% 100%;
+  animation: dcBrandShimmer 1.6s var(--ease-in-out) infinite;
+}
+
+.statusBanner,
+.execFreshnessBanner,
+.execCoverageCaveat,
+.execStaleBanner,
+.globalHealthWarning {
+  border-radius: var(--radius-md);
+}
+
+/* ── Runtime evidence strip (header) ─────────────────────────────── */
+.runtimeBanner {
+  gap: 0.2rem 1.1rem;
+  padding: 0.5rem 0 0.6rem;
+}
+
+/* ── Product page headings ───────────────────────────────────────── */
+.dashboardPageTitle,
+.onboardingTitle,
+:where(.productShellContent) :where(.hero h1, .productPageTitle, .pageTitle) {
+  font-size: clamp(1.45rem, 1.1rem + 0.9vw, 1.85rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+}
+
+.dashboardPageSubtitle,
+.onboardingSubtitle,
+:where(.productShellContent) :where(.hero .lede) {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.compactHero {
+  margin-bottom: 0.25rem;
+}
+
+/* ── Dashboard (Screen 2) ────────────────────────────────────────── */
+.dashboardExecHeader {
+  align-items: flex-end;
+  gap: 1rem 1.5rem;
+}
+
+.execStatusPill {
+  transition: background-color var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+
+.execMetricCard {
+  position: relative;
+  overflow: hidden;
+}
+
+/* A thin brand line along the top of each metric card. Decorative only: the
+   value's own colour and pill carry any status. */
+.execMetricCard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-teal), var(--brand-cyan));
+  opacity: 0.55;
+  transform-origin: left;
+  animation: dcGrowX 600ms var(--ease-out) backwards;
+}
+
+.execMetricValue {
+  letter-spacing: -0.025em;
+}
+
+.execMetricLink {
+  border-radius: var(--radius-lg);
+}
+
+.execMetricLink:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.execBottomMetric {
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+.execBottomMetric:hover {
+  border-color: var(--border-accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.execBriefCard {
+  background:
+    radial-gradient(120% 70% at 100% 0%, var(--accent-blue-bg), transparent 60%),
+    var(--bg-card);
+}
+
+/* Trend chart: lines draw in once when the chart mounts. A refresh changes
+   the path in place and does not replay it. */
+.execTrendLine {
+  stroke-dasharray: 1;
+  animation: dcDrawStroke 900ms var(--ease-out) backwards;
+}
+
+.execTrendArea {
+  opacity: 1;
+  animation: dcFadeIn 700ms var(--ease-out) 200ms backwards;
+}
+
+.execTrendAreaStopTop { stop-color: var(--danger-fg); stop-opacity: 0.16; }
+.execTrendAreaStopBottom { stop-color: var(--danger-fg); stop-opacity: 0; }
+
+.execTrendDot {
+  transition: r var(--dur-fast) var(--ease-out);
+}
+
+.execTrendHoverLine {
+  stroke: var(--border-strong);
+  stroke-dasharray: 3 3;
+}
+
+.execDriverBarFill {
+  transform-origin: left;
+  animation: dcGrowX 700ms var(--ease-out) 120ms backwards;
+}
+
+.execAlertRowLink {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+/* Security posture strip: four separate evidence axes, each from a backend
+   boolean, plus period activity. No axis implies another. */
+.dcPosture {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.dcPostureItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+  min-width: 0;
+}
+
+.dcPostureIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--neutral-bdr);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+}
+
+.dcPostureItem[data-tone="ok"] .dcPostureIcon { border-color: var(--success-bdr); background: var(--success-bg); color: var(--success-fg); }
+.dcPostureItem[data-tone="warn"] .dcPostureIcon { border-color: var(--warning-bdr); background: var(--warning-bg); color: var(--warning-fg); }
+.dcPostureItem[data-tone="bad"] .dcPostureIcon { border-color: var(--danger-bdr); background: var(--danger-bg); color: var(--danger-fg); }
+
+.dcPostureBody {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.dcPostureLabel {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dcPostureValue {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.dcPostureItem[data-tone="ok"] .dcPostureValue { color: var(--success-fg); }
+.dcPostureItem[data-tone="warn"] .dcPostureValue { color: var(--warning-fg); }
+.dcPostureItem[data-tone="bad"] .dcPostureValue { color: var(--danger-fg); }
+
+.dcPostureMeta {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dcActivity {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.dcActivityCell {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.dcActivityValue {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.dcActivityLabel {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+/* ── Onboarding stepper (Screen 1) ───────────────────────────────── */
+/* Progress is brand teal; failure and attention keep their severity. A
+   completed step is "done", not "healthy", so it no longer borrows green. */
+.onboardingStepper {
+  padding: 1.25rem 1rem 1.5rem;
+  margin: 0.25rem 0 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(var(--brand-grid-line) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(90deg, var(--brand-grid-line) 1px, transparent 1px) 0 0 / 28px 28px,
+    var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.stepConnector {
+  top: 19px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--overlay-06);
+  overflow: hidden;
+}
+
+.stepConnector::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand-teal), var(--brand-cyan));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 500ms var(--ease-out);
+}
+
+.stepConnectorComplete {
+  background: var(--overlay-06);
+  opacity: 1;
+}
+
+.stepConnectorComplete::after {
+  transform: scaleX(1);
+}
+
+.stepCircle {
+  transition:
+    background-color var(--dur-slow) var(--ease-out),
+    border-color var(--dur-slow) var(--ease-out),
+    color var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-spring);
+}
+
+.onboardingStepItem[data-step-status="complete"] .stepCircle,
+.stepCircle[data-state="complete"] {
+  background: var(--accent-solid);
+  border: 2px solid var(--accent-solid);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.onboardingStepItem[data-step-status="current"] .stepCircle,
+.stepCircle[data-state="current"] {
+  background: var(--bg-card);
+  border: 2px solid var(--accent-blue);
+  color: var(--text-accent);
+  box-shadow: 0 0 0 5px var(--accent-blue-bg);
+  transform: scale(1.06);
+}
+
+.onboardingStepItem[data-step-status="upcoming"] .stepCircle {
+  background: var(--bg-card);
+  border: 2px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.onboardingStepItem[data-step-status="failed"] .stepCircle {
+  background: var(--danger-bg);
+  border: 2px solid var(--danger-fg);
+  color: var(--danger-fg);
+}
+
+.onboardingStepItem[data-step-status="attention"] .stepCircle {
+  background: var(--warning-bg);
+  border: 2px solid var(--warning-fg);
+  color: var(--warning-fg);
+}
+
+.onboardingStepItem[data-step-status="complete"] .stepLabel {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.onboardingStepItem[data-step-status="current"] .stepLabel {
+  color: var(--text-accent);
+  font-weight: 650;
+}
+
+.onboardingStepItem[data-step-status="failed"] .stepLabel { color: var(--danger-fg); font-weight: 600; }
+.onboardingStepItem[data-step-status="attention"] .stepLabel { color: var(--warning-fg); font-weight: 600; }
+
+.stepLabel {
+  font-size: 0.8rem;
+}
+
+.onbCard {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+
+.onbTimelineItem {
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ── Investigation timelines (incidents, system health) ──────────── */
+.incidentForensicTimelineMarker,
+.shTimelineDot {
+  box-shadow: 0 0 0 4px var(--bg-card);
+}
+
+/* ── Code, hashes and identifiers ────────────────────────────────── */
+:where(.appShellFrame) :where(.mono, .integrityMono, .hashValue, .evidenceHash) {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  letter-spacing: 0;
+}
+
+/* ── Focus ────────────────────────────────────────────────────────── */
+:where(.appShellFrame) :where(a, button, [tabindex]):focus-visible {
+  outline-color: var(--ring);
 }

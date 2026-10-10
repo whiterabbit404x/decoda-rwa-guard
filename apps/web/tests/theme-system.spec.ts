@@ -360,13 +360,39 @@ test.describe('the redesign did not soften what the product says about authority
 
 /* ── Motion stays functional ────────────────────────────────────────────── */
 test.describe('motion inside the product is functional only', () => {
-  test('every animation is a loading, spinner or active-state indicator', () => {
+  test('every animation is an indicator or a one-shot dc* entrance', () => {
     const names = [...styles.matchAll(/@keyframes\s+([A-Za-z0-9_-]+)/g)].map((m) => m[1]);
     // mkt* belongs to the public marketing surface, which is out of scope here.
     const product = names.filter((n) => !n.startsWith('mkt'));
-    const allowed = /(spin|pulse|shimmer|skel|fade|loading)/i;
+    const indicator = /(spin|pulse|shimmer|skel|fade|loading)/i;
+    // The Decoda brand layer adds short entrance motions (page, card, menu,
+    // dialog, chart draw-in). They are allowed only under the dc* prefix, so
+    // every one of them is covered by the infinite-loop check below.
     for (const name of product) {
-      expect(name, `@keyframes ${name} must be a functional indicator`).toMatch(allowed);
+      expect(
+        indicator.test(name) || name.startsWith('dc'),
+        `@keyframes ${name} must be a functional indicator or a dc* entrance`,
+      ).toBe(true);
+    }
+  });
+
+  test('only loading indicators loop; entrances run once and stay short', () => {
+    // A monitoring console must not carry decorative motion that never stops.
+    // An `infinite` animation is allowed only for a loading/spinner/shimmer/
+    // pulse indicator, and a dc* entrance is a single run of ≤ 1s.
+    const brand = styles.slice(styles.indexOf('DECODA BRAND LAYER'));
+    expect(brand.length, 'brand layer present').toBeGreaterThan(100);
+    const rules = brand.replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const [, value] of rules.matchAll(/animation\s*:\s*([^;]+);/g)) {
+      const name = value.trim().split(/\s+/)[0];
+      if (/infinite/.test(value)) {
+        expect(name, `infinite animation ${name} must be an indicator`).toMatch(/(spin|pulse|shimmer|skel|loading)/i);
+      }
+      if (name.startsWith('dc') && !/shimmer/i.test(name)) {
+        expect(value, `${name} must not loop`).not.toMatch(/infinite/);
+        const ms = [...value.matchAll(/(\d+)ms/g)].map((m) => Number(m[1]));
+        for (const duration of ms) expect(duration, `${name} duration`).toBeLessThanOrEqual(1000);
+      }
     }
   });
 
