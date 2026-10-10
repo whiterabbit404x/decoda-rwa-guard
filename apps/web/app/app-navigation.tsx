@@ -52,6 +52,10 @@ export default function AppNavigation({ currentPath, onNavAttempt }: { currentPa
                 }}
                 className={isActive ? 'active' : ''}
                 aria-current={isActive ? 'page' : undefined}
+                // Read by the collapsed icon rail's hover/focus tooltip (CSS).
+                // The label text stays in the link, so the accessible name
+                // does not depend on it.
+                data-label={item.label}
               >
                 <span className="appNavIcon">
                   {NavIcon ? <NavIcon size={15} /> : <span aria-hidden="true">{item.label[0]}</span>}

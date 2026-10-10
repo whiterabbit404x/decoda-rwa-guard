@@ -193,7 +193,10 @@ async function mountShell(page: Page, theme: 'light' | 'dark' | 'system') {
   });
 
   await page.goto(harness.url);
-  await expect(page.locator('.appSidebar')).toBeVisible();
+  // Below 768px the sidebar is an off-canvas drawer, closed until the menu
+  // button opens it; the menu button is then what must be on screen.
+  const isPhone = (page.viewportSize()?.width ?? 1280) < 768;
+  await expect(page.locator(isPhone ? '.shellMenuBtn' : '.appSidebar')).toBeVisible();
   expect(await page.evaluate(() => (window as any).__renderError)).toBeNull();
 
   // The provider stamps the resolved theme on mount. Wait for that rather
@@ -516,11 +519,20 @@ for (const width of [390, 768, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await mountShell(page, 'light');
 
-    // Navigation is reachable at every width — it collapses to a horizontal
-    // strip below 1100px rather than disappearing.
+    // Navigation is reachable at every width: the full sidebar on desktop, an
+    // icon rail from 768px to 1100px, and an off-canvas drawer below 768px
+    // that the header's menu button opens.
     const navLinks = page.locator('.appNav a');
     expect(await navLinks.count()).toBeGreaterThan(5);
-    await expect(navLinks.first()).toBeVisible();
+    if (width < 768) {
+      await expect(navLinks.first()).toBeHidden();
+      await page.locator('.shellMenuBtn').click();
+      await expect(navLinks.first()).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(navLinks.first()).toBeHidden();
+    } else {
+      await expect(navLinks.first()).toBeVisible();
+    }
 
     // The page never scrolls sideways as a whole …
     const overflow = await page.evaluate(() =>
