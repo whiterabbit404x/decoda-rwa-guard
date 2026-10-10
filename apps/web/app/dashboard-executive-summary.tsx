@@ -1,10 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { usePilotAuth } from './pilot-auth-context';
 import { markDashboardPerf } from './dashboard-perf';
+import { AnimatedNumber } from './components/motion';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
   StatusPill,
@@ -187,6 +188,8 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
           <FreshnessBanner data={data} />
           <CoverageCaveatBanner data={data} />
 
+          <SecurityPostureStrip data={data} />
+
           <div className="execMetricRow execMetricRowScreen2">
             <ExecutiveBriefCard brief={data.executive_brief} onOpen={() => setBriefOpen(true)} />
             <div className="execMetricCluster">
@@ -194,6 +197,7 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
               <MetricCard
                 label="Open Incidents"
                 value={String(data.metrics.open_incident_count)}
+                numeric={data.metrics.open_incident_count}
                 meta={data.metrics.critical_or_high_incident_count > 0 ? `${data.metrics.critical_or_high_incident_count} critical/high` : 'None critical'}
                 delta={formatDelta(data.metrics.deltas.open_incident_count)}
                 valueVariant={data.metrics.open_incident_count > 0 ? 'warning' : undefined}
@@ -202,6 +206,7 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
               <MetricCard
                 label="Active Alerts"
                 value={String(data.metrics.active_alert_count)}
+                numeric={data.metrics.active_alert_count}
                 meta={activeAlertsMeta(data)}
                 delta={formatDelta(data.metrics.deltas.active_alert_count)}
                 valueVariant={data.metrics.active_alert_count > 0 ? 'danger' : undefined}
@@ -302,11 +307,148 @@ function FreshnessBanner({ data }: { data: ExecutiveSummary }) {
   );
 }
 
+/* ── Security posture ─────────────────────────────────────────── */
+
+// Separate evidence axes, each read straight from the backend's monitoring
+// facts — never inferred from one another, and never from the browser's own
+// connection. Heartbeat proves the worker is alive; it says nothing about
+// whether telemetry arrived, which the Telemetry pill and banner report. A
+// missing fact reads as "not confirmed", never as fine.
+type PostureTone = 'ok' | 'warn' | 'bad' | 'neutral';
+
+function PostureIcon({ kind }: { kind: 'monitoring' | 'heartbeat' | 'ingestion' | 'activity' }) {
+  const common = {
+    width: 16,
+    height: 16,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.9,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+  };
+  if (kind === 'monitoring') {
+    return (
+      <svg {...common}>
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="M9 12l2 2 4-4" />
+      </svg>
+    );
+  }
+  if (kind === 'heartbeat') {
+    return (
+      <svg {...common}>
+        <path d="M3 12h4l2-5 4 10 2-5h6" />
+      </svg>
+    );
+  }
+  if (kind === 'ingestion') {
+    return (
+      <svg {...common}>
+        <ellipse cx="12" cy="5" rx="8" ry="3" />
+        <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+        <path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function PostureItem({
+  kind,
+  label,
+  value,
+  meta,
+  tone,
+  children,
+}: {
+  kind: 'monitoring' | 'heartbeat' | 'ingestion' | 'activity';
+  label: string;
+  value?: string;
+  meta?: string;
+  tone: PostureTone;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="dcPostureItem" data-tone={tone}>
+      <span className="dcPostureIcon">
+        <PostureIcon kind={kind} />
+      </span>
+      <div className="dcPostureBody">
+        <p className="dcPostureLabel">{label}</p>
+        {value ? <p className="dcPostureValue">{value}</p> : null}
+        {meta ? <p className="dcPostureMeta">{meta}</p> : null}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SecurityPostureStrip({ data }: { data: ExecutiveSummary }) {
+  const monitoring = data.monitoring_state;
+  const monitoringTone: PostureTone = monitoring.state === 'live' ? 'ok' : monitoring.state === 'degraded' ? 'warn' : 'bad';
+  const activity = data.activity;
+  // Period movement is shown only when the backend reported a period; an
+  // older payload without one must not render as "0 opened".
+  const activityReported = activity.period_start != null;
+
+  return (
+    <section className="dcPosture" aria-label="Security posture">
+      <PostureItem
+        kind="monitoring"
+        label="Monitoring"
+        value={MONITORING_STATUS_LABELS[monitoring.state]}
+        meta={monitoring.reason || undefined}
+        tone={monitoringTone}
+      />
+      <PostureItem
+        kind="heartbeat"
+        label="Worker heartbeat"
+        value={monitoring.workers_fresh ? 'Heartbeat current' : 'Heartbeat not confirmed'}
+        meta="Worker liveness only — not proof that telemetry arrived."
+        tone={monitoring.workers_fresh ? 'ok' : 'warn'}
+      />
+      <PostureItem
+        kind="ingestion"
+        label="Ingestion"
+        value={monitoring.ingestion_healthy ? 'Ingestion healthy' : 'Ingestion not confirmed'}
+        meta="Telemetry pipeline processing, as reported by the backend."
+        tone={monitoring.ingestion_healthy ? 'ok' : 'warn'}
+      />
+      <PostureItem kind="activity" label="Last 24 hours" tone="neutral" value={activityReported ? undefined : 'Not reported'}>
+        {activityReported ? (
+          <div className="dcActivity">
+            <span className="dcActivityCell">
+              <span className="dcActivityValue"><AnimatedNumber value={activity.alerts_created_during_period} /></span>
+              <span className="dcActivityLabel">Alerts created</span>
+            </span>
+            <span className="dcActivityCell">
+              <span className="dcActivityValue"><AnimatedNumber value={activity.incidents_opened_during_period} /></span>
+              <span className="dcActivityLabel">Incidents opened</span>
+            </span>
+            <span className="dcActivityCell">
+              <span className="dcActivityValue"><AnimatedNumber value={activity.incidents_resolved_during_period} /></span>
+              <span className="dcActivityLabel">Resolved</span>
+            </span>
+          </div>
+        ) : null}
+      </PostureItem>
+    </section>
+  );
+}
+
 /* ── Metric cards ─────────────────────────────────────────────── */
 
 function MetricCard({
   label,
   value,
+  numeric,
   meta,
   delta,
   valueVariant,
@@ -314,6 +456,9 @@ function MetricCard({
 }: {
   label: string;
   value: string;
+  /** The same figure as `value`, when it is a count: it then eases between
+   *  backend-reported values on refresh instead of jumping. */
+  numeric?: number;
   meta?: string;
   delta?: { text: string; tone: 'up' | 'down' | 'flat' };
   valueVariant?: 'danger' | 'warning' | 'success';
@@ -322,7 +467,9 @@ function MetricCard({
   const body = (
     <article className="execMetricCard dataCard" data-metric-label={label}>
       <p className="execMetricLabel">{label}</p>
-      <p className={`execMetricValue${valueVariant ? ` execMetricValue--${valueVariant}` : ''}`}>{value}</p>
+      <p className={`execMetricValue${valueVariant ? ` execMetricValue--${valueVariant}` : ''}`}>
+        {numeric != null ? <AnimatedNumber value={numeric} /> : value}
+      </p>
       <div className="execMetricFootRow">
         {meta ? <span className="execMetricMeta">{meta}</span> : <span />}
         {delta && delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
@@ -363,7 +510,7 @@ function RiskScoreCard({ data }: { data: ExecutiveSummary }) {
     <article className="execMetricCard execMetricCardScore dataCard" data-metric-label="Risk Score">
       <p className="execMetricLabel">Risk Score</p>
       <p className="execMetricValue">
-        {risk_score}
+        <AnimatedNumber value={risk_score} />
         <span className="execMetricValueUnit">/100</span>
       </p>
       <div className="execMetricFootRow">
@@ -386,7 +533,7 @@ function SystemHealthCard({ data }: { data: ExecutiveSummary }) {
       <article className="execMetricCard execMetricCardHealth dataCard" data-metric-label="System Health">
         <p className="execMetricLabel">System Health</p>
         <p className="execMetricValue">
-          {status === 'not_configured' ? '—' : score}
+          {status === 'not_configured' ? '—' : <AnimatedNumber value={score} />}
           {status === 'not_configured' ? null : <span className="execMetricValueUnit">/100</span>}
         </p>
         <div className="execMetricFootRow">
@@ -492,6 +639,7 @@ function TrendSvg({ points }: { points: RiskTrendPoint[] }) {
   const padX = 36;
   const padY = 20;
   const [hover, setHover] = useState<number | null>(null);
+  const areaId = `execTrendArea-${useId().replace(/:/g, '')}`;
 
   const n = points.length;
   const xFor = (i: number) => padX + (i * (width - 2 * padX)) / Math.max(n - 1, 1);
@@ -499,6 +647,9 @@ function TrendSvg({ points }: { points: RiskTrendPoint[] }) {
 
   const riskPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(p.risk_score).toFixed(1)}`).join(' ');
   const healthPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xFor(i).toFixed(1)} ${yFor(p.health_score).toFixed(1)}`).join(' ');
+  // The area under the risk line is the same real points, closed to the
+  // baseline — shading only, no interpolated or extra values.
+  const riskArea = `${riskPath} L ${xFor(n - 1).toFixed(1)} ${(height - padY).toFixed(1)} L ${xFor(0).toFixed(1)} ${(height - padY).toFixed(1)} Z`;
   const active = hover != null ? points[hover] : null;
 
   return (
@@ -508,14 +659,24 @@ function TrendSvg({ points }: { points: RiskTrendPoint[] }) {
         <span className="execTrendLegendItem execTrendLegendItem--health">Health score</span>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="execTrendSvg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Risk and health score over the last seven days">
+        <defs>
+          <linearGradient id={areaId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" className="execTrendAreaStopTop" />
+            <stop offset="1" className="execTrendAreaStopBottom" />
+          </linearGradient>
+        </defs>
         {[0, 25, 50, 75, 100].map((tick) => (
           <g key={tick}>
             <line x1={padX} x2={width - padX} y1={yFor(tick)} y2={yFor(tick)} className="execTrendGrid" />
             <text x={4} y={yFor(tick) + 3} className="execTrendAxisLabel">{tick}</text>
           </g>
         ))}
-        <path d={healthPath} className="execTrendLine execTrendLine--health" fill="none" />
-        <path d={riskPath} className="execTrendLine execTrendLine--risk" fill="none" />
+        <path d={riskArea} className="execTrendArea" fill={`url(#${areaId})`} />
+        {hover != null ? (
+          <line x1={xFor(hover)} x2={xFor(hover)} y1={padY} y2={height - padY} className="execTrendHoverLine" />
+        ) : null}
+        <path d={healthPath} pathLength={1} className="execTrendLine execTrendLine--health" fill="none" />
+        <path d={riskPath} pathLength={1} className="execTrendLine execTrendLine--risk" fill="none" />
         {points.map((p, i) => (
           <g key={i}>
             <circle cx={xFor(i)} cy={yFor(p.risk_score)} r={hover === i ? 5 : 3} className="execTrendDot execTrendDot--risk" />
@@ -593,9 +754,9 @@ function BottomMetricsRow({ data }: { data: ExecutiveSummary }) {
   const uptime = data.metrics.uptime_30d_percent;
   return (
     <div className="execBottomMetricsRow">
-      <BottomMetric label="Monitored Assets" value={String(data.metrics.monitored_asset_count)} href="/assets" />
-      <BottomMetric label="Active Monitors" value={String(data.metrics.active_monitor_count)} href="/monitoring-sources" />
-      <BottomMetric label="Data Sources" value={String(data.metrics.data_source_count)} href="/monitoring-sources" />
+      <BottomMetric label="Monitored Assets" value={String(data.metrics.monitored_asset_count)} numeric={data.metrics.monitored_asset_count} href="/assets" />
+      <BottomMetric label="Active Monitors" value={String(data.metrics.active_monitor_count)} numeric={data.metrics.active_monitor_count} href="/monitoring-sources" />
+      <BottomMetric label="Data Sources" value={String(data.metrics.data_source_count)} numeric={data.metrics.data_source_count} href="/monitoring-sources" />
       <BottomMetric
         label="30-day Uptime"
         value={uptime == null ? 'Not available' : `${uptime.toFixed(2)}%`}
@@ -606,11 +767,13 @@ function BottomMetricsRow({ data }: { data: ExecutiveSummary }) {
   );
 }
 
-function BottomMetric({ label, value, href, muted }: { label: string; value: string; href: string; muted?: boolean }) {
+function BottomMetric({ label, value, numeric, href, muted }: { label: string; value: string; numeric?: number; href: string; muted?: boolean }) {
   return (
     <Link href={href} prefetch={false} className="execBottomMetric dataCard">
       <span className="execBottomMetricLabel">{label}</span>
-      <span className={`execBottomMetricValue${muted ? ' execBottomMetricValue--muted' : ''}`}>{value}</span>
+      <span className={`execBottomMetricValue${muted ? ' execBottomMetricValue--muted' : ''}`}>
+        {numeric != null ? <AnimatedNumber value={numeric} /> : value}
+      </span>
     </Link>
   );
 }
@@ -859,6 +1022,11 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
 function LoadingSkeleton() {
   return (
     <div className="execSkeleton" aria-hidden="true">
+      <div className="dcPosture">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="dcPostureItem execSkeletonCard dcSkeletonPosture" />
+        ))}
+      </div>
       <div className="execMetricRow execMetricRowScreen2">
         <div className="execBriefCard dataCard execSkeletonCard execSkeletonBrief" />
         <div className="execMetricCluster">

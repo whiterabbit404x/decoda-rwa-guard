@@ -1,74 +1,44 @@
-import type { CSSProperties } from 'react';
-
-type SkeletonBlockProps = {
-  className?: string;
-  style?: CSSProperties;
-};
-
-function SkeletonBlock({ className = '', style }: SkeletonBlockProps) {
-  return (
-    <div
-      className={["dashboardLoadingSkeleton", className].filter(Boolean).join(' ')}
-      style={style}
-      aria-hidden="true"
-    />
-  );
-}
-
+/**
+ * Route-level loading state for /dashboard.
+ *
+ * Mirrors the executive summary's own skeleton (same classes, same grid), so
+ * the page does not jump when the client component takes over. Every size is
+ * a class in styles.css: this is a server component, and the production CSP
+ * (`style-src 'self' 'nonce-…'`) drops inline style attributes, which left the
+ * previous skeleton blocks unsized in production.
+ *
+ * It renders placeholders only — no number, status or label that could be
+ * mistaken for workspace data.
+ */
 export default function DashboardLoading() {
   return (
-    <main className="container productPage" aria-busy="true" aria-live="polite">
-      <section className="hero">
+    <main className="container productPage dashboardExecPage" aria-busy="true" aria-live="polite">
+      <div className="dashboardPageHeader dashboardExecHeader">
         <div>
-          <p className="eyebrow">Loading workspace</p>
-          <h1>Dashboard</h1>
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '90%' }} />
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '70%' }} />
-          <div className="heroActionRow">
-            <SkeletonBlock style={{ height: '2rem', width: '7rem' }} />
-            <SkeletonBlock style={{ height: '2rem', width: '8rem' }} />
-            <SkeletonBlock style={{ height: '2rem', width: '9rem' }} />
-          </div>
+          <h1 className="dashboardPageTitle">Dashboard</h1>
+          <p className="dashboardPageSubtitle">Loading the executive summary for this workspace…</p>
         </div>
-        <div className="heroPanel">
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '100%' }} />
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '85%' }} />
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '75%' }} />
-          <SkeletonBlock className="dashboardLoadingLine" style={{ width: '80%' }} />
-        </div>
-      </section>
+      </div>
 
-      <section className="summaryGrid" aria-label="Loading dashboard summary cards">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <article key={index} className="metricCard">
-            <SkeletonBlock className="dashboardLoadingLine" style={{ width: '50%' }} />
-            <SkeletonBlock style={{ height: '2rem', width: '33%' }} />
-            <SkeletonBlock className="dashboardLoadingLine" style={{ width: '66%' }} />
-          </article>
-        ))}
-      </section>
-
-      <section className="featureSection" aria-label="Loading dashboard sections">
-        <div className="sectionHeader">
-          <div>
-            <p className="eyebrow">Loading section</p>
-            <h2>Workspace activity</h2>
-          </div>
-        </div>
-        <div className="threeColumnSection">
-          {Array.from({ length: 3 }).map((_, columnIndex) => (
-            <div key={columnIndex} className="stack compactStack">
-              {Array.from({ length: 2 }).map((__, cardIndex) => (
-                <article key={cardIndex} className="dataCard">
-                  <SkeletonBlock style={{ height: '1.25rem', width: '66%' }} />
-                  <SkeletonBlock className="dashboardLoadingLine" style={{ width: '100%' }} />
-                  <SkeletonBlock className="dashboardLoadingLine" style={{ width: '85%' }} />
-                </article>
-              ))}
-            </div>
+      <div className="execSkeleton" aria-hidden="true">
+        <div className="dcPosture">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="dcPostureItem execSkeletonCard dcSkeletonPosture" />
           ))}
         </div>
-      </section>
+        <div className="execMetricRow execMetricRowScreen2">
+          <div className="execBriefCard dataCard execSkeletonCard execSkeletonBrief" />
+          <div className="execMetricCluster">
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div key={index} className="execMetricCard dataCard execSkeletonCard" />
+            ))}
+          </div>
+        </div>
+        <div className="execMainGrid execMainGridScreen2">
+          <div className="execSectionCard dataCard execSkeletonCard execSkeletonChart" />
+          <div className="execSectionCard dataCard execSkeletonCard execSkeletonPanel" />
+        </div>
+      </div>
     </main>
   );
 }
