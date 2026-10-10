@@ -12651,6 +12651,56 @@ a:focus-visible > .dataCard {
   color: var(--text-accent);
 }
 
+/* One metric-tile anatomy on every screen: a small uppercase label, a
+   tabular figure, and a quiet meta line. A tile whose count is unavailable
+   keeps the same rhythm, so "—" never looks like a different component. */
+.metricCard .metricLabel,
+.sharedMetricTile .metricLabel {
+  margin: 0 0 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.metricValue {
+  font-size: 1.75rem;
+  letter-spacing: -0.022em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.metricCard .metricMeta,
+.sharedMetricTile .metricMeta {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/* Page rhythm inside the shell: the shell owns outer padding, so a page's
+   first section does not add its own 40px on top, and pages do not stack a
+   second bottom gutter under the shell's. */
+.productShellContent .productPage {
+  padding-bottom: 0;
+}
+
+.productShellContent .productPage > .featureSection:first-child,
+.productShellContent > .featureSection:first-child,
+.productShellContent .compactHero + .featureSection {
+  margin-top: 1rem;
+}
+
+.productShellContent > .featureSection:first-child {
+  margin-top: 0;
+}
+
+.sharedEmptyStateBlocker .muted {
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
 /* ── Buttons ──────────────────────────────────────────────────────── */
 .btn {
   letter-spacing: -0.005em;
