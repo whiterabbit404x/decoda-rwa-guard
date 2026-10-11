@@ -8,7 +8,7 @@ type Props = {
 export function OperationalOverview({ components }: Props) {
   const missingComponents = Object.keys(COMPONENT_META).filter((key) => components[key] == null);
   return (
-    <section className="dataCard featureSection" style={{ marginTop: '1rem' }}>
+    <section className="dataCard featureSection shSection">
       <div className="sectionHeader compact">
         <div>
           <p className="sectionEyebrow">Component health</p>
@@ -32,16 +32,13 @@ export function OperationalOverview({ components }: Props) {
               const comp: ComponentDetail | undefined = components[key];
               const status = comp?.status ?? 'unavailable';
               return (
-                <tr key={key} className="shOpsRow">
+                <tr key={key} className="shOpsRow" data-status={status}>
                   <td>
                     <strong>{meta.label}</strong>
                     <span className="shOpsWhat">{meta.what}</span>
                   </td>
                   <td>
-                    <span
-                      className={statusBadgeClass(status)}
-                      style={{ fontSize: '0.72rem' }}
-                    >
+                    <span className={`${statusBadgeClass(status)} shBadgeSm`}>
                       {statusLabel(status)}
                     </span>
                   </td>
@@ -72,7 +69,7 @@ export function OperationalOverview({ components }: Props) {
         </table>
       </div>
       {missingComponents.length > 0 && (
-        <p className="explanation small" style={{ marginTop: '0.75rem' }}>
+        <p className="explanation small shPartialNote">
           <strong>Partial data.</strong> {missingComponents.length} component check
           {missingComponents.length === 1 ? '' : 's'} missing from the backend response.{' '}
           <a href="/system-health">Refresh</a>

@@ -5,15 +5,9 @@ type Props = {
   events: HealthEvent[];
 };
 
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: 'var(--danger-fg)',
-  high: 'var(--danger-fg)',
-  medium: 'var(--warning-fg)',
-};
-
 export function HealthTimeline({ events }: Props) {
   return (
-    <section className="dataCard featureSection" style={{ marginTop: '1rem' }}>
+    <section className="dataCard featureSection shSection">
       <div className="sectionHeader compact">
         <div>
           <p className="sectionEyebrow">Recent activity</p>
@@ -24,21 +18,16 @@ export function HealthTimeline({ events }: Props) {
       {events.length > 0 ? (
         <div className="shTimeline">
           {events.map((event, index) => (
-            <div key={`${event.component}-${index}`} className="shTimelineItem">
-              <div
-                className="shTimelineDot"
-                style={{
-                  background: SEVERITY_COLORS[event.severity] ?? 'var(--border-strong)',
-                }}
-              />
+            <div key={`${event.component}-${index}`} className="shTimelineItem" data-severity={event.severity}>
+              {/* Severity hue comes from data-severity in CSS (critical/high red,
+                  medium amber, anything else neutral) — no inline style, which the
+                  production CSP blocks on server-rendered markup. */}
+              <div className="shTimelineDot" data-severity={event.severity} aria-hidden="true" />
               <div className="shTimelineContent">
                 <div className="shTimelineHeader">
                   <span className="shTimelineTime">{formatDateTime(event.time)}</span>
                   <span className="shTimelineComponent">{event.component}</span>
-                  <span
-                    className={severityBadgeClass(event.severity)}
-                    style={{ fontSize: '0.7rem' }}
-                  >
+                  <span className={`${severityBadgeClass(event.severity)} shBadgeSm`}>
                     {event.severity}
                   </span>
                 </div>
@@ -49,7 +38,9 @@ export function HealthTimeline({ events }: Props) {
         </div>
       ) : (
         <div className="shEmptyState">
-          <div className="shEmptyIcon shEmptyIcon-ok">✓</div>
+          {/* Neutral, not green: an empty event log is an absence of records,
+              not a health verdict. */}
+          <div className="shEmptyIcon" aria-hidden="true">–</div>
           <p className="shEmptyText">No recent health events.</p>
           <p className="shEmptySubtext">
             The system has been operating without recorded health events.

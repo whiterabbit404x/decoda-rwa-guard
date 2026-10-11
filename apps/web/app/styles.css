@@ -16892,3 +16892,1312 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   letter-spacing: 0;
 }
 /* ═══ Screen layer: incidents — end ═══ */
+
+/* ═══ Screen layer: system-health — begin ═══ */
+/* ═════════════════════════════════════════════════════════════════════
+   MONITORING-OPS — Monitoring Sources · Threat Monitoring · System Health
+   ─────────────────────────────────────────────────────────────────────
+   Appended after the Decoda brand layer. Every selector is scoped to the
+   group's own namespaces (.sh* System Health, .ms* Monitoring Sources and
+   target telemetry, .tm* Threat Monitoring); no global primitive is
+   restyled. Tokens only.
+
+   Truth rules this file keeps:
+     • Status hue = the backend status. healthy → success, degraded →
+       warning, failing / unhealthy / unreachable → danger, and every
+       unknown / unavailable / disabled / no-data state → neutral grey.
+     • A fallback lane (stable polling carrying telemetry) is info-blue and
+       sits BESIDE the degraded stream; it never recolours the stream.
+     • Teal is interaction only (links, focus, toggles, primary actions).
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ── Shared glyph technique ───────────────────────────────────────────
+   Small line icons drawn with a CSS mask so they take currentColor and
+   follow the theme. The SVG stroke is a named colour; only its alpha is
+   used by the mask. */
+.shRefreshCta::before,
+.msIconRefresh::before {
+  content: '';
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.64-6.36'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-2.64-6.36'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* ═════════════════════════════════════════════════════════════════════
+   SYSTEM HEALTH
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* One vertical rhythm for the whole page: the page owns the gap, so the
+   legacy per-section margin-tops (0.5rem here, 1rem there) stop stacking
+   into uneven bands. */
+.productPage.shPage {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.productPage.shPage > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* ── Page header ──────────────────────────────────────────────────── */
+.shPage .shPageHero {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem 1.5rem;
+  padding: 0.25rem 0 0.25rem;
+}
+
+.shPage .shPageHero .eyebrow {
+  margin: 0 0 0.4rem;
+}
+
+.shPage .shPageHero h1 {
+  margin: 0;
+}
+
+.shPage .shPageHero .lede {
+  margin: 0.4rem 0 0;
+  max-width: 68ch;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.shPageHeroActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.shPage .shRefreshCta {
+  gap: 0.45rem;
+  min-height: var(--control-h);
+  padding: 0 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.shPage .shRefreshCta:hover {
+  border-color: var(--border-hover);
+  color: var(--text-accent);
+  background: var(--bg-hover);
+}
+
+.shPage .shRefreshCta:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Deployment identity: a compact build strip, not a hero ───────── */
+.shPage .deploymentVersionCard {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.85fr) minmax(0, 2.6fr);
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  padding: 0.85rem 1rem;
+}
+
+.shPage .deploymentVersionHeader {
+  margin: 0;
+}
+
+.shPage .deploymentVersionHeader .sectionEyebrow {
+  margin: 0;
+}
+
+.shPage .deploymentVersionTitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.shPage .deploymentVersionSubtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  max-width: 48ch;
+}
+
+.shPage .deploymentVersionGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.shPage .deploymentVersionRow {
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  min-width: 0;
+}
+
+/* A missing value is a dashed, hollow cell: visibly "unknown", never a
+   value that merely looks quiet. */
+.shPage .deploymentVersionRow[data-available='false'] {
+  border-style: dashed;
+  border-color: var(--neutral-bdr);
+  background: transparent;
+}
+
+.shPage .deploymentVersionLabel {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+  color: var(--text-muted);
+}
+
+.shPage .deploymentVersionText {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.shPage .deploymentVersionText-unknown {
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-style: normal;
+  color: var(--text-muted);
+  word-break: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.shPage .deploymentVersionCopy {
+  min-height: 1.5rem;
+  padding: 0 0.5rem;
+  border-radius: var(--radius-xs);
+  border-color: var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.shPage .deploymentVersionCopy:hover {
+  border-color: var(--border-hover);
+  color: var(--text-accent);
+}
+
+.shPage .deploymentVersionCopy:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* ── Overall verdict ──────────────────────────────────────────────────
+   The status is carried three ways at once — the badge's words, the icon
+   glyph, and a rail on the card's leading edge — so it reads at a glance
+   and never by colour alone. Unknown statuses keep the neutral rail. */
+.shPage .shHero {
+  position: relative;
+  overflow: hidden;
+  padding: 1.15rem 1.35rem 1.15rem 1.5rem;
+  background: var(--bg-card);
+}
+
+.shPage .shHero::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--neutral-fg);
+}
+
+.shPage .shHero[data-status='healthy']::before { background: var(--success-fg); }
+.shPage .shHero[data-status='degraded']::before { background: var(--warning-fg); }
+.shPage .shHero[data-status='failing']::before,
+.shPage .shHero[data-status='unreachable']::before { background: var(--danger-fg); }
+
+.shPage .shHero[data-status='healthy'] {
+  background: linear-gradient(100deg, var(--success-bg), transparent 42%), var(--bg-card);
+}
+.shPage .shHero[data-status='degraded'] {
+  background: linear-gradient(100deg, var(--warning-bg), transparent 42%), var(--bg-card);
+  border-color: var(--warning-bdr);
+}
+.shPage .shHero[data-status='failing'],
+.shPage .shHero[data-status='unreachable'] {
+  background: linear-gradient(100deg, var(--danger-bg), transparent 42%), var(--bg-card);
+  border-color: var(--danger-bdr);
+}
+
+.shPage .shHeroTop {
+  align-items: center;
+  gap: 1rem 1.25rem;
+}
+
+.shPage .shHeroIcon {
+  width: 3rem;
+  height: 3rem;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+}
+
+.shPage .healthIconLive {
+  color: var(--success-fg);
+  background: var(--success-bg);
+  border: 1px solid var(--success-bdr);
+}
+
+.shPage .healthIconDegraded {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bdr);
+}
+
+.shPage .healthIconOffline {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bdr);
+}
+
+.shPage .shHeroIconPending {
+  color: var(--neutral-fg);
+  background: var(--neutral-bg);
+  border: 1px solid var(--neutral-bdr);
+}
+
+.shPage .shHeroBadgeRow {
+  margin-bottom: 0.4rem;
+  gap: 0.5rem;
+}
+
+.shPage .shHeroStatusBadge {
+  font-size: 0.82rem !important;
+  padding: 0.3rem 0.8rem !important;
+  letter-spacing: 0.05em;
+}
+
+.shPage .shEnvBadge {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+}
+
+.shPage .shHeroSummary {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  max-width: 72ch;
+}
+
+.shPage .shHeroMeta {
+  padding-left: 1.25rem;
+  border-left: 1px solid var(--border);
+  min-width: 170px;
+}
+
+.shPage .shMetaLabel {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+}
+
+.shPage .shMetaValue {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.shPage .shMetaCommit {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* ── Callouts (action required, contradictions, suggested action) ───── */
+.shPage .shActionCallout {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  gap: 0.7rem;
+}
+
+.shPage .shActionCallout-warning {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bdr);
+}
+
+.shPage .shActionCallout-danger {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bdr);
+}
+
+.shPage .shActionCalloutIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  background: var(--bg-surface);
+  border: 1px solid currentColor;
+}
+
+.shPage .shActionCalloutTitle {
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+}
+
+.shPage .shActionCalloutBody {
+  font-size: 0.86rem;
+  color: var(--text-primary);
+}
+
+.shPage .shContradictionList {
+  color: var(--text-primary);
+}
+
+/* Endpoint unreachable: the same verdict card anatomy with a danger rail,
+   readable diagnostics, and one suggested action. */
+.shPage .shEndpointError.shActionCallout-danger {
+  border: 1px solid var(--danger-bdr);
+  padding: 1.15rem 1.35rem 1.15rem 1.5rem;
+}
+
+.shPage .shEndpointNote {
+  margin: 0.4rem 0 0;
+  max-width: 72ch;
+}
+
+.shPage .shEndpointDiagnostics {
+  margin-top: 1rem;
+  padding: 0.25rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.shPage .shMetricValueMono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.shPage .shEndpointError .shHeroMeta {
+  border-left: 0;
+  padding-left: 0;
+  min-width: 0;
+}
+
+/* ── Reliability agent (Screen 12 headline) ───────────────────────── */
+.shPage .shRelSection {
+  margin-top: 0;
+  gap: 1rem;
+}
+
+.shPage .shRelSummaryGrid {
+  gap: 1rem;
+}
+
+.shPage .shRelWindow {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+}
+
+.shPage .shRelMetricValue {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "No data" / "Insufficient history" keep the value slot's rhythm in a
+   neutral voice — absence never borrows a status colour. */
+.shPage .shRelMetricEmpty {
+  font-size: 1.05rem;
+  color: var(--neutral-fg);
+}
+
+.shPage .shRelTwoColumn {
+  gap: 1rem;
+}
+
+.shPage .shRelAgentHero {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  padding: 0.8rem 0.95rem;
+}
+
+.shPage .shRelAgentHero:has(.healthIconLive) {
+  background: var(--success-bg);
+  border-color: var(--success-bdr);
+}
+
+.shPage .shRelAgentHero:has(.healthIconDegraded) {
+  background: var(--warning-bg);
+  border-color: var(--warning-bdr);
+}
+
+.shPage .shRelAgentHero:has(.healthIconOffline) {
+  background: var(--danger-bg);
+  border-color: var(--danger-bdr);
+}
+
+.shPage .shRelAgentHero .healthIcon {
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.shPage .shRelAgentHeadline {
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.shPage .shRelAgentSub {
+  color: var(--text-secondary);
+}
+
+.shPage .shRelAgentBlockTitle {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+}
+
+.shPage .shRelFinding {
+  position: relative;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  padding: 0.7rem 0.8rem 0.7rem 0.95rem;
+  overflow: hidden;
+}
+
+.shPage .shRelFinding::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--neutral-fg);
+}
+
+.shPage .shRelFinding:has(.statusBadge-offline)::before { background: var(--danger-fg); }
+.shPage .shRelFinding:has(.statusBadge-degraded)::before { background: var(--warning-fg); }
+
+.shPage .shRelActionMsg {
+  border-radius: var(--radius-sm);
+}
+
+.shPage .shRelActionMsg-pending {
+  background: var(--neutral-bg);
+  border-color: var(--neutral-bdr);
+}
+
+.shPage .shRelSmallCta {
+  min-height: var(--control-h-sm);
+  border-radius: var(--radius-sm) !important;
+}
+
+.shPage .shRelTag {
+  margin-left: 0.45rem;
+  border-radius: var(--radius-xs);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+}
+
+.shPage .shRelStripGrid {
+  gap: 0.6rem;
+}
+
+.shPage .shRelStripCell {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  padding: 0.7rem 0.85rem;
+}
+
+.shPage .shRelStripLabel {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+}
+
+.shPage .shRelStripValue {
+  font-size: 0.92rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.shPage .shRelStripNote {
+  margin: 0.85rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.shPage .shRelUnavailable {
+  border-style: dashed;
+  border-color: var(--neutral-bdr);
+}
+
+/* ── Component tiles ──────────────────────────────────────────────── */
+.shPage .shSummaryGrid {
+  margin-top: 0;
+  gap: 0.85rem;
+}
+
+.shPage .shSummaryCard {
+  position: relative;
+  overflow: hidden;
+  gap: 0.4rem;
+  padding: 0.95rem 1rem 0.9rem !important;
+}
+
+/* A 2px status rail across the top edge of each tile. */
+.shPage .shSummaryCard[data-status]::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--neutral-bdr);
+}
+
+.shPage .shSummaryCard[data-status='healthy']::before { background: var(--success-fg); }
+.shPage .shSummaryCard[data-status='degraded']::before { background: var(--warning-fg); }
+.shPage .shSummaryCard[data-status='failing']::before { background: var(--danger-fg); }
+
+.shPage .shSummaryCard[data-status='unavailable'] {
+  border-style: dashed;
+  border-color: var(--neutral-bdr);
+  box-shadow: none;
+}
+
+.shPage .shSummaryCardHeader {
+  align-items: center;
+}
+
+.shPage .shSummaryCardTitle {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.shPage .shSummaryMetric {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.shPage .shSummarySignal {
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.shPage .shSummaryTime {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.shPage .shSummaryAction {
+  margin-top: 0.15rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.55rem;
+}
+
+/* Small status badges, sized by class instead of inline style. */
+.shPage .shBadgeSm,
+.shOpsTable .shBadgeSm {
+  font-size: 0.66rem;
+  padding: 0.12rem 0.5rem;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+
+/* ── Component tables (normalized components, operational overview) ── */
+.shPage .shOpsTable td,
+.shPage .shOpsTable th {
+  padding: 0.7rem 0.85rem !important;
+}
+
+.shOpsTable tr[data-status] td:first-child strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Leading status dot: filled for a real status, hollow for unknown /
+   unavailable / disabled — absence is drawn differently from health. */
+.shOpsTable tr[data-status] td:first-child strong::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--neutral-fg);
+  background: transparent;
+}
+
+.shOpsTable tr[data-status='healthy'] td:first-child strong::before {
+  background: var(--success-fg);
+  border-color: var(--success-fg);
+}
+
+.shOpsTable tr[data-status='degraded'] td:first-child strong::before {
+  background: var(--warning-fg);
+  border-color: var(--warning-fg);
+}
+
+.shOpsTable tr:is([data-status='failing'], [data-status='unhealthy']) td:first-child strong::before {
+  background: var(--danger-fg);
+  border-color: var(--danger-fg);
+}
+
+.shPage .shOpsWhat {
+  margin-top: 0.2rem;
+  padding-left: 1rem;
+  font-size: 0.7rem;
+}
+
+.shPage .shOpsSignal {
+  max-width: 38ch;
+  font-size: 0.82rem;
+}
+
+.shPage .shOpsAction {
+  display: inline-block;
+  max-width: 34ch;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  padding-left: 0.55rem;
+  border-left: 2px solid var(--warning-bdr);
+}
+
+.shPage .shPartialNote {
+  margin: 0.75rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--neutral-bdr);
+  background: var(--neutral-bg);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.shPage .shPartialNote a,
+.shPage .shSectionLink {
+  color: var(--text-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.shPage .shPartialNote a:hover,
+.shPage .shSectionLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shPage .shSectionLink {
+  align-self: flex-start;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* ── Live chain monitoring: diagnosis, three separate proofs, paths ─── */
+.shPage .shChainPanel {
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 1rem;
+  margin-top: 0.25rem;
+}
+
+.shPage .shDiagnosisCard {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--neutral-bdr);
+  background: var(--neutral-bg);
+  padding: 0.95rem 1.1rem;
+  gap: 0.6rem;
+}
+
+.shPage .shDiagnosisCard-healthy {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+}
+
+.shPage .shDiagnosisCard-degraded {
+  border-color: var(--warning-bdr);
+  background: var(--warning-bg);
+}
+
+.shPage .shDiagnosisCard-failing {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+}
+
+.shPage .shDiagnosisEyebrow {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.shPage .shDiagnosisText {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+  max-width: 90ch;
+}
+
+/* Worker / RPC facts as one horizontal row of label-over-value cells. */
+.shPage .shDiagnosisDetails {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem 1rem;
+  border-top: 1px solid var(--overlay-10);
+  padding-top: 0.7rem;
+}
+
+.shPage .shDiagnosisDetails .shMetricRow {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  padding: 0;
+  border: 0;
+}
+
+.shPage .shDiagnosisDetails .shMetricLabel {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.shPage .shDiagnosisDetails .shMetricValue {
+  text-align: left;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.shPage .shChainMetricsTitle {
+  margin: 0 0 0.5rem;
+}
+
+.shChainGroups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.shChainGroup {
+  min-width: 0;
+  padding: 0.65rem 0.85rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.shChainGroupTitle {
+  margin: 0 0 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+/* Metric rows everywhere on the page: label left, tabular value right. */
+.shPage .shMetricRow {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+
+.shPage .shMetricRow:last-child {
+  border-bottom: 0;
+}
+
+.shPage .shMetricLabel {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.shPage .shMetricValue {
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.shPathBlock {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.shPage .shPathBlockTitle {
+  margin: 0 0 0.6rem;
+}
+
+.shPage .shPathStatic {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 220px));
+  gap: 0 1.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.shPage .shPathStatic .shMetricRow {
+  border-bottom: 0;
+  padding: 0.2rem 0;
+}
+
+/* The stream lane and the fallback lane, side by side. */
+.shPathLanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.6rem;
+}
+
+.shPathLane {
+  position: relative;
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.7rem 0.85rem 0.7rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.shPathLane::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--neutral-fg);
+}
+
+.shPathLane[data-variant='healthy']::before { background: var(--success-fg); }
+.shPathLane[data-variant='degraded']::before { background: var(--warning-fg); }
+.shPathLane[data-variant='degraded'] { border-color: var(--warning-bdr); }
+.shPathLane-fallback::before { background: var(--info-fg); }
+.shPathLane-fallback { border-color: var(--info-bdr); }
+
+.shPathLaneName {
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding-top: 0.2rem;
+}
+
+.shPathLaneBody {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.shPathLaneBody .statusBadge {
+  white-space: normal;
+  text-align: left;
+}
+
+.shPathLaneMeta {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.shPathLaneReason {
+  font-size: 0.8rem;
+  color: var(--warning-fg);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.shPathLaneFallback {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--info-fg);
+}
+
+/* ── Status overview + reliability snapshot ───────────────────────── */
+.shPage .shTwoColumn {
+  margin-top: 0;
+  gap: 1rem;
+}
+
+/* The guard box renders as an empty div when no guard applies; it must
+   not leave a tinted empty bar behind. */
+.shPage .shTruthGuards:empty {
+  display: none;
+}
+
+.shPage .shTruthGuards {
+  border-radius: var(--radius-md);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bdr);
+  color: var(--danger-fg);
+}
+
+.shPage .shReliabilityGrid {
+  gap: 0.6rem;
+}
+
+.shPage .shReliabilityCard {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.shPage .shReliabilityLabel {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+}
+
+.shPage .shReliabilityValue {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.shPage .shReliabilityUnavailable {
+  font-style: normal;
+  color: var(--neutral-fg);
+}
+
+/* ── Health timeline ──────────────────────────────────────────────── */
+.shPage .shTimeline {
+  position: relative;
+  margin-top: 0;
+}
+
+.shPage .shTimelineItem {
+  position: relative;
+  gap: 0.9rem;
+  padding: 0.7rem 0;
+  border-bottom: 0;
+}
+
+/* The spine: a hairline joining consecutive events. */
+.shPage .shTimelineItem:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1.45rem;
+  bottom: -0.55rem;
+  width: 2px;
+  background: var(--border);
+}
+
+.shPage .shTimelineDot {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  margin-top: 0.3rem;
+  background: var(--bg-card);
+  border: 2px solid var(--neutral-fg);
+  box-shadow: 0 0 0 3px var(--bg-card);
+}
+
+.shPage .shTimelineDot:is([data-severity='critical'], [data-severity='high']) {
+  background: var(--danger-fg);
+  border-color: var(--danger-fg);
+}
+
+.shPage .shTimelineDot[data-severity='medium'] {
+  background: var(--warning-fg);
+  border-color: var(--warning-fg);
+}
+
+.shPage .shTimelineHeader {
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.shPage .shTimelineTime {
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.shPage .shTimelineComponent {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-primary);
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-xs);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+
+.shPage .shTimelineEvent {
+  font-size: 0.86rem;
+  color: var(--text-primary);
+}
+
+.shPage .shEmptyState {
+  padding: 1.75rem 1rem;
+}
+
+.shPage .shEmptyIcon {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1.1rem;
+  border-radius: var(--radius-md);
+  background: var(--neutral-bg);
+  border: 1px solid var(--neutral-bdr);
+  color: var(--neutral-fg);
+}
+
+.shPage .shEmptyText {
+  font-size: 0.95rem;
+}
+
+.shPage .shEmptySubtext {
+  color: var(--text-secondary);
+}
+
+/* ── Provider health ──────────────────────────────────────────────── */
+.shPage .shProviderGrid {
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.shPage .shProviderCard {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  padding: 0.9rem 1rem;
+  gap: 0.4rem;
+}
+
+.shPage .shProviderCard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--neutral-bdr);
+}
+
+.shPage .shProviderCard[data-status='healthy']::before { background: var(--success-fg); }
+.shPage .shProviderCard[data-status='degraded']::before { background: var(--warning-fg); }
+.shPage .shProviderCard[data-status='failing']::before { background: var(--danger-fg); }
+
+.shPage .shProviderName {
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.shPage .shProviderType {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.shPage .shProviderSignal {
+  font-size: 0.8rem;
+}
+
+.shPage .shProviderTime {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.shPage .shProviderAction {
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding-left: 0.55rem;
+  border-left: 2px solid var(--warning-bdr);
+}
+
+/* ── API documentation ────────────────────────────────────────────── */
+.shApiDocs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem 1.5rem;
+  flex-wrap: wrap;
+}
+
+.shApiDocs h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1rem;
+}
+
+.shApiDocs .sectionEyebrow {
+  margin: 0;
+}
+
+.shApiDocsLede {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.shApiDocsLinks {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.shApiDocsLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-sm);
+  padding: 0 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.shApiDocsLink::after {
+  content: '↗';
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.shApiDocsLink:hover {
+  border-color: var(--border-hover);
+  color: var(--text-accent);
+}
+
+.shApiDocsLink:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── System Health responsive ─────────────────────────────────────── */
+@media (max-width: 1200px) {
+  .shPage .deploymentVersionCard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shPage .shRelTwoColumn {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shPage .shSummaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1000px) {
+  .shPage .shTwoColumn {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shChainGroups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shPage .shRelStripGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .shPage .shPageHero {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .shPage .shPageHeroActions {
+    justify-content: flex-start;
+  }
+
+  .shPage .deploymentVersionGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .shPage .shRelSummaryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shPage .shHeroMeta {
+    border-left: 0;
+    padding-left: 0;
+    text-align: left;
+  }
+
+  .shPathLane {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
+  }
+
+  .shPage .shPathStatic {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .shPage .shSummaryGrid,
+  .shPage .deploymentVersionGrid,
+  .shPage .shRelStripGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shPage .shRelStripCellWide {
+    grid-column: auto;
+  }
+}
+
+/* Metric groups reflow to the width they get, and inside a narrow group a
+   reading stacks label-over-value instead of squeezing a timestamp into a
+   one-character column. */
+.shChainGroups {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.shChainGroup {
+  container-type: inline-size;
+}
+
+.shChainGroup .shMetricValue {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+@container (max-width: 260px) {
+  .shChainGroup .shMetricRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+  }
+
+  .shChainGroup .shMetricValue {
+    text-align: left;
+  }
+}
+/* ═══ Screen layer: system-health — end ═══ */

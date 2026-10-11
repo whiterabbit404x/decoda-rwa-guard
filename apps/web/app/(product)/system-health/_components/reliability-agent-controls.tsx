@@ -161,7 +161,7 @@ export function ReliabilityAgentControls({ overview }: Props) {
               return (
                 <li key={key} className="shRelFinding">
                   <div className="shRelFindingHead">
-                    <span className={severityPillClass(f.severity)} style={{ fontSize: '0.68rem' }}>
+                    <span className={`${severityPillClass(f.severity)} shBadgeSm`}>
                       {f.severity}
                     </span>
                     <span className="shRelFindingSummary">{f.summary}</span>

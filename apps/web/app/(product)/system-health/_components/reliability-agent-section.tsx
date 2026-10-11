@@ -17,7 +17,7 @@ type Props = {
 export function ReliabilityAgentSection({ result }: Props) {
   if (!result.ok) {
     return (
-      <section className="dataCard" style={{ marginTop: '1rem' }}>
+      <section className="dataCard shRelUnavailable" data-status="unavailable">
         <div className="sectionHeader compact">
           <div>
             <p className="sectionEyebrow">Self-Healing Reliability Agent</p>

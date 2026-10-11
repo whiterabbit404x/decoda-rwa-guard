@@ -1,6 +1,6 @@
 export default function SystemHealthLoading() {
   return (
-    <main className="productPage">
+    <main className="productPage shPage">
       <section className="hero compactHero">
         <div>
           <p className="eyebrow">Status &amp; operations</p>
@@ -11,10 +11,8 @@ export default function SystemHealthLoading() {
 
       <section className="dataCard shHero" aria-busy="true">
         <div className="shHeroTop">
-          <div
-            className="healthIcon healthIconDegraded"
-            style={{ width: '3.5rem', height: '3.5rem', fontSize: '1.5rem', flexShrink: 0 }}
-          >
+          {/* Neutral while loading: no status is known yet. */}
+          <div className="healthIcon shHeroIcon shHeroIconPending" aria-hidden="true">
             …
           </div>
           <div className="shHeroMain">

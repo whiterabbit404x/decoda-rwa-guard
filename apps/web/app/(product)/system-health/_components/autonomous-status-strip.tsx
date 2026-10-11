@@ -55,7 +55,7 @@ export function AutonomousStatusStrip({ autonomous }: Props) {
         </div>
       </div>
       {autonomous.auto_healing !== 'enabled' ? (
-        <p className="explanation small" style={{ marginTop: '0.75rem' }}>
+        <p className="explanation small shRelStripNote">
           Autonomous execution is {autonomous.auto_healing === 'disabled' ? 'disabled' : 'recommendation-only'}. The agent
           diagnoses and recommends; a supported action executes only via an authorized, policy-gated, verified control.
           {autonomous.configured_mechanisms.length === 0

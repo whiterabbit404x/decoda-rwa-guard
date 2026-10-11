@@ -50,29 +50,26 @@ export function ProviderHealthCards({
         ];
 
   return (
-    <section className="dataCard featureSection" style={{ marginTop: '1rem' }}>
+    <section className="dataCard featureSection shSection">
       <div className="sectionHeader compact">
         <div>
           <p className="sectionEyebrow">External dependencies</p>
           <h2>Provider Health</h2>
         </div>
-        <Link href="/integrations" style={{ fontSize: '0.85rem', color: 'var(--text-accent)', textDecoration: 'none' }}>
+        <Link href="/integrations" className="shSectionLink">
           View Integrations →
         </Link>
       </div>
 
       <div className="shProviderGrid">
         {cards.map((provider, index) => (
-          <div key={`${provider.name}-${index}`} className="shProviderCard">
+          <div key={`${provider.name}-${index}`} className="shProviderCard" data-status={provider.status}>
             <div className="shProviderCardHeader">
               <div>
                 <p className="shProviderName">{provider.name}</p>
                 <p className="shProviderType">{provider.type}</p>
               </div>
-              <span
-                className={statusBadgeClass(provider.status)}
-                style={{ fontSize: '0.7rem', flexShrink: 0 }}
-              >
+              <span className={`${statusBadgeClass(provider.status)} shBadgeSm`}>
                 {statusLabel(provider.status)}
               </span>
             </div>

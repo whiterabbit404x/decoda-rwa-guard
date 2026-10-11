@@ -7,7 +7,7 @@ type Props = {
 
 export function HealthSummaryCards({ components }: Props) {
   return (
-    <div className="fourColumnSection">
+    <div className="fourColumnSection shSummaryGrid">
       {COMPONENT_ORDER.map((key) => {
         const meta = COMPONENT_META[key];
         const comp: ComponentDetail | undefined = components[key];
@@ -16,13 +16,10 @@ export function HealthSummaryCards({ components }: Props) {
         const missingFromResponse = comp == null;
         const status = comp?.status ?? 'unavailable';
         return (
-          <article key={key} className="dataCard shSummaryCard">
+          <article key={key} className="dataCard shSummaryCard" data-status={status}>
             <div className="shSummaryCardHeader">
               <p className="shSummaryCardTitle">{meta?.label ?? key}</p>
-              <span
-                className={statusBadgeClass(status)}
-                style={{ fontSize: '0.7rem', padding: '0.2rem 0.55rem', flexShrink: 0 }}
-              >
+              <span className={`${statusBadgeClass(status)} shBadgeSm`}>
                 {statusLabel(status)}
               </span>
             </div>

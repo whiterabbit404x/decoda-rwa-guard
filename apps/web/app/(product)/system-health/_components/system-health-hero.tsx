@@ -22,12 +22,10 @@ export function SystemHealthHero({
   generatedAt,
 }: Props) {
   return (
-    <section className="dataCard shHero">
+    <section className="dataCard shHero" data-status={overallStatus} aria-label="Overall system status">
       <div className="shHeroTop">
-        <div
-          className={healthIconClass(overallStatus)}
-          style={{ width: '3.5rem', height: '3.5rem', fontSize: '1.5rem', flexShrink: 0 }}
-        >
+        {/* The badge beside it carries the status in words; the glyph is decoration. */}
+        <div className={`${healthIconClass(overallStatus)} shHeroIcon`} aria-hidden="true">
           {healthIconGlyph(overallStatus)}
         </div>
 
@@ -58,7 +56,7 @@ export function SystemHealthHero({
 
       {primaryAction && (
         <div className="shActionCallout shActionCallout-warning">
-          <span className="shActionCalloutIcon shActionCalloutIcon-warning">⚠</span>
+          <span className="shActionCalloutIcon shActionCalloutIcon-warning" aria-hidden="true">⚠</span>
           <div>
             <strong className="shActionCalloutTitle shActionCalloutTitle-warning">
               Action required
@@ -70,7 +68,7 @@ export function SystemHealthHero({
 
       {contradictionFlags.length > 0 && (
         <div className="shActionCallout shActionCallout-danger">
-          <span className="shActionCalloutIcon shActionCalloutIcon-danger">✕</span>
+          <span className="shActionCalloutIcon shActionCalloutIcon-danger" aria-hidden="true">✕</span>
           <div>
             <strong className="shActionCalloutTitle shActionCalloutTitle-danger">
               Runtime contradictions detected
