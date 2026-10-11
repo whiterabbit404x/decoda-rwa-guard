@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Select, StatusPill, TableShell } from './components/ui-primitives';
@@ -40,10 +40,19 @@ const SEVERITY_TABS: Array<{ key: string; label: string; countKey: keyof Screen6
 
 const TABLE_HEADERS = ['Severity', 'Alert Title', 'Asset', 'Status', 'Time', 'Cluster'];
 
+/* Presentation-only tone for the severity rail and drawer accents. It reads
+   the canonical severity string and fails closed to `unknown` (neutral), so
+   an unrecognised value is never painted as a known severity. */
+type SeverityTone = 'critical' | 'high' | 'medium' | 'low' | 'unknown';
+function severityTone(severity: string | null | undefined): SeverityTone {
+  const s = (severity || '').toLowerCase();
+  return s === 'critical' || s === 'high' || s === 'medium' || s === 'low' ? s : 'unknown';
+}
+
 export default function AlertsScreen() {
   // useSearchParams requires a Suspense boundary; the page owns the <h1>.
   return (
-    <Suspense fallback={<div className="muted" style={{ padding: '1.5rem 0' }}>Loading alerts…</div>}>
+    <Suspense fallback={<div className="muted alertsSuspenseFallback">Loading alerts…</div>}>
       <AlertsScreenInner />
     </Suspense>
   );
@@ -171,6 +180,10 @@ function AlertsScreenInner() {
   }, [apiUrl, authHeaders, loadSummary]);
 
   const totals = summary?.severity_totals ?? { all: 0, critical: 0, high: 0, medium: 0, low: 0 };
+  // A count is only shown when the read model actually returned it. While the
+  // summary is loading, failed, or came back without totals the badge reads
+  // "—" — an unavailable count must never read as "0 alerts".
+  const countsKnown = !!summary?.severity_totals && !error;
   const alerts = summary?.alerts ?? [];
   const pagination = summary?.pagination;
   const triage = summary?.triage ?? null;
@@ -178,6 +191,12 @@ function AlertsScreenInner() {
   const selectedAlert = useMemo(
     () => alerts.find((a) => a.id === selectedAlertId) ?? null,
     [alerts, selectedAlertId],
+  );
+
+  // The cluster the queue is filtered to, when the triage preview names it.
+  const activeCluster = useMemo(
+    () => (clusterId ? (triage?.clusters_preview ?? []).find((c) => c.id === clusterId) ?? null : null),
+    [clusterId, triage],
   );
 
   const clearFilters = useCallback(() => {
@@ -196,122 +215,133 @@ function AlertsScreenInner() {
   ]), [summary]);
 
   return (
-    <div style={{ maxWidth: '1680px', width: '100%' }}>
+    <div className="alertsScreen">
       {/* Two-column split (~75% alerts, ~25% triage agent) on wide desktops;
           stacks to one column below 1360px so the table keeps the full
           main-content width. Sizing lives in .alertsSplit (styles.css). */}
       <div className="alertsSplit">
         {/* ── Main panel ─────────────────────────────────────────────── */}
-        <main style={{ minWidth: 0 }}>
-          {/* Severity tabs with real counts (from the same read model as the rows). */}
-          <div className="buttonRow sharedTabStrip" role="tablist" aria-label="Severity" style={{ marginBottom: '1rem' }}>
-            {SEVERITY_TABS.map((tab) => (
-              <button
-                key={tab.key || 'all'}
-                type="button"
-                role="tab"
-                aria-selected={severity === tab.key}
-                className={severity === tab.key ? 'activeTab' : ''}
-                onClick={() => setUrl({ severity: tab.key || null }, { resetPage: true })}
-                data-testid={`severity-tab-${tab.key || 'all'}`}
-              >
-                {tab.label}
-                <span
-                  aria-label={`${totals[tab.countKey]} alerts`}
-                  style={{
-                    marginLeft: '0.4rem', fontSize: '0.72rem', padding: '0.05rem 0.4rem',
-                    borderRadius: '999px', background: 'var(--border)',
-                  }}
-                >
-                  {totals[tab.countKey]}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          {/* Filter toolbar. */}
-          <div className="buttonRow" style={{ marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <input
-              placeholder="Search title, asset, tx, contract, actor, cluster…"
-              value={searchInput}
-              onChange={(e) => onSearchChange(e.target.value)}
-              style={{ flex: '1 1 240px', minWidth: '200px' }}
-              aria-label="Search alerts"
-              data-testid="alerts-search"
-            />
-            <div style={{ minWidth: '180px' }}>
-              <Select
-                value={assetId}
-                onValueChange={(v) => setUrl({ asset: v || null }, { resetPage: true })}
-                options={assetOptions}
-                ariaLabel="Filter by asset"
-                testId="asset-filter"
-              />
-            </div>
-            <div style={{ minWidth: '170px' }}>
-              <Select
-                value={statusValue}
-                onValueChange={(v) => setUrl({ status: v || null }, { resetPage: true })}
-                options={statusOptions}
-                ariaLabel="Filter by status"
-                testId="status-filter"
-              />
-            </div>
-            {hasFilters ? (
-              <button type="button" className="btn btn-ghost" onClick={clearFilters} data-testid="clear-filters">
-                Clear filters
-              </button>
-            ) : null}
-          </div>
-
-          {clusterId ? (
-            <div className="statusLine" role="status" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span>Filtered to a single cluster.</span>
-              <button type="button" className="btn btn-ghost" style={{ padding: '0.1rem 0.5rem' }} onClick={() => setUrl({ cluster: null }, { resetPage: true })}>
-                Show all alerts
-              </button>
-            </div>
-          ) : null}
-
-          <AlertsTableRegion
-            loading={loading}
-            error={error}
-            summary={summary}
-            alerts={alerts}
-            hasFilters={hasFilters}
-            selectedAlertId={selectedAlertId}
-            onSelect={setSelectedAlertId}
-            onRetry={() => { setLoading(true); void loadSummary(); }}
-          />
-
-          {/* Pagination — accurate range + total, backend-paginated. */}
-          {pagination && pagination.total > 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '1rem', gap: '1rem', flexWrap: 'wrap' }}>
-              <span className="muted" style={{ fontSize: '0.8rem' }} data-testid="pagination-range">
-                Showing {pagination.showing_from}–{pagination.showing_to} of {pagination.total}
-              </span>
-              <div className="buttonRow" style={{ gap: '0.5rem' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={page <= 1}
-                  onClick={() => setUrl({ page: String(page - 1) })}
-                  data-testid="page-prev"
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={!pagination.has_more}
-                  onClick={() => setUrl({ page: String(page + 1) })}
-                  data-testid="page-next"
-                >
-                  Next
-                </button>
+        <main className="alertsMain">
+          <div className="alertsQueue">
+            {/* Severity tabs with real counts (from the same read model as the rows). */}
+            <div className="alertsQueueHead">
+              <div className="buttonRow sharedTabStrip alertsSevTabs" role="tablist" aria-label="Severity">
+                {SEVERITY_TABS.map((tab) => (
+                  <button
+                    key={tab.key || 'all'}
+                    type="button"
+                    role="tab"
+                    aria-selected={severity === tab.key}
+                    className={severity === tab.key ? 'alertsSevTab activeTab' : 'alertsSevTab'}
+                    data-sev={tab.key || 'all'}
+                    onClick={() => setUrl({ severity: tab.key || null }, { resetPage: true })}
+                    data-testid={`severity-tab-${tab.key || 'all'}`}
+                  >
+                    {tab.key ? <span className="alertsSevDot" aria-hidden="true" /> : null}
+                    {tab.label}
+                    <span
+                      className="alertsTabCount"
+                      data-hot={countsKnown && tab.countKey === 'critical' && totals.critical > 0 ? 'true' : undefined}
+                      aria-label={countsKnown ? `${totals[tab.countKey]} alerts` : 'Count unavailable'}
+                    >
+                      {countsKnown ? totals[tab.countKey] : '—'}
+                    </span>
+                  </button>
+                ))}
               </div>
             </div>
-          ) : null}
+
+            {/* Filter toolbar: search and filters share one control row. */}
+            <div className="buttonRow alertsToolbar">
+              <div className="alertsSearch">
+                <span className="alertsGlyph alertsGlyph--search" aria-hidden="true" />
+                <input
+                  placeholder="Search title, asset, tx, contract, actor, cluster…"
+                  value={searchInput}
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  aria-label="Search alerts"
+                  data-testid="alerts-search"
+                />
+              </div>
+              <div className="alertsFilter alertsFilter--asset">
+                <Select
+                  value={assetId}
+                  onValueChange={(v) => setUrl({ asset: v || null }, { resetPage: true })}
+                  options={assetOptions}
+                  ariaLabel="Filter by asset"
+                  testId="asset-filter"
+                />
+              </div>
+              <div className="alertsFilter alertsFilter--status">
+                <Select
+                  value={statusValue}
+                  onValueChange={(v) => setUrl({ status: v || null }, { resetPage: true })}
+                  options={statusOptions}
+                  ariaLabel="Filter by status"
+                  testId="status-filter"
+                />
+              </div>
+              {hasFilters ? (
+                <button type="button" className="btn btn-ghost alertsClearFilters" onClick={clearFilters} data-testid="clear-filters">
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+
+            {clusterId ? (
+              <div className="statusLine alertsClusterFilter" role="status">
+                <span className="alertsGlyph alertsGlyph--cluster" aria-hidden="true" />
+                <span className="alertsClusterFilterText">
+                  <span>Filtered to a single cluster.</span>
+                  {activeCluster?.title ? <strong className="alertsClusterFilterName">{activeCluster.title}</strong> : null}
+                </span>
+                <button type="button" className="btn btn-ghost alertsClusterFilterReset" onClick={() => setUrl({ cluster: null }, { resetPage: true })}>
+                  Show all alerts
+                </button>
+              </div>
+            ) : null}
+
+            <AlertsTableRegion
+              loading={loading}
+              error={error}
+              summary={summary}
+              alerts={alerts}
+              hasFilters={hasFilters}
+              selectedAlertId={selectedAlertId}
+              onSelect={setSelectedAlertId}
+              onRetry={() => { setLoading(true); void loadSummary(); }}
+              onClearFilters={clearFilters}
+            />
+
+            {/* Pagination — accurate range + total, backend-paginated. */}
+            {pagination && pagination.total > 0 ? (
+              <div className="alertsPager">
+                <span className="muted alertsPagerRange" data-testid="pagination-range">
+                  Showing {pagination.showing_from}–{pagination.showing_to} of {pagination.total}
+                </span>
+                <div className="buttonRow alertsPagerButtons">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={page <= 1}
+                    onClick={() => setUrl({ page: String(page - 1) })}
+                    data-testid="page-prev"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={!pagination.has_more}
+                    onClick={() => setUrl({ page: String(page + 1) })}
+                    data-testid="page-next"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </main>
 
         {/* ── AI Alert Triage Agent panel ────────────────────────────── */}
@@ -341,15 +371,27 @@ function AlertsScreenInner() {
           authHeaders={authHeaders}
           onClose={() => setSelectedAlertId(null)}
           onViewCluster={(id) => { setUrl({ cluster: id }, { resetPage: true }); setSelectedAlertId(null); }}
+          onViewAsset={(value) => { setUrl({ asset: value }, { resetPage: true }); setSelectedAlertId(null); }}
         />
       ) : null}
     </div>
   );
 }
 
+/* ── Severity pill ──────────────────────────────────────────────────────── */
+// The canonical label + variant, wrapped so the screen can keep the severity
+// hue scale (low = informational blue) without a green "low" reading as healthy.
+function SeverityPill({ severity }: { severity: string | null | undefined }) {
+  return (
+    <span className="alertsSev" data-sev={severityTone(severity)}>
+      <StatusPill label={severityLabel(severity)} variant={severityVariant(severity)} />
+    </span>
+  );
+}
+
 /* ── Table region with all required states ──────────────────────────────── */
 function AlertsTableRegion({
-  loading, error, summary, alerts, hasFilters, selectedAlertId, onSelect, onRetry,
+  loading, error, summary, alerts, hasFilters, selectedAlertId, onSelect, onRetry, onClearFilters,
 }: {
   loading: boolean;
   error: string;
@@ -359,16 +401,21 @@ function AlertsTableRegion({
   selectedAlertId: string | null;
   onSelect: (id: string) => void;
   onRetry: () => void;
+  onClearFilters: () => void;
 }) {
   if (loading && !summary) {
-    return <div className="emptyStatePanel sharedEmptyStateBlocker" data-testid="alerts-loading"><h4>Loading active alerts…</h4></div>;
+    return (
+      <div className="emptyStatePanel sharedEmptyStateBlocker alertsState alertsStateLoading" data-testid="alerts-loading" aria-busy="true">
+        <h4>Loading active alerts…</h4>
+      </div>
+    );
   }
   if (error) {
     return (
-      <div className="emptyStatePanel sharedEmptyStateBlocker" data-testid="alerts-error">
+      <div className="emptyStatePanel sharedEmptyStateBlocker alertsState alertsStateError" data-testid="alerts-error" role="alert">
         <h4>Couldn’t load alerts</h4>
         <p className="muted">{error}</p>
-        <button type="button" className="btn btn-secondary" onClick={onRetry}>Retry</button>
+        <button type="button" className="btn btn-secondary alertsStateAction" onClick={onRetry}>Retry</button>
       </div>
     );
   }
@@ -376,15 +423,16 @@ function AlertsTableRegion({
     // Distinguish: empty workspace vs no active alerts vs no results for filters.
     if (hasFilters) {
       return (
-        <div className="emptyStatePanel sharedEmptyStateBlocker" data-testid="alerts-empty-filters">
+        <div className="emptyStatePanel sharedEmptyStateBlocker alertsState alertsStateNoMatch" data-testid="alerts-empty-filters">
           <h4>No alerts match the current filters</h4>
           <p className="muted">Adjust or clear the filters above to see more results.</p>
+          <button type="button" className="btn btn-secondary alertsStateAction" onClick={onClearFilters}>Clear all filters</button>
         </div>
       );
     }
     if ((summary?.active_alert_count ?? 0) === 0) {
       return (
-        <div className="emptyStatePanel sharedEmptyStateBlocker" data-testid="alerts-empty">
+        <div className="emptyStatePanel sharedEmptyStateBlocker alertsState alertsStateEmpty" data-testid="alerts-empty">
           <h4>No active alerts</h4>
           <p className="muted">There are no active alerts in this workspace. New alerts appear here as telemetry and detections arrive.</p>
         </div>
@@ -396,48 +444,60 @@ function AlertsTableRegion({
       {alerts.map((alert) => {
         const isSelected = alert.id === selectedAlertId;
         return (
+          // Rows never animate: they re-render on every refresh and filter.
+          // The severity rail is a static inset edge keyed off data-sev.
           <tr
             key={alert.id}
+            className="alertsRow"
+            data-sev={severityTone(alert.severity)}
+            data-selected={isSelected ? 'true' : undefined}
             onClick={() => onSelect(alert.id)}
-            style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.08)' : undefined }}
             data-testid="alert-row"
           >
-            <td><StatusPill label={severityLabel(alert.severity)} variant={severityVariant(alert.severity)} /></td>
+            <td className="alertsSevCell"><SeverityPill severity={alert.severity} /></td>
             {/* Title wraps within its fixed column (see .alertsTableShell) so long
-                titles never force a horizontal scrollbar. */}
-            <td>
-              {alert.title}
+                titles never force a horizontal scrollbar. The title is a real
+                button so the detail drawer is reachable from the keyboard. */}
+            <td className="alertsTitleCell">
+              <button
+                type="button"
+                className="alertsRowTitle"
+                aria-haspopup="dialog"
+                onClick={(e) => { e.stopPropagation(); onSelect(alert.id); }}
+              >
+                {alert.title}
+              </button>
               {alert.detection_family_label ? (
-                <div className="muted" style={{ fontSize: '0.7rem' }}>{alert.detection_family_label}</div>
+                <div className="alertsRowMeta">{alert.detection_family_label}</div>
               ) : null}
             </td>
-            <td style={{ fontSize: '0.82rem' }}>
-              <span style={{ color: alert.asset_known ? undefined : 'var(--text-secondary)' }}>{alert.asset_name}</span>
+            <td className="alertsAssetCell">
+              <span className={alert.asset_known ? 'alertsAssetName' : 'alertsAssetName alertsAssetUnknown'}>{alert.asset_name}</span>
               {alert.tx_hash ? (
-                <div style={{ fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }} title={alert.tx_hash}>
+                <div className="alertsHash" title={alert.tx_hash}>
                   {shortHash(alert.tx_hash)}
                 </div>
               ) : null}
             </td>
-            <td><StatusPill label={statusLabel(alert.status)} variant={statusVariant(alert.status)} /></td>
-            <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }} title={exactTime(alert.occurred_at)}>
+            <td className="alertsStatusCell"><StatusPill label={statusLabel(alert.status)} variant={statusVariant(alert.status)} /></td>
+            <td className="alertsTimeCell" title={exactTime(alert.occurred_at)}>
               {relativeTime(alert.occurred_at)}
             </td>
-            <td style={{ fontSize: '0.78rem' }}>
+            <td className="alertsClusterCell">
               {alert.cluster ? (
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="btn btn-ghost alertsClusterChip"
                   // Override the .btn nowrap so a long cluster title wraps inside
                   // the fixed Cluster column instead of overflowing it.
-                  style={{ padding: '0.15rem 0.45rem', fontSize: '0.72rem', whiteSpace: 'normal', overflowWrap: 'anywhere', textAlign: 'left', maxWidth: '100%', height: 'auto', lineHeight: 1.3 }}
+                  style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
                   title={alert.cluster.title ?? undefined}
                   onClick={(e) => { e.stopPropagation(); onSelect(alert.id); }}
                 >
                   {truncate(alert.cluster.title ?? 'Cluster', 22)}
                 </button>
               ) : (
-                <span className="muted" data-testid="unclustered">Unclustered</span>
+                <span className="muted alertsUnclustered" data-testid="unclustered">Unclustered</span>
               )}
             </td>
           </tr>
@@ -462,94 +522,105 @@ function TriagePanel({
   const top = triage?.top_recommendation ?? null;
 
   return (
-    <aside className="dataCard sharedSurfaceCard" style={{ padding: '1.15rem', position: 'sticky', top: '1rem' }} aria-label="AI Alert Triage Agent" data-testid="triage-panel">
-      <p className="eyebrow" style={{ marginBottom: '0.15rem', fontSize: '0.7rem' }}>Autonomous Agent</p>
-      <h3 style={{ margin: '0 0 0.35rem', fontSize: '1rem' }}>AI Alert Triage Agent</h3>
+    <aside className="dataCard sharedSurfaceCard alertsAgent" aria-label="AI Alert Triage Agent" data-testid="triage-panel">
+      <div className="alertsAgentHead">
+        <span className="alertsAgentMark" aria-hidden="true"><span className="alertsGlyph alertsGlyph--agent" /></span>
+        <div className="alertsAgentHeading">
+          <p className="eyebrow alertsAgentEyebrow">Autonomous Agent</p>
+          <h3 className="alertsAgentTitle">AI Alert Triage Agent</h3>
+        </div>
+      </div>
 
       {loading ? (
-        <p className="muted" style={{ fontSize: '0.82rem' }}>Loading triage state…</p>
+        <p className="muted alertsAgentLoading">Loading triage state…</p>
       ) : (
         <>
           {/* Summary line + operational facts. */}
-          <p style={{ fontSize: '0.85rem', margin: '0 0 0.6rem', lineHeight: 1.4 }} data-testid="triage-summary">
-            {triageSummaryText(triage)}
-          </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.6rem' }}>
+          <div className="alertsAgentPills">
             <StatusPill label={triageModeLabel(triage?.mode)} variant={triageModeVariant(triage?.mode)} />
             <StatusPill label={display.statusLabel} variant={display.statusVariant} />
           </div>
-          <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', display: 'grid', gap: '0.2rem' }}>
-            <div>
-              Last successful triage:{' '}
-              <span title={exactTime(triage?.last_success_at)}>
-                {triage?.last_success_at ? relativeTime(triage.last_success_at) : 'never'}
-              </span>
+          <p className="alertsAgentSummary" data-testid="triage-summary">
+            {triageSummaryText(triage)}
+          </p>
+          <dl className="alertsAgentFacts">
+            <div className="alertsAgentFact">
+              <dt>Last successful triage</dt>
+              <dd>
+                <span title={exactTime(triage?.last_success_at)}>
+                  {triage?.last_success_at ? relativeTime(triage.last_success_at) : 'never'}
+                </span>
+              </dd>
             </div>
-            <div data-testid="unclustered-count">
-              Unclustered active alerts:{' '}
-              {triage?.unclustered_count === null || triage?.unclustered_count === undefined ? 'Not calculated' : triage.unclustered_count}
+            <div className="alertsAgentFact" data-testid="unclustered-count">
+              <dt>Unclustered active alerts</dt>
+              <dd>
+                {triage?.unclustered_count === null || triage?.unclustered_count === undefined ? 'Not calculated' : triage.unclustered_count}
+              </dd>
             </div>
             {triage && !triage.ai_available ? (
-              <div title="No live AI provider is configured; clustering and recommendations remain deterministic.">
-                AI provider: unavailable — deterministic rules only
+              <div className="alertsAgentFact" title="No live AI provider is configured; clustering and recommendations remain deterministic.">
+                <dt>AI provider</dt>
+                <dd>Unavailable — deterministic rules only</dd>
               </div>
             ) : null}
-            {triage?.state === 'degraded' && triage.last_run?.error_code ? (
-              <div style={{ color: 'var(--warning-fg)' }} data-testid="triage-degraded">
-                Last run failed ({triage.last_run.error_code}); showing the previous successful result.
-              </div>
-            ) : null}
-          </div>
+          </dl>
+          {triage?.state === 'degraded' && triage.last_run?.error_code ? (
+            <div className="alertsAgentNotice" data-testid="triage-degraded">
+              <span className="alertsGlyph alertsGlyph--warn" aria-hidden="true" />
+              <span>Last run failed ({triage.last_run.error_code}); showing the previous successful result.</span>
+            </div>
+          ) : null}
 
           {/* Top recommendation. */}
           {top ? (
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.7rem', marginBottom: '0.6rem' }} data-testid="top-recommendation">
-              <p className="sectionEyebrow" style={{ marginBottom: '0.3rem' }}>Top recommendation</p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
-                <StatusPill label={severityLabel(top.derived_severity)} variant={severityVariant(top.derived_severity)} />
+            <div className="alertsAgentRec" data-sev={severityTone(top.derived_severity)} data-testid="top-recommendation">
+              <p className="sectionEyebrow alertsAgentRecEyebrow">Top recommendation</p>
+              <div className="alertsAgentRecPills">
+                <SeverityPill severity={top.derived_severity} />
                 <StatusPill label={recommendationLabel(top.recommendation_category)} variant="info" />
               </div>
-              <p style={{ fontSize: '0.85rem', margin: '0 0 0.25rem', fontWeight: 600 }}>{top.title}</p>
-              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
-                <div>Affected asset: {top.primary_asset_name || 'Unassigned asset'}</div>
-                <div>{top.member_count} alert{top.member_count === 1 ? '' : 's'} in this cluster</div>
+              <p className="alertsAgentRecTitle">{top.title}</p>
+              <dl className="alertsAgentRecFacts">
+                <div><dt>Affected asset</dt><dd>{top.primary_asset_name || 'Unassigned asset'}</dd></div>
+                <div><dt>Cluster size</dt><dd>{top.member_count} alert{top.member_count === 1 ? '' : 's'} in this cluster</dd></div>
                 <div>
-                  Confidence:{' '}
-                  <span data-testid="top-confidence">{confidenceText(top.confidence, top.confidence_band)}</span>
+                  <dt>Confidence</dt>
+                  <dd><span data-testid="top-confidence">{confidenceText(top.confidence, top.confidence_band)}</span></dd>
                 </div>
-              </div>
+              </dl>
               {/* AI summary is rendered as plain text via JSX interpolation — never as raw HTML. */}
               {top.recommendation_summary ? (
-                <p style={{ fontSize: '0.8rem', margin: '0 0 0.35rem', lineHeight: 1.4 }}>{top.recommendation_summary}</p>
+                <p className="alertsAgentRecSummary">{top.recommendation_summary}</p>
               ) : null}
               {top.recommendation_source === 'ai_assisted' ? (
-                <p className="muted" style={{ fontSize: '0.7rem', margin: 0 }}>AI-generated from stored cluster evidence.</p>
+                <p className="muted alertsAgentProvenance">AI-generated from stored cluster evidence.</p>
               ) : (
-                <p className="muted" style={{ fontSize: '0.7rem', margin: 0 }}>Generated from stored cluster evidence.</p>
+                <p className="muted alertsAgentProvenance">Generated from stored cluster evidence.</p>
               )}
               {/* Reasoning chips. */}
               {top.reason_labels && top.reason_labels.length > 0 ? (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.5rem' }} data-testid="triage-reasons">
+                <div className="alertsReasonChips" data-testid="triage-reasons">
                   {top.reason_labels.slice(0, 6).map((r) => (
-                    <span key={r} style={{ fontSize: '0.68rem', padding: '0.1rem 0.45rem', borderRadius: '999px', background: 'var(--border)' }}>{r}</span>
+                    <span key={r} className="alertsReasonChip">{r}</span>
                   ))}
                 </div>
               ) : null}
             </div>
           ) : triage?.schema_ready ? (
-            <p className="muted" style={{ fontSize: '0.82rem', borderTop: '1px solid var(--border)', paddingTop: '0.7rem' }} data-testid="no-clusters">
+            <p className="muted alertsAgentEmpty" data-testid="no-clusters">
               {triage.state === 'not_run'
                 ? 'No triage has run yet. Run triage to group related alerts into clusters.'
                 : 'No related-alert clusters were found in the current active set.'}
             </p>
           ) : (
-            <p className="muted" style={{ fontSize: '0.82rem' }} data-testid="triage-provisioning">
+            <p className="muted alertsAgentEmpty" data-testid="triage-provisioning">
               Alert triage storage is provisioning.
             </p>
           )}
 
           {/* Actions. */}
-          <div className="buttonRow" style={{ gap: '0.5rem', marginTop: '0.6rem' }}>
+          <div className="buttonRow alertsAgentActions">
             <button
               type="button"
               className="btn btn-secondary"
@@ -571,15 +642,36 @@ function TriagePanel({
             </button>
           </div>
           {display.hint && !runningTriage ? (
-            <p className="muted" style={{ fontSize: '0.7rem', marginTop: '0.4rem' }}>{display.hint}</p>
+            <p className="muted alertsAgentHint">{display.hint}</p>
           ) : null}
           {triageMessage ? (
-            <p className="statusLine" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }} data-testid="triage-message">{triageMessage}</p>
+            <p className="statusLine alertsAgentMessage" data-testid="triage-message">{triageMessage}</p>
           ) : null}
         </>
       )}
     </aside>
   );
+}
+
+/* ── Drawer behaviour shared by both overlays ───────────────────────────── */
+// Escape closes, focus moves into the drawer panel on open (so Tab continues
+// inside it) and returns to the control that opened the drawer when it closes. The latest onClose is read
+// through a ref so a parent re-render (polling) never re-steals focus.
+function useDrawerDismiss(onClose: () => void) {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    panelRef.current?.focus({ preventScroll: true });
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onCloseRef.current(); };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (opener && opener.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, []);
+  return panelRef;
 }
 
 /* ── Cluster review drawer ──────────────────────────────────────────────── */
@@ -591,43 +683,71 @@ function ClusterReviewDrawer({
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
+  const panelRef = useDrawerDismiss(onClose);
   return (
-    <div style={overlayStyle} onClick={onClose} role="dialog" aria-modal="true" aria-label="Cluster review" data-testid="cluster-drawer">
-      <aside style={drawerStyle} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <h3 style={{ margin: 0, fontSize: '1rem' }}>Active clusters ({clusters.length})</h3>
-          <button type="button" className="btn btn-ghost" onClick={onClose} aria-label="Close">✕</button>
-        </div>
-        <p className="muted" style={{ fontSize: '0.78rem', marginTop: 0 }}>
-          Ordered by triage priority. Select a cluster to filter its member alerts. Response actions are not run from this screen.
-        </p>
-        <div style={{ display: 'grid', gap: '0.6rem', marginTop: '0.75rem' }}>
-          {clusters.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => onSelect(c.id)}
-              data-testid="cluster-item"
-              style={{
-                textAlign: 'left', padding: '0.7rem', borderRadius: '10px', cursor: 'pointer',
-                border: `1px solid ${activeClusterId === c.id ? 'rgba(59,130,246,0.6)' : 'var(--border)'}`,
-                background: activeClusterId === c.id ? 'rgba(59,130,246,0.08)' : 'transparent',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.3rem' }}>
-                <StatusPill label={severityLabel(c.derived_severity)} variant={severityVariant(c.derived_severity)} />
-                <StatusPill label={recommendationLabel(c.recommendation_category)} variant="info" />
-                <StatusPill label={confidenceText(c.confidence, c.confidence_band)} variant={confidenceVariant(c.confidence_band)} />
-              </div>
-              <div style={{ fontSize: '0.86rem', fontWeight: 600 }}>{c.title}</div>
-              <div className="muted" style={{ fontSize: '0.75rem' }}>
-                {c.primary_asset_name || 'Unassigned asset'} · {c.member_count} alert{c.member_count === 1 ? '' : 's'}
-              </div>
-              {c.recommendation_summary ? (
-                <div style={{ fontSize: '0.76rem', marginTop: '0.3rem', lineHeight: 1.4 }}>{c.recommendation_summary}</div>
-              ) : null}
+    <div className="alertsDrawerScrim" onClick={onClose} role="dialog" aria-modal="true" aria-label="Cluster review" data-testid="cluster-drawer">
+      <aside ref={panelRef} tabIndex={-1} className="alertsDrawer" onClick={(e) => e.stopPropagation()}>
+        <header className="alertsDrawerHead">
+          <div className="alertsDrawerHeadRow">
+            <p className="eyebrow alertsDrawerEyebrow">Alert Triage Agent</p>
+            <button type="button" className="btn btn-ghost alertsDrawerClose" onClick={onClose} aria-label="Close">
+              <span className="alertsGlyph alertsGlyph--close" aria-hidden="true" />
             </button>
-          ))}
+          </div>
+          <h3 className="alertsDrawerTitle">Active clusters ({clusters.length})</h3>
+          <p className="muted alertsDrawerLede">
+            Ordered by triage priority. Select a cluster to filter its member alerts. Response actions are not run from this screen.
+          </p>
+        </header>
+        <div className="alertsDrawerBody">
+          {clusters.length === 0 ? (
+            <p className="muted alertsDrawerEmpty">No clusters to show.</p>
+          ) : (
+            <ol className="alertsClusterList">
+              {clusters.map((c, index) => {
+                const active = activeClusterId === c.id;
+                return (
+                  <li key={c.id}>
+                    <button
+                      type="button"
+                      className="alertsClusterCard"
+                      data-sev={severityTone(c.derived_severity)}
+                      aria-current={active ? 'true' : undefined}
+                      onClick={() => onSelect(c.id)}
+                      data-testid="cluster-item"
+                    >
+                      <span className="alertsClusterRank" aria-hidden="true">{index + 1}</span>
+                      <span className="alertsClusterBody">
+                        <span className="alertsClusterPills">
+                          <SeverityPill severity={c.derived_severity} />
+                          <StatusPill label={recommendationLabel(c.recommendation_category)} variant="info" />
+                          <StatusPill label={confidenceText(c.confidence, c.confidence_band)} variant={confidenceVariant(c.confidence_band)} />
+                        </span>
+                        <span className="alertsClusterTitle">{c.title ?? 'Untitled cluster'}</span>
+                        <span className="alertsClusterMeta">
+                          {c.primary_asset_name || 'Unassigned asset'} · {c.member_count} alert{c.member_count === 1 ? '' : 's'}
+                        </span>
+                        {c.recommendation_summary ? (
+                          <span className="alertsClusterSummary">{c.recommendation_summary}</span>
+                        ) : null}
+                        {c.reason_labels && c.reason_labels.length > 0 ? (
+                          <span className="alertsReasonChips">
+                            {c.reason_labels.slice(0, 4).map((r) => (
+                              <span key={r} className="alertsReasonChip">{r}</span>
+                            ))}
+                          </span>
+                        ) : null}
+                        <span className="alertsClusterCta">
+                          {active ? 'Queue is filtered to this cluster' : 'Filter the queue to this cluster'}
+                          <span className="alertsGlyph alertsGlyph--arrow" aria-hidden="true" />
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
         </div>
       </aside>
     </div>
@@ -636,16 +756,18 @@ function ClusterReviewDrawer({
 
 /* ── Alert detail drawer (reuses the canonical escalate endpoint) ───────── */
 function AlertDetailDrawer({
-  alert, apiUrl, authHeaders, onClose, onViewCluster,
+  alert, apiUrl, authHeaders, onClose, onViewCluster, onViewAsset,
 }: {
   alert: Screen6Alert;
   apiUrl: string;
   authHeaders: () => Record<string, string>;
   onClose: () => void;
   onViewCluster: (id: string) => void;
+  onViewAsset: (assetFilterValue: string) => void;
 }) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const panelRef = useDrawerDismiss(onClose);
 
   const escalate = useCallback(async () => {
     if (alert.incident_id) { window.location.href = `/incidents/${alert.incident_id}`; return; }
@@ -669,44 +791,92 @@ function AlertDetailDrawer({
     }
   }, [alert, apiUrl, authHeaders]);
 
+  // The asset filter's values are the backend's asset ids, or 'unassigned'.
+  const assetFilterValue = alert.asset_id || 'unassigned';
+
   return (
-    <div style={overlayStyle} onClick={onClose} role="dialog" aria-modal="true" aria-label="Alert detail" data-testid="alert-detail">
-      <aside style={drawerStyle} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <p className="eyebrow" style={{ margin: 0, fontSize: '0.7rem' }}>Alert Detail</p>
-          <button type="button" className="btn btn-ghost" onClick={onClose} aria-label="Close">✕</button>
-        </div>
-        <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem', lineHeight: 1.35 }}>{alert.title}</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem 1rem', marginBottom: '0.75rem' }}>
-          <Field label="Severity"><StatusPill label={severityLabel(alert.severity)} variant={severityVariant(alert.severity)} /></Field>
-          <Field label="Status"><StatusPill label={statusLabel(alert.status)} variant={statusVariant(alert.status)} /></Field>
-          <Field label="Asset"><span>{alert.asset_name}</span></Field>
-          <Field label="Detection"><span>{alert.detection_family_label || '—'}</span></Field>
-          <Field label="Occurred"><span title={exactTime(alert.occurred_at)}>{relativeTime(alert.occurred_at)}</span></Field>
-          <Field label="Cluster">
-            {alert.cluster ? (
-              <button type="button" className="btn btn-ghost" style={{ padding: '0.1rem 0.4rem', fontSize: '0.72rem' }} onClick={() => onViewCluster(alert.cluster!.id)}>
-                {truncate(alert.cluster.title ?? 'Cluster', 24)}
-              </button>
-            ) : <span className="muted">Unclustered</span>}
-          </Field>
-        </div>
-        {alert.tx_hash ? (
-          <div style={{ marginBottom: '0.75rem' }}>
-            <p className="tableMeta" style={{ marginBottom: '0.1rem' }}>Transaction</p>
-            <p style={{ fontFamily: 'monospace', fontSize: '0.72rem', margin: 0, wordBreak: 'break-all' }}>{alert.tx_hash}</p>
-          </div>
-        ) : null}
-        <div className="buttonRow" style={{ gap: '0.5rem', marginTop: '0.5rem' }}>
-          {alert.incident_id ? (
-            <Link href={`/incidents/${alert.incident_id}`} prefetch={false} className="btn btn-secondary">View Incident</Link>
-          ) : (
-            <button type="button" className="btn btn-primary" onClick={() => void escalate()} disabled={busy} data-testid="escalate-alert">
-              {busy ? 'Opening…' : 'Escalate to Incident'}
+    <div className="alertsDrawerScrim" onClick={onClose} role="dialog" aria-modal="true" aria-label="Alert detail" data-testid="alert-detail">
+      <aside ref={panelRef} tabIndex={-1} className="alertsDrawer" data-sev={severityTone(alert.severity)} onClick={(e) => e.stopPropagation()}>
+        <header className="alertsDrawerHead">
+          <div className="alertsDrawerHeadRow">
+            <p className="eyebrow alertsDrawerEyebrow">Alert Detail</p>
+            <button type="button" className="btn btn-ghost alertsDrawerClose" onClick={onClose} aria-label="Close">
+              <span className="alertsGlyph alertsGlyph--close" aria-hidden="true" />
             </button>
-          )}
+          </div>
+          <h3 className="alertsDrawerTitle">{alert.title}</h3>
+          <div className="alertsDrawerPills">
+            <SeverityPill severity={alert.severity} />
+            <StatusPill label={statusLabel(alert.status)} variant={statusVariant(alert.status)} />
+          </div>
+        </header>
+
+        <div className="alertsDrawerBody">
+          <dl className="alertsFacts">
+            <Field label="Asset">
+              <span className={alert.asset_known ? undefined : 'alertsAssetUnknown'}>{alert.asset_name}</span>
+            </Field>
+            <Field label="Detection"><span>{alert.detection_family_label || '—'}</span></Field>
+            <Field label="Occurred">
+              <span title={exactTime(alert.occurred_at)}>{relativeTime(alert.occurred_at)}</span>
+              {alert.occurred_at ? <span className="alertsFactSub">{exactTime(alert.occurred_at)}</span> : null}
+            </Field>
+            <Field label="Cluster">
+              {alert.cluster ? (
+                <span className="alertsFactCluster" title={alert.cluster.title ?? undefined}>{truncate(alert.cluster.title ?? 'Cluster', 40)}</span>
+              ) : <span className="muted">Unclustered</span>}
+            </Field>
+          </dl>
+
+          <section className="alertsDrawerSection" aria-labelledby="alerts-entities-heading">
+            <h4 className="alertsDrawerSectionTitle" id="alerts-entities-heading">Related entities</h4>
+            <dl className="alertsEntities">
+              <EntityRow label="Transaction" value={alert.tx_hash} mono copyable />
+              <EntityRow label="Contract" value={alert.contract_address} mono copyable />
+              <EntityRow label="Actor" value={alert.actor} mono copyable />
+              <EntityRow label="Chain" value={alert.chain_id} />
+              <EntityRow label="Detection ID" value={alert.detection_id} mono copyable />
+              <EntityRow label="Incident" value={alert.incident_id} mono emptyLabel="Not linked" />
+            </dl>
+          </section>
+
+          <section className="alertsDrawerSection" aria-labelledby="alerts-investigate-heading">
+            <h4 className="alertsDrawerSectionTitle" id="alerts-investigate-heading">Investigate</h4>
+            <div className="alertsPivots">
+              {alert.cluster ? (
+                <button type="button" className="alertsPivot" onClick={() => onViewCluster(alert.cluster!.id)}>
+                  <span className="alertsGlyph alertsGlyph--cluster" aria-hidden="true" />
+                  <span className="alertsPivotText">
+                    <span className="alertsPivotLabel">Show alerts in this cluster</span>
+                    <span className="alertsPivotSub">{truncate(alert.cluster.title ?? 'Cluster', 48)}</span>
+                  </span>
+                  <span className="alertsGlyph alertsGlyph--arrow" aria-hidden="true" />
+                </button>
+              ) : null}
+              <button type="button" className="alertsPivot" onClick={() => onViewAsset(assetFilterValue)}>
+                <span className="alertsGlyph alertsGlyph--asset" aria-hidden="true" />
+                <span className="alertsPivotText">
+                  <span className="alertsPivotLabel">Show alerts for this asset</span>
+                  <span className="alertsPivotSub">{alert.asset_name}</span>
+                </span>
+                <span className="alertsGlyph alertsGlyph--arrow" aria-hidden="true" />
+              </button>
+            </div>
+          </section>
         </div>
-        {message ? <p className="statusLine" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }}>{message}</p> : null}
+
+        <footer className="alertsDrawerFoot">
+          <div className="buttonRow alertsDrawerActions">
+            {alert.incident_id ? (
+              <Link href={`/incidents/${alert.incident_id}`} prefetch={false} className="btn btn-secondary">View Incident</Link>
+            ) : (
+              <button type="button" className="btn btn-primary" onClick={() => void escalate()} disabled={busy} data-testid="escalate-alert">
+                {busy ? 'Opening…' : 'Escalate to Incident'}
+              </button>
+            )}
+          </div>
+          {message ? <p className="statusLine alertsDrawerMessage">{message}</p> : null}
+        </footer>
       </aside>
     </div>
   );
@@ -714,22 +884,63 @@ function AlertDetailDrawer({
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div>
-      <p className="tableMeta" style={{ marginBottom: '0.15rem' }}>{label}</p>
-      <div style={{ fontSize: '0.82rem' }}>{children}</div>
+    <div className="alertsFact">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
     </div>
+  );
+}
+
+/* One related-entity line: the stored value or an explicit "Not recorded". */
+function EntityRow({
+  label, value, mono = false, copyable = false, emptyLabel = 'Not recorded',
+}: {
+  label: string;
+  value: string | null | undefined;
+  mono?: boolean;
+  copyable?: boolean;
+  emptyLabel?: string;
+}) {
+  return (
+    <div className="alertsEntity">
+      <dt>{label}</dt>
+      <dd>
+        {value ? (
+          <>
+            <span className={mono ? 'alertsEntityValue alertsMono' : 'alertsEntityValue'} title={value}>{value}</span>
+            {copyable ? <CopyValue value={value} label={label} /> : null}
+          </>
+        ) : (
+          <span className="alertsEntityEmpty">{emptyLabel}</span>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+function CopyValue({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return null;
+  return (
+    <button
+      type="button"
+      className="alertsCopy"
+      aria-label={copied ? `${label} copied` : `Copy ${label.toLowerCase()}`}
+      onClick={() => {
+        void navigator.clipboard.writeText(value).then(() => {
+          setCopied(true);
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => setCopied(false), 1500);
+        }).catch(() => { /* Clipboard refused: the value stays selectable. */ });
+      }}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
   );
 }
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
-
-const overlayStyle: CSSProperties = {
-  position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 50,
-  display: 'flex', justifyContent: 'flex-end',
-};
-const drawerStyle: CSSProperties = {
-  width: 'min(440px, 100%)', height: '100%', overflowY: 'auto', padding: '1.25rem',
-  background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)',
-};

@@ -13449,3 +13449,1215 @@ tbody tr {
 :where(.appShellFrame) :where(a, button, [tabindex]):focus-visible {
   outline-color: var(--ring);
 }
+
+/* ═══ Screen layer: alerts — begin ═══ */
+/* ═════════════════════════════════════════════════════════════════════
+   ALERTS — Screen 6 · Active Alerts queue, AI Alert Triage Agent, drawers
+   ─────────────────────────────────────────────────────────────────────
+   Appended after the Decoda brand layer. Every selector is scoped to the
+   screen's own `.alerts*` namespace; no global primitive is restyled.
+   The static layout slice in alerts-screen6-layout.spec.ts carries only
+   .alertsSplit / .alertsTableShell, and nothing here keys off those two
+   alone, so its measured geometry is unchanged. Tokens only.
+
+   Truth rules this file keeps:
+     • Severity hue = canonical severity. critical / high → danger,
+       medium → warning, low → info blue, anything unrecognised → neutral.
+       A "low" pill is repainted informational blue here so it never reads
+       as the healthy green it shares a variant with.
+     • An empty queue is neutral (hollow marker), never a tick or green.
+       A failed load is a warning, not an empty queue.
+     • Teal is interaction only: focus, selection, the active filter, links.
+     • Rows never animate. They re-render on every refresh and filter; the
+       severity rail is a static inset edge.
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ── Glyphs ───────────────────────────────────────────────────────────
+   Line icons drawn with a CSS mask so they take currentColor and follow
+   the theme. Only the mask's alpha is used; the stroke colour is a name. */
+.alertsGlyph {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 0.95rem;
+  height: 0.95rem;
+  background-color: currentColor;
+  -webkit-mask: var(--alerts-glyph) center / contain no-repeat;
+  mask: var(--alerts-glyph) center / contain no-repeat;
+}
+
+.alertsGlyph--search {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--cluster {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='6' cy='6' r='2.5'/%3E%3Ccircle cx='18' cy='6' r='2.5'/%3E%3Ccircle cx='12' cy='18' r='2.5'/%3E%3Cpath d='M8.5 6h7M7.2 8.2l3.6 7.6M16.8 8.2l-3.6 7.6'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--agent {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z'/%3E%3Cpath d='M19 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--warn {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--close {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18M6 6l12 12'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--arrow {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14M13 6l6 6-6 6'/%3E%3C/svg%3E");
+}
+
+.alertsGlyph--asset {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 3 7l9 5 9-5-9-5z'/%3E%3Cpath d='m3 12 9 5 9-5'/%3E%3Cpath d='m3 17 9 5 9-5'/%3E%3C/svg%3E");
+}
+
+/* ── Severity tone ────────────────────────────────────────────────────
+   One custom property per severity, read by the row rail, the tab dot,
+   the recommendation and cluster cards and the detail drawer's top edge. */
+:is(.alertsRow, .alertsSevTab, .alertsAgentRec, .alertsClusterCard, .alertsDrawer)[data-sev="critical"] { --alerts-rail: var(--danger-fg); --alerts-rail-w: 4px; }
+:is(.alertsRow, .alertsSevTab, .alertsAgentRec, .alertsClusterCard, .alertsDrawer)[data-sev="high"]     { --alerts-rail: var(--danger-fg); }
+:is(.alertsRow, .alertsSevTab, .alertsAgentRec, .alertsClusterCard, .alertsDrawer)[data-sev="medium"]   { --alerts-rail: var(--warning-fg); }
+:is(.alertsRow, .alertsSevTab, .alertsAgentRec, .alertsClusterCard, .alertsDrawer)[data-sev="low"]      { --alerts-rail: var(--info-fg); }
+:is(.alertsRow, .alertsSevTab, .alertsAgentRec, .alertsClusterCard, .alertsDrawer)[data-sev="unknown"]  { --alerts-rail: var(--neutral-fg); }
+
+/* "Low" is informational blue on this screen, not success green. */
+.alertsSev[data-sev="low"] .sharedStatusPill {
+  color: var(--info-fg);
+  background: var(--info-bg);
+  border-color: var(--info-bdr);
+}
+
+/* ── Screen frame ─────────────────────────────────────────────────── */
+.alertsScreen {
+  width: 100%;
+  max-width: 1680px;
+}
+
+.alertsSuspenseFallback {
+  padding: 1.5rem 0;
+}
+
+.alertsMain {
+  min-width: 0;
+}
+
+/* ── Queue: one surface for tabs, controls, table and pager ────────── */
+.alertsQueue {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+:where(.productShellContent) :where(.alertsQueue) {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+
+.alertsQueueHead {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 0.85rem 0;
+  min-width: 0;
+}
+
+.alertsSevTabs.sharedTabStrip {
+  margin: 0;
+  max-width: 100%;
+}
+
+.alertsSevTabs .alertsSevTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+  padding-inline: 0.75rem 0.55rem;
+}
+
+.alertsSevDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--alerts-rail, var(--neutral-fg));
+  flex-shrink: 0;
+}
+
+/* Count badge: a quiet slate pill, AA in both themes on the strip and on
+   the raised active segment. */
+.alertsTabCount {
+  display: inline-block;
+  min-width: 1.45rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  background: var(--neutral-bg);
+}
+
+.alertsSevTabs .alertsSevTab.activeTab .alertsTabCount {
+  color: var(--text-accent);
+  background: var(--accent-blue-bg);
+  border-color: var(--border-accent);
+}
+
+/* Critical alerts present: the one place the strip raises its voice. */
+.alertsSevTabs .alertsTabCount[data-hot="true"] {
+  color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: var(--danger-bdr);
+}
+
+/* ── Control row: search + filters as one aligned toolbar ──────────── */
+.alertsToolbar.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+}
+
+.alertsSearch {
+  position: relative;
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.alertsSearch input {
+  width: 100%;
+  margin: 0;
+  padding-left: 2.1rem;
+}
+
+.alertsSearch .alertsGlyph--search {
+  position: absolute;
+  left: 0.72rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.alertsFilter {
+  flex: 0 1 190px;
+  min-width: 160px;
+}
+
+.alertsFilter--status {
+  flex-basis: 175px;
+}
+
+.alertsClearFilters.btn {
+  flex: 0 0 auto;
+}
+
+/* The active cluster filter is a user choice, so it wears the accent. */
+.alertsClusterFilter.statusLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0.85rem 0.75rem;
+  padding: 0.4rem 0.45rem 0.4rem 0.75rem;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-blue-bg);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.alertsClusterFilter > .alertsGlyph {
+  color: var(--text-accent);
+}
+
+.alertsClusterFilterText {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.45rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.alertsClusterFilterName {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.alertsClusterFilterReset.btn {
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  background: var(--bg-surface);
+}
+
+/* ── Table inside the queue surface ───────────────────────────────── */
+.alertsQueue .alertsTableShell {
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Tighter fixed columns for the real screen (the static layout slice keeps
+   the base widths): severity and status fit their longest canonical label. */
+.alertsQueue .alertsTableShell thead th:nth-child(1) { width: 6.85rem; }
+.alertsQueue .alertsTableShell thead th:nth-child(4) { width: 9rem; }
+
+.alertsQueue .alertsTableShell th,
+.alertsQueue .alertsTableShell td {
+  padding-inline: 0.75rem;
+}
+
+.alertsQueue .alertsTableShell th:first-child,
+.alertsQueue .alertsTableShell td:first-child {
+  padding-left: 1rem;
+}
+
+.alertsQueue .alertsTableShell tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.alertsRow {
+  cursor: pointer;
+}
+
+/* The severity rail: a static inset edge on the first cell. It takes no
+   layout space, so it cannot shift the fixed columns. */
+.alertsRow > td:first-child {
+  box-shadow: inset var(--alerts-rail-w, 3px) 0 0 var(--alerts-rail, var(--neutral-fg));
+}
+
+/* Selection is a raised fill plus an accent hairline above and below — the
+   left edge stays the severity's. (A teal fill put dark-theme danger pills
+   below AA, so the fill stays neutral and the accent lives in the lines.) */
+tbody tr.alertsRow[data-selected="true"] {
+  background: var(--bg-hover);
+  box-shadow: none;
+}
+
+tbody tr.alertsRow[data-selected="true"] > td {
+  box-shadow: inset 0 1px 0 var(--border-accent), inset 0 -1px 0 var(--border-accent);
+}
+
+tbody tr.alertsRow[data-selected="true"] > td:first-child {
+  box-shadow:
+    inset var(--alerts-rail-w, 3px) 0 0 var(--alerts-rail, var(--neutral-fg)),
+    inset 0 1px 0 var(--border-accent),
+    inset 0 -1px 0 var(--border-accent);
+}
+
+.alertsRowTitle {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 560;
+  line-height: 1.38;
+  color: var(--text-primary);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.alertsRow[data-sev="critical"] .alertsRowTitle {
+  font-weight: 650;
+}
+
+.alertsRow:hover .alertsRowTitle {
+  color: var(--text-accent);
+}
+
+.alertsRowTitle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.alertsRowMeta {
+  margin-top: 0.18rem;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+
+.alertsAssetCell {
+  font-size: 0.82rem;
+}
+
+.alertsAssetName {
+  color: var(--text-primary);
+}
+
+.alertsAssetUnknown {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.alertsHash {
+  margin-top: 0.18rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.alertsTimeCell {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.alertsClusterCell {
+  font-size: 0.78rem;
+}
+
+.alertsClusterChip.btn {
+  display: inline-flex;
+  align-items: flex-start;
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 0.22rem 0.5rem;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  font-size: 0.72rem;
+  font-weight: 560;
+  line-height: 1.3;
+  text-align: left;
+  color: var(--text-secondary);
+}
+
+.alertsClusterChip.btn:hover:not(:disabled) {
+  color: var(--text-accent);
+  border-color: var(--border-accent);
+  background: var(--bg-surface);
+}
+
+.alertsUnclustered {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+/* ── Pager ────────────────────────────────────────────────────────── */
+.alertsPager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  padding: 0.6rem 0.85rem;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--bg-inset);
+}
+
+.alertsPagerRange {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.alertsPagerButtons.buttonRow {
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.alertsPagerButtons .btn {
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.8rem;
+  font-size: 0.8rem;
+}
+
+/* ── Queue states: loading, failed, no match, empty ───────────────── */
+.alertsQueue .alertsState {
+  position: relative;
+  margin: 0 0.85rem 0.85rem;
+}
+
+.alertsState .alertsStateAction {
+  margin-top: 0.85rem;
+}
+
+/* Loading: the marker becomes a spinner (a functional indicator). */
+.alertsStateLoading::before {
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent-blue);
+  border-radius: 999px;
+  background: none;
+  animation: btnSpin 0.8s linear infinite;
+}
+
+/* Failed load: a warning, so it can never pass for an empty queue. */
+.alertsStateError::before,
+.alertsStateNoMatch::before {
+  border-style: solid;
+  background: var(--bg-subtle);
+}
+
+.alertsStateError::before {
+  border-color: var(--warning-bdr);
+  background: var(--warning-bg);
+}
+
+.alertsStateError::after,
+.alertsStateNoMatch::after {
+  content: '';
+  position: absolute;
+  top: calc(1.75rem + 0.7rem);
+  left: 50%;
+  width: 1.1rem;
+  height: 1.1rem;
+  transform: translateX(-50%);
+  -webkit-mask: var(--alerts-glyph) center / contain no-repeat;
+  mask: var(--alerts-glyph) center / contain no-repeat;
+}
+
+.alertsStateError::after {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cpath d='M12 9v4M12 17h.01'/%3E%3C/svg%3E");
+  background-color: var(--warning-fg);
+}
+
+/* No match: a neutral search mark — the filters found nothing, which says
+   nothing about whether the workspace is safe. */
+.alertsStateNoMatch::after {
+  --alerts-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E");
+  background-color: var(--neutral-fg);
+}
+
+/* ── AI Alert Triage Agent card ───────────────────────────────────── */
+.alertsAgent.dataCard {
+  position: sticky;
+  top: 1rem;
+  padding: 1.1rem 1.15rem 1.15rem;
+}
+
+.alertsAgentHead {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.85rem;
+}
+
+.alertsAgentMark {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-blue-bg);
+  color: var(--text-accent);
+}
+
+.alertsAgentMark .alertsGlyph {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.alertsAgentHeading {
+  min-width: 0;
+}
+
+.alertsAgentEyebrow.eyebrow {
+  margin: 0 0 0.1rem;
+  font-size: 0.66rem;
+}
+
+.alertsAgentTitle {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.alertsAgentLoading {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.alertsAgentPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+}
+
+.alertsAgentSummary {
+  margin: 0 0 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 560;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.alertsAgentFacts {
+  margin: 0 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+
+.alertsAgentFact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.alertsAgentFact + .alertsAgentFact {
+  border-top: 1px solid var(--border);
+}
+
+.alertsAgentFact dt {
+  margin: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.alertsAgentFact dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.alertsAgentNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.alertsAgentNotice > .alertsGlyph {
+  margin-top: 0.08rem;
+}
+
+/* Top recommendation: an inset card carrying its cluster's severity rail. */
+.alertsAgentRec {
+  margin: 0 0 0.85rem;
+  padding: 0.75rem 0.8rem 0.8rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: inset 3px 0 0 var(--alerts-rail, var(--neutral-fg));
+}
+
+.alertsAgentRecEyebrow.sectionEyebrow {
+  margin: 0 0 0.45rem;
+}
+
+.alertsAgentRecPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.alertsAgentRecTitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.alertsAgentRecFacts {
+  display: grid;
+  gap: 0.22rem;
+  margin: 0 0 0.55rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.alertsAgentRecFacts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.alertsAgentRecFacts dt {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.alertsAgentRecFacts dd {
+  margin: 0;
+  font-weight: 560;
+  text-align: right;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.alertsAgentRecSummary {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.alertsAgentProvenance {
+  margin: 0;
+  font-size: 0.7rem;
+}
+
+.alertsReasonChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+}
+
+.alertsReasonChip {
+  display: inline-flex;
+  padding: 0.08rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-weight: 560;
+  line-height: 1.4;
+}
+
+.alertsAgentEmpty {
+  margin: 0 0 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.alertsAgentActions.buttonRow {
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.alertsAgentActions .btn {
+  flex: 1 1 auto;
+}
+
+.alertsAgentHint {
+  margin: 0.5rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.alertsAgentMessage.statusLine {
+  margin: 0.55rem 0 0;
+  font-size: 0.76rem;
+}
+
+/* ── Drawers: alert detail and cluster review ─────────────────────── */
+.alertsDrawerScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  background: var(--scrim);
+}
+
+.alertsDrawer {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, 100%);
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+:where(.alertsDrawer) {
+  animation: dcSlideFromRight var(--dur-slow) var(--ease-out) backwards;
+}
+
+/* The panel receives focus on open (tabindex -1) so Tab continues inside
+   it; it is a container, not a control, so it draws no ring of its own. */
+.alertsDrawer:focus {
+  outline: none;
+}
+
+/* The detail drawer's top edge carries the alert's severity. */
+.alertsDrawerHead {
+  flex-shrink: 0;
+  padding: 1rem 1.25rem 1rem;
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 3px 0 var(--alerts-rail, transparent);
+}
+
+.alertsDrawerHeadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.alertsDrawerEyebrow.eyebrow {
+  margin: 0;
+  font-size: 0.68rem;
+}
+
+.alertsDrawerClose.btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0;
+  color: var(--text-secondary);
+}
+
+.alertsDrawerClose.btn:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.alertsDrawerTitle {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.alertsDrawerLede {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.alertsDrawerPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.alertsDrawerBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.alertsDrawerEmpty {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.alertsDrawerFoot {
+  flex-shrink: 0;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.alertsDrawerActions.buttonRow {
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.alertsDrawerMessage.statusLine {
+  margin: 0.5rem 0 0;
+  font-size: 0.76rem;
+}
+
+/* Key facts: a two-column definition grid. */
+.alertsFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+  margin: 0;
+}
+
+.alertsFact dt {
+  margin: 0 0 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.alertsFact dd {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.alertsFactSub {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.alertsDrawerSection {
+  margin-top: 1.25rem;
+}
+
+.alertsDrawerSectionTitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Related entities: label | stored value (+ copy), or "Not recorded". */
+.alertsEntities {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+
+.alertsEntity {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.alertsEntity + .alertsEntity {
+  border-top: 1px solid var(--border);
+}
+
+.alertsEntity dt {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.alertsEntity dd {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.alertsEntityValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.alertsMono {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.alertsEntityEmpty {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.alertsCopy {
+  flex-shrink: 0;
+  padding: 0.08rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.alertsCopy:hover {
+  color: var(--text-accent);
+  border-color: var(--border-accent);
+}
+
+.alertsCopy:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Investigation pivots: each re-filters the queue through the URL. */
+.alertsPivots {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.alertsPivot {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.alertsPivot:hover {
+  border-color: var(--border-accent);
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-xs);
+}
+
+.alertsPivot:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.alertsPivot > .alertsGlyph:first-child {
+  color: var(--text-accent);
+}
+
+.alertsPivot > .alertsGlyph--arrow {
+  margin-left: auto;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.alertsPivot:hover > .alertsGlyph--arrow {
+  transform: translateX(2px);
+  color: var(--text-accent);
+}
+
+.alertsPivotText {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.alertsPivotLabel {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.alertsPivotSub {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* Cluster review: ranked cards, each carrying its derived severity. */
+.alertsClusterList {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.alertsClusterCard {
+  display: flex;
+  gap: 0.7rem;
+  width: 100%;
+  padding: 0.75rem 0.85rem 0.8rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  box-shadow: inset 3px 0 0 var(--alerts-rail, var(--neutral-fg));
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.alertsClusterCard:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+
+/* The cluster the queue is filtered to: an accent ring on a neutral fill
+   (a teal fill put its dark-theme danger pill below AA). */
+.alertsClusterCard[aria-current="true"] {
+  border-color: var(--border-accent);
+  background: var(--bg-subtle);
+  box-shadow:
+    inset 3px 0 0 var(--alerts-rail, var(--neutral-fg)),
+    0 0 0 1px var(--border-accent);
+}
+
+.alertsClusterCard:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.alertsClusterRank {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.alertsClusterBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.alertsClusterPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.alertsClusterTitle {
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.alertsClusterMeta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.alertsClusterSummary {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.alertsClusterCard .alertsReasonChips {
+  margin-top: 0.1rem;
+}
+
+.alertsClusterCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-accent);
+}
+
+.alertsClusterCta > .alertsGlyph {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+/* ── Narrow widths ────────────────────────────────────────────────── */
+/* Below tablet width the table already scrolls inside its frame; a wider
+   floor there gives the title column room instead of a one-word column. */
+@media (max-width: 900px) {
+  .alertsQueue .alertsTableShell table {
+    min-width: 860px;
+  }
+}
+
+@media (max-width: 640px) {
+  /* The severity strip scrolls inside itself rather than wrapping into a
+     ragged second line. */
+  .alertsQueueHead {
+    padding: 0.7rem 0.7rem 0;
+  }
+
+  .alertsSevTabs.sharedTabStrip {
+    display: flex;
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .alertsSevTabs.sharedTabStrip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .alertsSevTabs .alertsSevTab {
+    flex: 0 0 auto;
+  }
+
+  .alertsToolbar.buttonRow {
+    padding: 0.7rem;
+  }
+
+  .alertsFilter {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  .alertsClusterFilter.statusLine,
+  .alertsQueue .alertsState {
+    margin-inline: 0.7rem;
+  }
+
+  .alertsPager {
+    padding-inline: 0.7rem;
+  }
+
+  .alertsDrawerHead,
+  .alertsDrawerBody,
+  .alertsDrawerFoot {
+    padding-inline: 1rem;
+  }
+
+  .alertsEntity {
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+}
+/* ═══ Screen layer: alerts — end ═══ */
