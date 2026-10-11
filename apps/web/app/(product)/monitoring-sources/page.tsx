@@ -20,6 +20,7 @@ import {
   fmtExact,
   fmtLatency,
   fmtRelative,
+  shortAddress,
   type AgentDecision,
   type AgentState,
   type MonitoredSystemRow,
@@ -97,13 +98,12 @@ function healthScoreCell(source: SourceRow) {
     return <span className="muted" title="No live health evidence received">No live evidence</span>;
   }
   const score = source.health_score;
-  const color = score >= 80 ? 'var(--success-fg)' : score >= 50 ? 'var(--warning-fg)' : 'var(--danger-fg)';
+  // Same bands as before (80 / 50); the tone class only colours the number and bar.
+  const tone = score >= 80 ? 'good' : score >= 50 ? 'warn' : 'bad';
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
-      <span style={{ fontWeight: 700, color }}>{score.toFixed(0)}</span>
-      <span aria-hidden style={{ width: 34, height: 5, borderRadius: 3, background: 'var(--surface-subtle)', position: 'relative', overflow: 'hidden' }}>
-        <span style={{ position: 'absolute', inset: 0, width: `${Math.max(4, Math.min(100, score))}%`, background: color }} />
-      </span>
+    <span className={`msrcScore msrcScore--${tone}`}>
+      <span className="msrcScoreValue">{score.toFixed(0)}</span>
+      <progress className="msrcScoreBar" aria-hidden max={100} value={Math.max(4, Math.min(100, score))} />
     </span>
   );
 }
@@ -131,7 +131,7 @@ function p95LatencyCell(source: SourceRow) {
   if (source.p95_is_historical) {
     return (
       <span title={`Historical P95 from ${count} successful samples${source.p95_last_sample_at ? ` (last ${fmtRelative(source.p95_last_sample_at)})` : ''}; provider not verified live now`}>
-        {fmtLatency(source.p95_latency_ms)} <span className="muted" style={{ fontSize: '0.68rem' }}>historical</span>
+        {fmtLatency(source.p95_latency_ms)} <span className="msrcTag">historical</span>
       </span>
     );
   }
@@ -519,6 +519,16 @@ export default function MonitoringSourcesPage() {
   // Reset to first page whenever the filter set changes.
   useEffect(() => setPage(1), [search, statusFilter, networkFilter, providerFilter, routingFilter, sortKey, sortDir]);
 
+  // Escape closes the mobile agent sheet (the detail drawers handle their own).
+  useEffect(() => {
+    if (!mobileAgentOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileAgentOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mobileAgentOpen]);
+
   const routingHistoryForSelected = useMemo(
     () => (selectedSource ? decisions.filter((d) => d.target_id === selectedSource.target_id) : []),
     [decisions, selectedSource],
@@ -547,40 +557,47 @@ export default function MonitoringSourcesPage() {
   );
 
   return (
-    <main className="productPage">
+    <main className="productPage msrcPage">
       {/* Source-specific health (connection, RPC/provider state, last poll, last
           telemetry, verify/diagnose) is kept below in the summary cards and the
           Source Optimization agent panel. The full global System Health dashboard is
           NOT repeated here — it lives on /system-health. */}
 
       {/* ── Header ─────────────────────────────────────────── */}
-      <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: '1.45rem', fontWeight: 700 }}>Monitoring Sources</h1>
-          <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem' }}>
+      <header className="msrcHeader">
+        <div className="msrcHeaderText">
+          <h1 className="productPageTitle msrcTitle">Monitoring Sources</h1>
+          <p className="msrcLede">
             Continuously monitor provider health, ingestion coverage, routing status, and telemetry reliability.
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span title={fmtExact(lastRefreshed)} style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-            Last refreshed {fmtRelative(lastRefreshed)}
-          </span>
-          <StatusPill label={streamPill.label} variant={streamPill.variant} />
-          <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem' }} disabled={healthCheckBusy} onClick={() => void handleRunHealthCheck()}>
+        <div className="msrcHeaderActions">
+          {/* Page live-update channel (SSE) — a fact about THIS page's connection,
+              kept apart from provider / ingestion health. */}
+          <div className="msrcConn">
+            <span className="msrcConnLabel">Page updates</span>
+            <StatusPill label={streamPill.label} variant={streamPill.variant} />
+            <span className="msrcRefreshed" title={fmtExact(lastRefreshed)}>
+              Last refreshed {fmtRelative(lastRefreshed)}
+            </span>
+          </div>
+          <button type="button" className="btn btn-secondary msrcHeaderBtn msrcIcoPulse" disabled={healthCheckBusy} onClick={() => void handleRunHealthCheck()}>
             {healthCheckBusy ? 'Running…' : 'Run Health Check'}
           </button>
-          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
+          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary msrcHeaderBtn msrcIcoPlus">
             Add Source
           </Link>
         </div>
-      </div>
+      </header>
 
-      {loadError ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p> : null}
-      {actionError ? <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p> : null}
-      {healthCheckResult ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{healthCheckResult}</p> : null}
-      {diagnosticResult ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{diagnosticResult}</p> : null}
+      {loadError ? <p className="statusLine msrcNotice msrcNotice--danger">{loadError}</p> : null}
+      {actionError ? <p className="statusLine msrcNotice msrcNotice--danger">{actionError}</p> : null}
+      {/* Completed-run summaries are neutral: the counts inside them (critical,
+          degraded, unreachable) must never be tinted as a success. */}
+      {healthCheckResult ? <p className="statusLine msrcNotice msrcNotice--result">{healthCheckResult}</p> : null}
+      {diagnosticResult ? <p className="statusLine msrcNotice msrcNotice--result">{diagnosticResult}</p> : null}
       {streamStatus === 'reconnecting' ? (
-        <p className="statusLine" style={{ color: 'var(--warning-fg)', fontSize: '0.8rem' }}>
+        <p className="statusLine msrcNotice msrcNotice--warning">
           Live updates are reconnecting. Data is temporarily refreshed by polling.
         </p>
       ) : null}
@@ -588,13 +605,14 @@ export default function MonitoringSourcesPage() {
       {/* ── Summary cards ──────────────────────────────────── */}
       <SummaryCards summary={summary} loading={loading} />
 
-      <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div className="msrcLayout">
+        <div className="msrcLayoutGrid">
         {/* ── Main content ─────────────────────────────────── */}
-        <div style={{ flex: '1 1 640px', minWidth: 0 }}>
+        <div className="msrcMain">
           <TabStrip tabs={TABS} active={activeTab} onChange={(key) => changeTab(key as TabKey)} />
 
           {activeTab === 'targets' ? (
-            <div role="tabpanel" aria-label="Monitoring Targets">
+            <div role="tabpanel" aria-label="Monitoring Targets" className="msrcPanel">
               {noAssets ? (
                 <EmptyStateBlocker
                   title="No monitoring source is configured"
@@ -631,16 +649,16 @@ export default function MonitoringSourcesPage() {
                     onSortDir={setSortDir}
                     onRefresh={() => void loadSources(undefined, { quiet: true })}
                   />
-                  <TableShell headers={TARGET_HEADERS} compact>
+                  <TableShell headers={TARGET_HEADERS} compact className="msrcTable msrcTargetsTable">
                     {loading ? (
                       <tr>
-                        <td colSpan={TARGET_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                        <td colSpan={TARGET_HEADERS.length} className="msrcTableNote">
                           Loading monitoring sources…
                         </td>
                       </tr>
                     ) : pagedSources.length === 0 ? (
                       <tr>
-                        <td colSpan={TARGET_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                        <td colSpan={TARGET_HEADERS.length} className="msrcTableNote">
                           {sources.length === 0 ? 'No monitoring sources found for this workspace.' : 'No sources match the current filters.'}
                         </td>
                       </tr>
@@ -650,25 +668,28 @@ export default function MonitoringSourcesPage() {
                         const routing = routingBadge(source);
                         const busy = busyTargetId === source.target_id;
                         return (
-                          <tr key={source.target_id} style={{ cursor: 'pointer' }} onClick={() => setSelectedSource(source)}>
-                            <td style={{ fontWeight: 600 }}>{source.name || 'Unnamed target'}</td>
+                          <tr key={source.target_id} className="msrcRow" onClick={() => setSelectedSource(source)}>
+                            <td className="msrcCellName">
+                              <span className="msrcName">{source.name || 'Unnamed target'}</span>
+                              {source.address ? <span className="msrcSubMono" title={source.address}>{shortAddress(source.address)}</span> : null}
+                            </td>
                             <td>{source.network || '—'}</td>
                             <td>{source.provider || source.primary_provider || <span className="muted">—</span>}</td>
                             <td>{source.source_type || '—'}</td>
-                            <td>
+                            <td className="msrcCellStatus">
                               {/* Provider/runtime health. */}
                               <StatusPill label={status.label} variant={status.variant} />
                               {/* Failure reason — only for genuine non-healthy states, never a
                                   live-but-quiet reason (that surfaces below as event detection). */}
                               {source.status_reason && status.variant !== 'success' && !isQuietReason(source.status_reason) ? (
-                                <div className="muted" style={{ fontSize: '0.66rem', marginTop: '0.15rem' }}>{source.status_reason.replace(/_/g, ' ')}</div>
+                                <div className="msrcReason">{source.status_reason.replace(/_/g, ' ')}</div>
                               ) : null}
                               {/* Evidence/event detection — separate signal from provider health. */}
                               {(() => {
                                 const ev = eventDetectionLine(source);
                                 return ev ? (
                                   <div
-                                    style={{ fontSize: '0.66rem', marginTop: '0.15rem', color: ev.muted ? 'var(--text-muted)' : 'var(--success-fg)' }}
+                                    className={ev.muted ? 'msrcEvent' : 'msrcEvent msrcEvent--detected'}
                                     title={ev.muted ? 'Provider healthy and coverage telemetry fresh; no wallet/transfer event in the current window' : 'A wallet/transfer event was observed in the current window'}
                                   >
                                     {ev.label}
@@ -677,31 +698,31 @@ export default function MonitoringSourcesPage() {
                               })()}
                             </td>
                             <td>{healthScoreCell(source)}</td>
-                            <td style={{ whiteSpace: 'nowrap' }}>{p95LatencyCell(source)}</td>
-                            <td style={{ whiteSpace: 'nowrap' }} title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
+                            <td className="msrcNum">{p95LatencyCell(source)}</td>
+                            <td className="msrcNum" title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
                               {source.block_lag == null ? '—' : source.block_lag.toLocaleString()}
                             </td>
-                            <td style={{ whiteSpace: 'nowrap' }} title={source.error_rate == null ? 'Not measured by current probe path' : undefined}>
+                            <td className="msrcNum" title={source.error_rate == null ? 'Not measured by current probe path' : undefined}>
                               {source.error_rate == null ? '—' : `${(source.error_rate * 100).toFixed(2)}%`}
                             </td>
-                            <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(source.last_telemetry_at)}>{fmtRelative(source.last_telemetry_at)}</td>
-                            <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(source.last_heartbeat)}>{fmtRelative(source.last_heartbeat)}</td>
+                            <td className="msrcNum" title={fmtExact(source.last_telemetry_at)}>{fmtRelative(source.last_telemetry_at)}</td>
+                            <td className="msrcNum" title={fmtExact(source.last_heartbeat)}>{fmtRelative(source.last_heartbeat)}</td>
                             <td><StatusPill label={routing.label} variant={routing.variant} /></td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
-                                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.16rem 0.5rem' }} onClick={() => setSelectedSource(source)}>
+                            <td className="msrcCellActions" onClick={(e) => e.stopPropagation()}>
+                              <div className="msrcRowActions">
+                                <button type="button" className="btn btn-secondary msrcRowBtn" onClick={() => setSelectedSource(source)}>
                                   Details
                                 </button>
                                 {source.system_id ? (
                                   <Link
                                     href={`/monitoring-sources/${encodeURIComponent(source.target_id)}/telemetry`}
                                     prefetch={false}
-                                    style={{ color: 'var(--text-accent)', fontSize: '0.72rem', textDecoration: 'none' }}
+                                    className="msrcRowLink"
                                   >
                                     View telemetry
                                   </Link>
                                 ) : null}
-                                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.16rem 0.5rem' }} disabled={busy} onClick={() => void handleToggleTarget(source)}>
+                                <button type="button" className="btn btn-secondary msrcRowBtn" disabled={busy} onClick={() => void handleToggleTarget(source)}>
                                   {busy ? '…' : source.enabled || source.monitoring_enabled ? 'Disable' : 'Enable'}
                                 </button>
                               </div>
@@ -720,7 +741,7 @@ export default function MonitoringSourcesPage() {
           ) : null}
 
           {activeTab === 'systems' ? (
-            <div role="tabpanel" aria-label="Monitored Systems">
+            <div role="tabpanel" aria-label="Monitored Systems" className="msrcPanel">
               {!loading && systems.length === 0 ? (
                 <EmptyStateBlocker
                   title="No monitored system is enabled yet"
@@ -729,10 +750,10 @@ export default function MonitoringSourcesPage() {
                   ctaLabel="Configure monitoring"
                 />
               ) : (
-                <TableShell headers={SYSTEM_HEADERS} compact>
+                <TableShell headers={SYSTEM_HEADERS} compact className="msrcTable msrcSystemsTable">
                   {loading ? (
                     <tr>
-                      <td colSpan={SYSTEM_HEADERS.length} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
+                      <td colSpan={SYSTEM_HEADERS.length} className="msrcTableNote">
                         Loading monitored systems…
                       </td>
                     </tr>
@@ -743,14 +764,14 @@ export default function MonitoringSourcesPage() {
                       const evidence = resolveEvidenceSource(system);
                       return (
                         <tr key={system.id}>
-                          <td style={{ fontWeight: 600 }}>{system.asset_name || `System ${system.id.slice(0, 8)}`}</td>
+                          <td className="msrcCellName"><span className="msrcName">{system.asset_name || `System ${system.id.slice(0, 8)}`}</span></td>
                           <td>{systemType(system)}</td>
                           <td>{system.environment || 'production'}</td>
                           <td>{system.target_name || <span className="muted">Unlinked</span>}</td>
                           <td><StatusPill label={runtimeStatus.label} variant={runtimeStatus.variant} /></td>
                           <td><StatusPill label={coverage.label} variant={coverage.variant} /></td>
                           <td className="muted" title="Response time requires a live probe worker">—</td>
-                          <td style={{ whiteSpace: 'nowrap' }} title={fmtExact(system.last_event_at)}>{fmtRelative(system.last_event_at)}</td>
+                          <td className="msrcNum" title={fmtExact(system.last_event_at)}>{fmtRelative(system.last_event_at)}</td>
                           <td className="muted">—</td>
                           <td><StatusPill label={evidence.label} variant={evidence.variant} /></td>
                           <td className="muted">—</td>
@@ -765,25 +786,28 @@ export default function MonitoringSourcesPage() {
         </div>
 
         {/* ── Right rail (desktop) ──────────────────────────── */}
-        <aside style={{ flex: '0 1 320px', minWidth: '280px' }} className="sourceAgentRail">
+        <aside className="sourceAgentRail msrcRail">
           {agentPanel}
         </aside>
+        </div>
       </div>
 
       {/* ── Mobile agent drawer toggle ────────────────────── */}
       <button
         type="button"
-        className="btn btn-primary sourceAgentMobileToggle"
+        className="btn btn-primary sourceAgentMobileToggle msrcAgentFab"
         onClick={() => setMobileAgentOpen(true)}
-        style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 40, display: 'none' }}
       >
         Agent
       </button>
       {mobileAgentOpen ? (
-        <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
-          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1rem' }}>
-            <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
+        <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" className="msrcSheet">
+          <button type="button" aria-label="Close" className="msrcSheetScrim" onClick={() => setMobileAgentOpen(false)} />
+          <div className="msrcSheetPanel">
+            <div className="msrcSheetHead">
+              <span className="msrcSheetTitle">Source Optimization Agent</span>
+              <button type="button" className="btn btn-secondary msrcRowBtn" onClick={() => setMobileAgentOpen(false)}>Close</button>
+            </div>
             {agentPanel}
           </div>
         </div>
@@ -819,59 +843,68 @@ function SourceFilters(props: {
   sortDir: 'asc' | 'desc'; onSortDir: (v: 'asc' | 'desc') => void;
   onRefresh: () => void;
 }) {
-  const selectStyle = { fontSize: '0.76rem', padding: '0.28rem 0.4rem', background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border-strong)', borderRadius: 6 };
   return (
-    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', margin: '0.75rem 0' }}>
-      <input
-        type="search"
-        aria-label="Search sources"
-        placeholder="Search name, address, provider, chain…"
-        value={props.search}
-        onChange={(e) => props.onSearch(e.target.value)}
-        style={{ ...selectStyle, flex: '1 1 220px', minWidth: 160 }}
-      />
-      <select aria-label="Filter by status" value={props.statusFilter} onChange={(e) => props.onStatus(e.target.value)} style={selectStyle}>
-        <option value="all">All statuses</option>
-        {props.statusOptions.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
-      </select>
-      <select aria-label="Filter by network" value={props.networkFilter} onChange={(e) => props.onNetwork(e.target.value)} style={selectStyle}>
-        <option value="all">All networks</option>
-        {props.networkOptions.map((n) => <option key={n} value={n}>{n}</option>)}
-      </select>
-      <select aria-label="Filter by provider" value={props.providerFilter} onChange={(e) => props.onProvider(e.target.value)} style={selectStyle}>
-        <option value="all">All providers</option>
-        {props.providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-      </select>
-      <select aria-label="Filter by routing role" value={props.routingFilter} onChange={(e) => props.onRouting(e.target.value)} style={selectStyle}>
-        <option value="all">All routing</option>
-        <option value="primary">Primary</option>
-        <option value="fallback">Fallback</option>
-        <option value="unrouted">Unrouted</option>
-      </select>
-      <select aria-label="Sort by" value={props.sortKey} onChange={(e) => props.onSortKey(e.target.value as SortKey)} style={selectStyle}>
-        <option value="health">Sort: Health</option>
-        <option value="latency">Sort: Latency</option>
-        <option value="lag">Sort: Block lag</option>
-        <option value="error">Sort: Error rate</option>
-        <option value="heartbeat">Sort: Last heartbeat</option>
-      </select>
-      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.24rem 0.5rem' }} onClick={() => props.onSortDir(props.sortDir === 'asc' ? 'desc' : 'asc')}>
-        {props.sortDir === 'asc' ? '↑' : '↓'}
-      </button>
-      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.24rem 0.5rem' }} onClick={props.onRefresh}>
-        Refresh
-      </button>
+    <div className="msrcToolbar">
+      <label className="msrcSearch">
+        <input
+          type="search"
+          aria-label="Search sources"
+          placeholder="Search name, address, provider, chain…"
+          value={props.search}
+          onChange={(e) => props.onSearch(e.target.value)}
+          className="msrcSearchInput"
+        />
+      </label>
+      <div className="msrcFilterGroup">
+        <select aria-label="Filter by status" value={props.statusFilter} onChange={(e) => props.onStatus(e.target.value)} className="msrcSelect">
+          <option value="all">All statuses</option>
+          {props.statusOptions.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+        </select>
+        <select aria-label="Filter by network" value={props.networkFilter} onChange={(e) => props.onNetwork(e.target.value)} className="msrcSelect">
+          <option value="all">All networks</option>
+          {props.networkOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <select aria-label="Filter by provider" value={props.providerFilter} onChange={(e) => props.onProvider(e.target.value)} className="msrcSelect">
+          <option value="all">All providers</option>
+          {props.providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select aria-label="Filter by routing role" value={props.routingFilter} onChange={(e) => props.onRouting(e.target.value)} className="msrcSelect">
+          <option value="all">All routing</option>
+          <option value="primary">Primary</option>
+          <option value="fallback">Fallback</option>
+          <option value="unrouted">Unrouted</option>
+        </select>
+        <select aria-label="Sort by" value={props.sortKey} onChange={(e) => props.onSortKey(e.target.value as SortKey)} className="msrcSelect">
+          <option value="health">Sort: Health</option>
+          <option value="latency">Sort: Latency</option>
+          <option value="lag">Sort: Block lag</option>
+          <option value="error">Sort: Error rate</option>
+          <option value="heartbeat">Sort: Last heartbeat</option>
+        </select>
+        <button
+          type="button"
+          className="btn btn-secondary msrcToolBtn"
+          aria-label={props.sortDir === 'asc' ? 'Sort direction: ascending' : 'Sort direction: descending'}
+          title={props.sortDir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+          onClick={() => props.onSortDir(props.sortDir === 'asc' ? 'desc' : 'asc')}
+        >
+          {props.sortDir === 'asc' ? '↑' : '↓'}
+        </button>
+        <button type="button" className="btn btn-secondary msrcToolBtn msrcIcoRefresh" onClick={props.onRefresh}>
+          Refresh
+        </button>
+      </div>
     </div>
   );
 }
 
 function Pagination({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (p: number) => void }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.6rem', fontSize: '0.76rem' }}>
-      <span className="muted">{total} source(s) · page {page} of {totalPages}</span>
-      <div style={{ display: 'flex', gap: '0.35rem' }}>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.2rem 0.55rem' }} disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.2rem 0.55rem' }} disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button>
+    <div className="msrcPager">
+      <span className="msrcPagerInfo">{total} source(s) · page {page} of {totalPages}</span>
+      <div className="msrcPagerBtns">
+        <button type="button" className="btn btn-secondary msrcRowBtn" disabled={page <= 1} onClick={() => onPage(page - 1)}>Previous</button>
+        <button type="button" className="btn btn-secondary msrcRowBtn" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button>
       </div>
     </div>
   );

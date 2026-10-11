@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
+import { AnimatedNumber } from '../../components/motion';
 import { StatusPill, type PillVariant } from '../../components/ui-primitives';
 import {
   fmtRelative,
@@ -24,9 +25,9 @@ function confidenceVariant(confidence: string): PillVariant {
 
 function StatRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.5rem', padding: '0.18rem 0' }}>
-      <span className="muted" style={{ fontSize: '0.75rem' }}>{label}</span>
-      <span style={{ fontSize: '0.8rem', fontWeight: 600, textAlign: 'right' }}>{value}</span>
+    <div className="msrcStatRow">
+      <span className="msrcStatLabel">{label}</span>
+      <span className="msrcStatValue">{value}</span>
     </div>
   );
 }
@@ -87,64 +88,65 @@ export function SourceOptimizationAgentPanel({
   const autoRouting = settings?.auto_routing_enabled ?? false;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="msrcAgent">
       {/* ── Provider Health ─────────────────────────────────── */}
-      <article className="dataCard" style={{ padding: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Source Optimization Agent</p>
+      <article className="dataCard msrcAgentCard msrcAgentCard--lead">
+        <div className="msrcAgentHead">
+          <p className="sectionEyebrow msrcAgentEyebrow msrcIcoAgent">Source Optimization Agent</p>
           <StatusPill
             label={agent ? agent.state.replace(/_/g, ' ') : '—'}
             variant={agent?.state === 'monitoring' ? 'success' : agent?.state === 'attention_required' ? 'warning' : 'neutral'}
           />
         </div>
-        <p className="muted" style={{ margin: '0 0 0.6rem', fontSize: '0.74rem' }}>
+        <p className="msrcAgentNote">
           Deterministic health rules decide routing. The AI layer only explains decisions and never invents metrics.
         </p>
 
-        <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.5rem', textAlign: 'center' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 700 }}>{overallPct == null ? '—' : `${overallPct.toFixed(0)}%`}</div>
-            <div className="muted" style={{ fontSize: '0.66rem' }}>Ingestion health</div>
+        <div className="msrcAgentStats">
+          <div className="msrcAgentStat">
+            <div className="msrcAgentStatValue">{overallPct == null ? '—' : <AnimatedNumber value={overallPct} format={(n) => `${n.toFixed(0)}%`} />}</div>
+            <div className="msrcAgentStatLabel">Ingestion health</div>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--success-fg)' }}>{healthyCount}</div>
-            <div className="muted" style={{ fontSize: '0.66rem' }}>Healthy</div>
+          <div className="msrcAgentStat">
+            {/* A zero count is never tinted green: no healthy provider is not a healthy signal. */}
+            <div className={`msrcAgentStatValue${healthyCount > 0 ? ' msrcTone--success' : ' msrcTone--muted'}`}><AnimatedNumber value={healthyCount} /></div>
+            <div className="msrcAgentStatLabel">Healthy</div>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 700, color: degraded ? 'var(--danger-fg)' : 'var(--text-muted)' }}>{degraded}</div>
-            <div className="muted" style={{ fontSize: '0.66rem' }}>Degraded</div>
+          <div className="msrcAgentStat">
+            <div className={`msrcAgentStatValue${degraded ? ' msrcTone--danger' : ' msrcTone--muted'}`}><AnimatedNumber value={degraded} /></div>
+            <div className="msrcAgentStatLabel">Degraded</div>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--text-muted)' }}>{unknown}</div>
-            <div className="muted" style={{ fontSize: '0.66rem' }}>Unknown</div>
+          <div className="msrcAgentStat">
+            <div className="msrcAgentStatValue msrcTone--muted"><AnimatedNumber value={unknown} /></div>
+            <div className="msrcAgentStatLabel">Unknown</div>
           </div>
         </div>
       </article>
 
       {/* ── Current Agent Assessment ────────────────────────── */}
-      <article className="dataCard" style={{ padding: '1rem' }}>
-        <p className="sectionEyebrow" style={{ margin: '0 0 0.4rem' }}>Current Agent Assessment</p>
+      <article className="dataCard msrcAgentCard">
+        <p className="sectionEyebrow msrcAgentEyebrow">Current Agent Assessment</p>
         {loading ? (
-          <p className="muted" style={{ fontSize: '0.8rem' }}>Reading canonical monitoring state…</p>
+          <p className="msrcAgentEmpty">Reading canonical monitoring state…</p>
         ) : aiUnavailable ? (
-          <p style={{ fontSize: '0.78rem', color: 'var(--warning-fg)', margin: 0 }}>
+          <p className="msrcAgentWarn">
             AI explanation is unavailable. Deterministic monitoring remains active.
           </p>
         ) : !agent ? (
-          <p className="muted" style={{ fontSize: '0.8rem' }}>Agent state unavailable.</p>
+          <p className="msrcAgentEmpty">Agent state unavailable.</p>
         ) : (
           <>
-            <p style={{ fontSize: '0.8rem', margin: '0 0 0.5rem', color: 'var(--text-secondary)' }}>
+            <p className="msrcAgentText">
               {agent.confidence_basis || 'No routing change is required based on measured records.'}
             </p>
-            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.4rem' }}>
+            <div className="msrcStatList">
               <StatRow label="Healthy providers" value={agent.healthy_providers} />
               <StatRow label="Degraded providers" value={agent.degraded_providers} />
               <StatRow label="Missing target links" value={agent.missing_target_links} />
               <StatRow label="Confidence" value={<StatusPill label={agent.confidence} variant={confidenceVariant(agent.confidence)} />} />
             </div>
             {agent.latest_routing_decision ? (
-              <p className="muted" style={{ fontSize: '0.72rem', margin: '0.4rem 0 0' }}>
+              <p className="msrcAgentFoot">
                 Latest routing note: {agent.latest_routing_decision}
               </p>
             ) : null}
@@ -153,24 +155,23 @@ export function SourceOptimizationAgentPanel({
       </article>
 
       {/* ── AI Recommendations ─────────────────────────────── */}
-      <article className="dataCard" style={{ padding: '1rem' }}>
-        <p className="sectionEyebrow" style={{ margin: '0 0 0.4rem' }}>AI Recommendations</p>
+      <article className="dataCard msrcAgentCard">
+        <p className="sectionEyebrow msrcAgentEyebrow">AI Recommendations</p>
         {agent && agent.recommendations.length > 0 ? (
-          <ul style={{ margin: 0, paddingLeft: '1rem', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+          <ul className="msrcRecList">
             {agent.recommendations.map((rec, index) => (
-              <li key={`${rec.kind}-${index}`} style={{ padding: '0.2rem 0' }}>{rec.detail}</li>
+              <li key={`${rec.kind}-${index}`} className="msrcRec">{rec.detail}</li>
             ))}
           </ul>
         ) : (
-          <p className="muted" style={{ fontSize: '0.76rem', margin: 0 }}>
+          <p className="msrcAgentEmpty">
             No linkage or routing issues detected in canonical records.
           </p>
         )}
-        <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+        <div className="msrcAgentActions">
           <button
             type="button"
-            className="btn btn-primary"
-            style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}
+            className="btn btn-primary msrcAgentBtn"
             disabled={diagnosticBusy}
             title="Poll the configured RPC provider now and record real runtime evidence"
             onClick={onRunDiagnostic}
@@ -179,24 +180,23 @@ export function SourceOptimizationAgentPanel({
           </button>
           <button
             type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}
+            className="btn btn-secondary msrcAgentBtn"
             disabled={healthCheckBusy}
             title="Evaluate current source health from recorded evidence"
             onClick={onRunHealthCheck}
           >
             {healthCheckBusy ? 'Evaluating…' : 'Evaluate Health'}
           </button>
-          <Link href="/integrations" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.74rem', padding: '0.26rem 0.65rem' }}>
+          <Link href="/integrations" prefetch={false} className="btn btn-secondary msrcAgentBtn">
             Add fallback provider
           </Link>
         </div>
       </article>
 
       {/* ── Auto-Routing ───────────────────────────────────── */}
-      <article className="dataCard" style={{ padding: '1rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Auto-Routing</p>
+      <article className="dataCard msrcAgentCard">
+        <div className="msrcAgentHead">
+          <p className="sectionEyebrow msrcAgentEyebrow">Auto-Routing</p>
           <button
             type="button"
             role="switch"
@@ -204,44 +204,42 @@ export function SourceOptimizationAgentPanel({
             aria-label="Toggle Auto-Routing"
             disabled={autoRoutingBusy || !settings}
             onClick={onToggleAutoRouting}
-            style={{
-              border: '1px solid var(--border-subtle)',
-              background: autoRouting ? 'var(--success-fg)' : 'var(--bg-subtle)',
-              width: 42, height: 22, borderRadius: 999, position: 'relative', cursor: autoRoutingBusy ? 'wait' : 'pointer',
-            }}
+            className="msrcSwitch"
+            data-busy={autoRoutingBusy ? 'true' : undefined}
           >
-            <span style={{
-              position: 'absolute', top: 2, left: autoRouting ? 22 : 2, width: 16, height: 16, borderRadius: '50%',
-              background: '#fff', transition: 'left 120ms ease',
-            }} />
+            <span className="msrcSwitchKnob" aria-hidden />
           </button>
         </div>
-        <StatRow label="Status" value={
-          <StatusPill label={autoRouting ? 'Enabled' : 'Disabled'} variant={autoRouting ? 'success' : 'neutral'} />
-        } />
-        <StatRow label="Current primary" value={agent?.primary_provider || '—'} />
-        <StatRow label="Current fallback" value={agent?.recommended_fallback || (
-          <span className="muted" title="No approved fallback provider is available.">None</span>
-        )} />
-        <StatRow label="Failover cooldown" value={settings ? `${Math.round(settings.failover_cooldown_seconds / 60)} min` : '—'} />
-        <StatRow label="Recovery period" value={settings ? `${Math.round(settings.route_recovery_seconds / 60)} min` : '—'} />
-        <StatRow label="Route changes (24h)" value={summary?.active_routes.changed_24h ?? '—'} />
-        {!agent?.recommended_fallback ? (
-          <p className="muted" style={{ fontSize: '0.72rem', margin: '0.4rem 0 0' }}>
+        <div className="msrcStatList">
+          <StatRow label="Status" value={
+            <StatusPill label={autoRouting ? 'Enabled' : 'Disabled'} variant={autoRouting ? 'success' : 'neutral'} />
+          } />
+          <StatRow label="Current primary" value={agent?.primary_provider || '—'} />
+          <StatRow label="Current fallback" value={agent?.recommended_fallback || (
+            <span className="muted" title="No approved fallback provider is available.">None</span>
+          )} />
+          <StatRow label="Failover cooldown" value={settings ? `${Math.round(settings.failover_cooldown_seconds / 60)} min` : '—'} />
+          <StatRow label="Recovery period" value={settings ? `${Math.round(settings.route_recovery_seconds / 60)} min` : '—'} />
+          <StatRow label="Route changes (24h)" value={summary?.active_routes.changed_24h ?? '—'} />
+        </div>
+        {/* Only once canonical agent state exists: with no agent state this
+            panel must not assert that primary monitoring is active. */}
+        {agent && !agent.recommended_fallback ? (
+          <p className="msrcAgentCallout">
             Primary monitoring is active, but no approved fallback provider is available.
           </p>
         ) : null}
       </article>
 
       {/* ── Recent Agent Decisions ─────────────────────────── */}
-      <article className="dataCard" style={{ padding: '1rem' }}>
-        <p className="sectionEyebrow" style={{ margin: '0 0 0.4rem' }}>Recent Agent Decisions</p>
+      <article className="dataCard msrcAgentCard">
+        <p className="sectionEyebrow msrcAgentEyebrow">Recent Agent Decisions</p>
         {decisions.length === 0 ? (
-          <p className="muted" style={{ fontSize: '0.76rem', margin: 0 }}>
+          <p className="msrcAgentEmpty">
             No agent decisions recorded yet. Run a health check to evaluate source health.
           </p>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+          <ul className="msrcDecisionList">
             {decisions.slice(0, 8).map((decision) => {
               const badge = decisionBadge(decision.decision_type);
               return (
@@ -249,18 +247,14 @@ export function SourceOptimizationAgentPanel({
                   <button
                     type="button"
                     onClick={() => onOpenDecision(decision)}
-                    style={{
-                      width: '100%', textAlign: 'left', background: 'var(--surface-subtle)',
-                      border: '1px solid var(--border-subtle)', borderRadius: 6,
-                      padding: '0.4rem 0.55rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '0.2rem',
-                    }}
+                    className={`msrcDecision msrcDecision--${badge.variant}`}
                   >
-                    <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.4rem' }}>
+                    <span className="msrcDecisionHead">
                       <StatusPill label={badge.label} variant={badge.variant} />
                       {decision.approval_required ? <StatusPill label="Approval required" variant="warning" /> : null}
                     </span>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{decision.summary || '—'}</span>
-                    <span className="muted" style={{ fontSize: '0.66rem' }}>{fmtRelative(decision.created_at)}</span>
+                    <span className="msrcDecisionSummary">{decision.summary || '—'}</span>
+                    <span className="msrcDecisionTime">{fmtRelative(decision.created_at)}</span>
                   </button>
                 </li>
               );

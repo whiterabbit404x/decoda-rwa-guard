@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { StatusPill, type PillVariant } from '../../components/ui-primitives';
 import {
@@ -15,18 +15,18 @@ import {
 
 function Field({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', padding: '0.25rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
-      <span className="muted" style={{ fontSize: '0.74rem' }}>{label}</span>
-      <span style={{ fontSize: '0.78rem', fontWeight: 600, textAlign: 'right', fontFamily: mono ? 'var(--font-mono)' : undefined }}>{value}</span>
+    <div className="msrcField">
+      <span className="msrcFieldLabel">{label}</span>
+      <span className={mono ? 'msrcFieldValue msrcMono' : 'msrcFieldValue'}>{value}</span>
     </div>
   );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section style={{ marginBottom: '1rem' }}>
-      <p className="sectionEyebrow" style={{ margin: '0 0 0.35rem', fontSize: '0.7rem' }}>{title}</p>
-      {children}
+    <section className="msrcDrawerSection">
+      <p className="sectionEyebrow msrcDrawerEyebrow">{title}</p>
+      <div className="msrcDrawerSectionBody">{children}</div>
     </section>
   );
 }
@@ -45,36 +45,39 @@ function healthVariant(status?: string | null): PillVariant {
 const NOT_MEASURED = <span className="muted" title="Requires a live provider probe">Not measured</span>;
 
 function Shell({ title, subtitle, onClose, children }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode }) {
+  // Keyboard: Escape closes, focus moves into the panel on open and returns to
+  // the opener on close. Mount-only (the latest onClose is read through a ref)
+  // so a background data refresh never steals focus from inside the drawer.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      opener?.focus?.();
+    };
+  }, []);
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}
-    >
-      <button
-        type="button"
-        aria-label="Close drawer"
-        onClick={onClose}
-        style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none', cursor: 'pointer' }}
-      />
-      <div
-        style={{
-          position: 'relative', width: 'min(480px, 100%)', height: '100%', overflowY: 'auto',
-          background: 'var(--bg-surface)', borderLeft: '1px solid var(--border-strong)',
-          padding: '1.1rem 1.25rem', boxShadow: 'var(--shadow-lg)',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>{title}</h2>
-            {subtitle ? <p className="muted" style={{ margin: '0.2rem 0 0', fontSize: '0.76rem' }}>{subtitle}</p> : null}
+    <div role="dialog" aria-modal="true" aria-label={title} className="msrcDrawer">
+      <button type="button" aria-label="Close drawer" onClick={onClose} className="msrcDrawerScrim" />
+      <div className="msrcDrawerPanel" ref={panelRef} tabIndex={-1}>
+        <div className="msrcDrawerHead">
+          <div className="msrcDrawerHeadText">
+            <h2 className="msrcDrawerTitle">{title}</h2>
+            {subtitle ? <p className="msrcDrawerSub">{subtitle}</p> : null}
           </div>
-          <button type="button" className="btn btn-secondary" style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem' }} onClick={onClose}>
+          <button type="button" className="btn btn-secondary msrcRowBtn" onClick={onClose}>
             Close
           </button>
         </div>
-        {children}
+        <div className="msrcDrawerBody">{children}</div>
       </div>
     </div>
   );
@@ -139,7 +142,9 @@ export function SourceDetailDrawer({
 
       <Section title="Live Metrics">
         <Field label="Health score" value={source.health_score == null ? NOT_MEASURED : `${source.health_score}/100`} />
-        <Field label="Latency (P95)" value={source.median_latency_ms == null ? NOT_MEASURED : fmtLatency(source.median_latency_ms)} />
+        {/* The value is the MEDIAN sample (median_latency_ms); P95 with its sample
+            sufficiency rules lives in the table's P95 Latency column. */}
+        <Field label="Median latency" value={source.median_latency_ms == null ? NOT_MEASURED : fmtLatency(source.median_latency_ms)} />
         <Field label="Error rate" value={source.error_rate == null ? NOT_MEASURED : `${(source.error_rate * 100).toFixed(2)}%`} />
         <Field label="Timeout rate" value={source.timeout_rate == null ? NOT_MEASURED : `${(source.timeout_rate * 100).toFixed(2)}%`} />
         <Field label="Block lag" value={source.block_lag == null ? NOT_MEASURED : String(source.block_lag)} />
@@ -148,7 +153,7 @@ export function SourceDetailDrawer({
         <Field label="Last heartbeat" value={<span title={fmtExact(source.last_heartbeat)}>{fmtRelative(source.last_heartbeat)}</span>} />
         <Field label="Last poll" value={<span title={fmtExact(source.last_poll_at)}>{fmtRelative(source.last_poll_at)}</span>} />
         {source.triggered_rules && source.triggered_rules.length > 0 ? (
-          <p className="muted" style={{ fontSize: '0.72rem', margin: '0.4rem 0 0' }}>
+          <p className="msrcDrawerNote">
             Triggered rules: {source.triggered_rules.join(', ')}
           </p>
         ) : null}
@@ -156,16 +161,16 @@ export function SourceDetailDrawer({
 
       <Section title="Routing History">
         {routingHistory.length === 0 ? (
-          <p className="muted" style={{ fontSize: '0.76rem', margin: 0 }}>No routing decisions recorded for this source.</p>
+          <p className="msrcDrawerEmpty">No routing decisions recorded for this source.</p>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+          <ul className="msrcHistory">
             {routingHistory.slice(0, 6).map((decision) => (
-              <li key={decision.id} style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', borderLeft: '2px solid var(--border-subtle)', paddingLeft: '0.5rem' }}>
-                <div style={{ fontWeight: 600 }}>{decision.decision_type.replace(/_/g, ' ')}</div>
-                <div>
+              <li key={decision.id} className="msrcHistoryItem">
+                <div className="msrcHistoryType">{decision.decision_type.replace(/_/g, ' ')}</div>
+                <div className="msrcHistoryRoute">
                   {decision.previous_route || '—'} → {decision.new_route || '—'} · {decision.actor_type || 'agent'} · {fmtRelative(decision.created_at)}
                 </div>
-                {decision.triggered_rule ? <div className="muted">Trigger: {decision.triggered_rule}</div> : null}
+                {decision.triggered_rule ? <div className="msrcHistoryRule">Trigger: {decision.triggered_rule}</div> : null}
               </li>
             ))}
           </ul>
@@ -173,25 +178,24 @@ export function SourceDetailDrawer({
       </Section>
 
       <Section title="Diagnostics">
-        <p className="muted" style={{ fontSize: '0.72rem', margin: '0 0 0.5rem' }}>
+        <p className="msrcDrawerNote">
           Live per-endpoint probes require the monitoring worker. Re-evaluate uses the deterministic engine over persisted evidence.
         </p>
         <button
           type="button"
-          className="btn btn-primary"
-          style={{ fontSize: '0.76rem', padding: '0.26rem 0.7rem', marginBottom: '0.5rem' }}
+          className="btn btn-primary msrcDrawerCta msrcIcoPulse"
           disabled={healthCheckBusy}
           onClick={onRunHealthCheck}
         >
           {healthCheckBusy ? 'Re-evaluating…' : 'Re-evaluate source health'}
         </button>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+        <p className="msrcDiagCaption">Per-endpoint probes · not yet available</p>
+        <div className="msrcDiagGrid">
           {diagnostics.map((label) => (
             <button
               key={label}
               type="button"
-              className="btn btn-secondary"
-              style={{ fontSize: '0.72rem', padding: '0.2rem 0.5rem', opacity: 0.7 }}
+              className="btn btn-secondary msrcDiagBtn"
               disabled
               title="Awaiting live probe worker integration"
             >
