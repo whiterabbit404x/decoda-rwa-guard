@@ -5,10 +5,17 @@ shell) follows the Decoda Security identity: white and soft-slate surfaces, deep
 navy ink and navigation, a teal/cyan interactive accent, a faint geometric grid,
 layered soft elevation and restrained, functional motion.
 
-Everything lives in **one stylesheet**, `apps/web/app/styles.css`, because the
-production CSP (`style-src 'self' 'nonce-…'`) refuses inline `style` attributes on
-server-rendered markup and unnonced `<style>` elements, and because the rendered
-theme/contrast specs mount the real components against that one file.
+Everything lives in **one stylesheet**, `apps/web/app/styles.css`: the production
+CSP (`style-src 'self' 'nonce-…'`) refuses unnonced `<style>` elements and inline
+`style` attributes in server-rendered HTML, and the rendered theme/contrast specs
+mount the real components against that one file.
+
+Note on inline `style={{…}}` props: authenticated product pages render on the
+client, behind `AuthenticatedRoute` (the session gate starts in "loading", so the
+server HTML holds only the gate). React applies their style props through the
+CSSOM, which the CSP permits — so they do work today. Prefer classes anyway: they
+follow the theme tokens, and they keep working if a page is ever server-rendered.
+Public and auth pages ARE server-rendered and must not rely on style attributes.
 
 ## Layers
 
@@ -90,7 +97,7 @@ Tokens: `--ease-out`, `--ease-in-out`, `--ease-spring`, `--dur-fast` (120ms),
 
 - Reach for `app/components/ui-primitives.tsx` first (SurfaceCard, MetricTile,
   StatusPill, TableShell, EmptyStateBlocker, TabStrip, Button, Select).
-- Use classes, not `style={{…}}`, for anything rendered on the server.
+- Use classes rather than `style={{…}}` (see the note at the top on why).
 - Every visible control must do something; disabled and loading states must look
   different (`.btn:disabled` is flat and inert, `.btn[data-loading]` keeps colour
   and shows a spinner).

@@ -13205,6 +13205,33 @@ tbody tr.isSelected {
   margin-bottom: 0.25rem;
 }
 
+/* Section headers: a title block beside its actions. As a stretched flex
+   row, a header button grew to the full height of the title + subtitle (an
+   80px "Recommend Action" on Response Actions); actions align to the top.
+   A page title inside one uses the product heading scale, not the
+   browser's 2em default with its 0.67em margin. */
+.productShellContent .sectionHeader {
+  align-items: flex-start;
+}
+
+.productShellContent .sectionHeader > .btn,
+.productShellContent .sectionHeader > div > .btn {
+  align-self: flex-start;
+}
+
+.productShellContent .sectionHeader h1 {
+  margin: 0 0 0.35rem;
+  font-size: clamp(1.45rem, 1.1rem + 0.9vw, 1.85rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+}
+
+.productShellContent .sectionHeader h1 + p {
+  margin: 0;
+  max-width: 72ch;
+}
+
 /* ── Dashboard (Screen 2) ────────────────────────────────────────── */
 .dashboardExecHeader {
   align-items: flex-end;
