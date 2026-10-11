@@ -19389,3 +19389,1423 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   .onbTimelineTop { flex-wrap: wrap; }
 }
 /* ═══ Screen layer: onboarding — end ═══ */
+
+/* ═══ Screen layer: threat — begin ═══ */
+/* ══════════════════════════════════════════════════════════════════════
+   THREAT MONITORING (Screen 5) — redesign unit "threat"
+   Scoped to the routed /threat screen (.tmPage / .tmScreen and the tm*
+   classes it owns) plus the shared ThreatChainPanel (.tmChainPanel).
+   Tokens only. Severity keeps its meaning (critical/high red, medium amber,
+   low blue, unknown neutral); teal is interaction / brand, never status.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Frame ─────────────────────────────────────────────────────────── */
+/* A wide table must scroll inside its own frame, never widen the page: the
+   shell's grid/flex ancestors default to min-width:auto, so the threat page
+   opts its own chain out of min-content sizing. */
+.appShellPage:has(.tmPage),
+.productShellContent:has(> .tmPage),
+.productPage.tmPage {
+  min-width: 0;
+}
+
+.tmHiddenLink {
+  display: none;
+}
+
+.tmScreen {
+  width: 100%;
+  max-width: 1680px;
+  min-width: 0;
+}
+
+.tmIcon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+.tmHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+  margin: -0.75rem 0 1.25rem;
+}
+
+.tmSubtitle {
+  margin: 0;
+  max-width: 60ch;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.tmHeaderControls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tmWindowSelect {
+  min-width: 180px;
+}
+
+.tmRefreshBtn .tmIcon {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+/* The refresh glyph turns only while the summary request is in flight. */
+.tmRefreshBtn[aria-busy="true"] .tmIcon {
+  animation: dcTmSpin 900ms linear infinite;
+}
+
+@keyframes dcTmSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Notices, warnings, errors, loading ────────────────────────────── */
+/* `.statusLine-warning` has no global rule; on this screen a warning must
+   look like one, so the notice gets an explicit tone instead of plain text. */
+.tmScreen .tmNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--neutral-bdr);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--neutral-bg);
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.tmScreen .tmNotice .tmIcon {
+  margin-top: 0.15rem;
+  color: var(--neutral-fg);
+}
+
+.tmScreen .tmNotice[data-tone="warning"] {
+  border-color: var(--warning-bdr);
+  background: var(--warning-bg);
+}
+
+.tmScreen .tmNotice[data-tone="warning"] .tmIcon {
+  color: var(--warning-fg);
+}
+
+.tmScreen .statusLine-warning:not(.tmNotice) {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.tmScreen .tmError {
+  margin: 0 0 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--danger-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 0.85rem;
+}
+
+.tmLoadingLine {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 1.5rem 0;
+  font-size: 0.88rem;
+}
+
+.tmLoadingLine::before {
+  content: '';
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: none;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: dcTmSpin 900ms linear infinite;
+}
+
+/* ── KPI row ───────────────────────────────────────────────────────── */
+.tmKpiRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+  margin: 0 0 1.5rem;
+}
+
+.tmKpi {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tmKpiHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.tmKpi .tmKpiLabel {
+  cursor: help;
+}
+
+.tmKpiIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  flex: none;
+  margin-top: -0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.tmKpi .tmKpiMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 0.25rem;
+}
+
+/* The trend chip: its ink comes from trendColor(); the wash only follows
+   the same tone. Informational (telemetry) change stays unwashed. */
+.tmTrend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.tmTrend[data-tone="good"] { background: var(--success-bg); }
+.tmTrend[data-tone="bad"] { background: var(--danger-bg); }
+.tmTrend[data-tone="neutral"] { padding-inline: 0; }
+
+.tmKpiHint {
+  flex-basis: 100%;
+  font-size: 0.78rem;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────── */
+.tmScreen .sharedTabStrip {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tmTabPanel {
+  margin-top: 0.85rem;
+  min-width: 0;
+}
+
+/* ── Overview layout ───────────────────────────────────────────────── */
+/* Mirrors the inline 2fr / 1fr split so the layout survives a CSP that drops
+   inline style attributes from server-rendered markup. */
+.tmOverviewGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  margin-top: 0.5rem;
+}
+
+.tmOverviewMain {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.tmCard {
+  min-width: 0;
+}
+
+.tmCardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.tmCardHead .sectionEyebrow,
+.tmCard > .sectionEyebrow {
+  margin: 0 0 0.85rem;
+}
+
+.tmCardHead .sectionEyebrow {
+  margin: 0;
+}
+
+.tmCardFoot {
+  margin: 0.7rem 0 0;
+  font-size: 0.82rem;
+}
+
+/* ── Telemetry volume chart ────────────────────────────────────────── */
+.tmLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.tmLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.tmLegendSwatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  background: var(--accent-blue);
+}
+
+/* Non-live volume (simulator / replay) is hatched in a neutral ink and named
+   in the legend, so it can never read as live customer telemetry. */
+.tmLegendSwatch[data-series="non-live"],
+.tmBarNonLive {
+  background: repeating-linear-gradient(135deg, var(--neutral-fg) 0 2px, var(--neutral-bg) 2px 4px);
+}
+
+.tmLegendSwatch[data-series="non-live"] {
+  border: 1px solid var(--neutral-bdr);
+}
+
+.tmChart {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.tmChartAxisY {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 9rem;
+  font-size: 0.68rem;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tmChartPlot {
+  min-width: 0;
+}
+
+.tmBars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 9rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-strong);
+  background: linear-gradient(to bottom, var(--border) 1px, transparent 1px) 0 0 / 100% 50%;
+}
+
+.tmBarCol {
+  display: flex;
+  align-items: flex-end;
+  flex: 1 0 6px;
+  min-width: 6px;
+  height: 100%;
+  border-radius: 3px 3px 0 0;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.tmBarCol:hover {
+  background: var(--overlay-03);
+}
+
+.tmBar {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent-blue);
+  transform-origin: 50% 100%;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.tmBarCol:hover .tmBar {
+  opacity: 0.82;
+}
+
+/* A bucket with zero events is a flat baseline tick — never a stub bar that
+   would suggest some activity was recorded. */
+.tmBar[data-empty="true"] {
+  height: 2px !important;
+  border-radius: 0;
+  background: var(--border-strong);
+}
+
+.tmBarNonLive {
+  display: block;
+  width: 100%;
+  flex: none;
+}
+
+/* The bars rise once when the chart mounts (after the loading skeleton). */
+:where(.tmBars) :where(.tmBar) {
+  animation: dcTmBarRise 480ms var(--ease-out) backwards;
+}
+
+@keyframes dcTmBarRise {
+  from { transform: scaleY(0); }
+}
+
+.tmChartAxisX {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.4rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tmChartSkeleton {
+  height: 9rem;
+  border-radius: var(--radius-md);
+}
+
+.tmChartEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 9rem;
+  padding: 1rem 1.25rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(var(--brand-grid-line) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(90deg, var(--brand-grid-line) 1px, transparent 1px) 0 0 / 22px 22px,
+    var(--bg-subtle);
+  text-align: center;
+}
+
+.tmChartEmptyTitle {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tmChartEmptyBody {
+  max-width: 62ch;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.tmChartEmptyWarning {
+  margin-top: 0.3rem;
+  padding: 0.2rem 0.65rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: 999px;
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.78rem;
+}
+
+/* ── Detections by type ────────────────────────────────────────────── */
+.tmTypeSkeleton {
+  height: 6rem;
+}
+
+.tmTypeList {
+  display: flex;
+  flex-direction: column;
+}
+
+.tmTypeRow {
+  display: grid;
+  grid-template-columns: minmax(8rem, 15rem) minmax(0, 1fr) 6rem;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.42rem 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.86rem;
+}
+
+.tmTypeRow:last-child {
+  border-bottom: 0;
+}
+
+.tmTypeLabel {
+  color: var(--text-primary);
+}
+
+.tmTypeTrack {
+  height: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* Not evaluated: a dashed, empty track — distinct from an evaluated zero. */
+.tmTypeRow[data-supported="false"] .tmTypeTrack {
+  background: repeating-linear-gradient(90deg, var(--border-strong) 0 4px, transparent 4px 9px);
+  box-shadow: none;
+  opacity: 0.7;
+}
+
+.tmTypeFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-blue);
+  transform-origin: 0 50%;
+}
+
+:where(.tmTypeFill) {
+  animation: dcGrowX var(--dur-slow) var(--ease-out) backwards;
+}
+
+.tmTypeCount {
+  text-align: right;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tmTypeUnsupported {
+  justify-self: end;
+  padding: 0.06rem 0.5rem;
+  border: 1px dashed var(--neutral-bdr);
+  border-radius: 999px;
+  color: var(--neutral-fg);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.tmCapabilityNote {
+  margin: 0.8rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.tmCapabilityNote strong {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ── Inline (in-card) empty state ──────────────────────────────────── */
+.tmWatchSkeleton {
+  height: 5rem;
+}
+
+.tmInlineEmpty {
+  padding: 0.9rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.tmInlineEmptyTitle {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tmInlineEmptyBody {
+  margin: 0.25rem 0 0;
+  font-size: 0.84rem;
+}
+
+.tmScreen .tmInlineWarning {
+  margin: 0.6rem 0 0;
+}
+
+.tmScreen .sharedEmptyStateBlocker .tmInlineWarning {
+  max-width: 52ch;
+  margin-inline: auto;
+}
+
+.tmEmptyCta {
+  margin-top: 0.75rem;
+}
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+.tmScreen .tmTable {
+  max-width: 100%;
+}
+
+.tmTable td {
+  vertical-align: middle;
+}
+
+.tmTable .sharedStatusPill {
+  white-space: nowrap;
+}
+
+.tmMono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.tmNum {
+  font-variant-numeric: tabular-nums;
+}
+
+.tmNowrap {
+  white-space: nowrap;
+}
+
+.tmStrongCell {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tmReasonCell {
+  min-width: 12rem;
+  max-width: 22rem;
+  line-height: 1.45;
+}
+
+/* The watchlist sits in the 2/3 overview column: tighter cells so all eight
+   columns fit without a horizontal scroll at common desktop widths. */
+.tmWatchTable th,
+.tmWatchTable td {
+  padding-inline: 0.6rem;
+}
+
+.tmWatchTable th {
+  letter-spacing: 0.05em;
+  white-space: normal;
+  vertical-align: bottom;
+}
+
+.tmWatchTable .tmReasonCell {
+  min-width: 7rem;
+}
+
+.tmScreen .tmBtnSm {
+  min-height: var(--control-h-sm);
+  padding: 0.25rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.tmActionNote {
+  font-size: 0.8rem;
+}
+
+/* Detection rows: the whole row opens the detail panels. */
+.tmDetectionRow {
+  cursor: pointer;
+}
+
+.tmDetectionRow:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Severity edge marker, toned by the canonical severityVariant(); the pill in
+   the first cell still spells the level out. A selected row keeps the shared
+   teal selection rail instead. */
+.tmDetectionRow:not([aria-selected="true"])[data-severity-tone="danger"] > td:first-child { box-shadow: inset 3px 0 0 var(--danger-fg); }
+.tmDetectionRow:not([aria-selected="true"])[data-severity-tone="warning"] > td:first-child { box-shadow: inset 3px 0 0 var(--warning-fg); }
+.tmDetectionRow:not([aria-selected="true"])[data-severity-tone="info"] > td:first-child { box-shadow: inset 3px 0 0 var(--info-fg); }
+.tmDetectionRow:not([aria-selected="true"])[data-severity-tone="neutral"] > td:first-child { box-shadow: inset 3px 0 0 var(--neutral-bdr); }
+
+.tmDetectionName {
+  display: block;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tmDetectionSub {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.76rem;
+}
+
+/* Telemetry rows that are not live customer evidence carry a dashed neutral
+   rail next to their (already explicit) simulator / replay pill. */
+.tmTelemetryTable tr[data-evidence-mode="simulator"] > td:first-child,
+.tmTelemetryTable tr[data-evidence-mode="replay"] > td:first-child {
+  background-image: repeating-linear-gradient(to bottom, var(--neutral-fg) 0 4px, transparent 4px 7px);
+  background-size: 3px 100%;
+  background-repeat: no-repeat;
+}
+
+.tmHashCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tmScreen .tmCopyBtn {
+  min-height: 1.5rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
+.tmScreen .tmCopyBtn[data-copied="true"] {
+  border-color: var(--success-bdr);
+  color: var(--success-fg);
+}
+
+.tmPillPair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.tmScreen .tmSortBtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tmScreen .tmSortBtn:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tmScreen .tmSortBtn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ── Filter toolbar ────────────────────────────────────────────────── */
+.tmToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin: 0 0 0.9rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.tmField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 0 1 190px;
+  min-width: 160px;
+}
+
+.tmField--wide {
+  flex: 1 1 240px;
+}
+
+.tmFieldLabel {
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.tmFieldControl {
+  display: block;
+  min-width: 0;
+}
+
+.tmSearch {
+  position: relative;
+  display: block;
+}
+
+.tmSearch .tmIcon {
+  position: absolute;
+  top: 50%;
+  left: 0.65rem;
+  color: var(--text-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.tmScreen .tmSearchInput {
+  width: 100%;
+  min-width: 180px;
+  height: var(--control-h);
+  padding: 0.45rem 0.7rem 0.45rem 2.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.tmScreen .tmSearchInput:hover {
+  border-color: var(--border-hover);
+}
+
+.tmScreen .tmSearchInput:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-color: var(--border-accent);
+}
+
+.tmTabIntro {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.tmTabIntro .tmIcon {
+  margin-top: 0.15rem;
+  color: var(--info-fg);
+}
+
+.tmCoverageStrip {
+  margin-bottom: 0.9rem;
+}
+
+.tmScreen .tmCoverageStrip .tmNotice {
+  margin-bottom: 0.5rem;
+}
+
+.tmCoverageSource {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.tmCoverageUnsupported {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.tmCoverageUnsupported strong {
+  font-weight: 600;
+}
+
+/* ── Pager ─────────────────────────────────────────────────────────── */
+.tmPager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+.tmPagerTotal {
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tmPagerButtons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ── Detection detail panels ───────────────────────────────────────── */
+.tmDetailPanels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  margin-top: 1.25rem;
+}
+
+/* Opens once per selection; a different row reuses the mounted panels. */
+:where(.tmDetailPanels) {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+
+.tmDetailHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: var(--control-h-sm);
+  margin-bottom: 0.4rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.tmScreen .tmDetailEyebrow {
+  margin: 0;
+}
+
+.tmDetailSkeleton {
+  height: 10rem;
+  margin-top: 0.75rem;
+}
+
+.tmDetailNote {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.tmField2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.42rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.tmField2:last-child {
+  border-bottom: 0;
+}
+
+.tmField2Label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tmField2Value {
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tmField2Value--mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.tmSourceValue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.tmAnalysisBody {
+  margin-top: 0.6rem;
+}
+
+/* Deterministic checks read as a short vertical chain of verdicts. */
+.tmChecks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tmCheck {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.45rem 0;
+}
+
+.tmCheck:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 2.05rem;
+  bottom: -0.4rem;
+  left: 0.7rem;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Glyph ink is checkStatusColor(); the ring + wash follow the same status:
+   PASS green, FAIL red, anything else amber — never a pass. */
+.tmCheckGlyph {
+  display: inline-grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: none;
+  border: 1px solid var(--warning-bdr);
+  border-radius: 50%;
+  background: var(--warning-bg);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tmCheck[data-status="PASS"] .tmCheckGlyph {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+}
+
+.tmCheck[data-status="FAIL"] .tmCheckGlyph {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+}
+
+.tmCheckText {
+  min-width: 0;
+  padding-top: 0.1rem;
+}
+
+.tmCheckLabel {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tmCheckReason {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.tmCheckSource {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* The conclusion block is toned by conclusionVariant(): only an authorized
+   conclusion is green; anomaly / not-established are amber; critical is red. */
+.tmVerdict {
+  margin-top: 1rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--warning-bdr);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+}
+
+.tmVerdict[data-tone="danger"] {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+}
+
+.tmVerdict[data-tone="success"] {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+}
+
+.tmVerdict .tmVerdictLabel {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.tmVerdictValue {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+}
+
+.tmVerdict .tmVerdictReason {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+
+.tmVerdict .tmVerdictConfidence {
+  margin: 0.45rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+
+.tmNarrative {
+  margin-top: 0.9rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.tmNarrativeText {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.tmNarrativeAuthority {
+  margin: 0.45rem 0 0;
+  font-size: 0.72rem;
+}
+
+/* ── Threat Detection Engineer panel ───────────────────────────────── */
+.tmEngine {
+  min-width: 0;
+}
+
+/* The shared assessor panel is sticky at top:1rem, which on this screen slides
+   it under the sticky shell header and hides its actions on a tall panel. */
+.tmScreen .tmEngine {
+  position: static;
+}
+
+.tmEngine .tmNotice {
+  margin: 0;
+}
+
+.tmEngineHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+}
+
+.tmEngineMark {
+  display: inline-grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  flex: none;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-accent);
+  background: var(--brand-navy);
+  color: var(--brand-cyan);
+  box-shadow: var(--shadow-xs);
+}
+
+.tmEngineTitles {
+  min-width: 0;
+}
+
+.tmScreen .tmEngineTitle {
+  margin: 0;
+}
+
+.tmEnginePurpose {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* State headline with an edge toned by the badge variant beside it. */
+.tmEngineState {
+  position: relative;
+  padding-left: 0.85rem;
+}
+
+.tmEngineState::before {
+  content: '';
+  position: absolute;
+  top: 0.85rem;
+  bottom: 0.85rem;
+  left: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--neutral-fg);
+}
+
+.tmEngineState[data-tone="danger"]::before { background: var(--danger-fg); }
+.tmEngineState[data-tone="warning"]::before { background: var(--warning-fg); }
+.tmEngineState[data-tone="info"]::before { background: var(--info-fg); }
+.tmEngineState[data-tone="success"]::before { background: var(--success-fg); }
+
+.tmEngineHeadline {
+  margin-top: 0.45rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.tmEngine .tmEngineFinding li {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.tmEngine .tmEngineFinding li > span {
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.tmEngine .tmEngineFinding li > strong {
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.tmEngine .tmEngineExplanation {
+  margin-top: 0.45rem;
+}
+
+.tmEngine .tmEngineFields li {
+  align-items: center;
+  gap: 1rem;
+  padding: 0.38rem 0;
+}
+
+.tmEngine .tmEngineFields li > span {
+  flex: none;
+}
+
+.tmEngine .tmEngineFields li > strong {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tmEngine .tmEngineChips {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.tmEngine .tmEnginePattern {
+  margin-top: 0.6rem;
+}
+
+.tmEngine .tmEngineNext {
+  margin-top: 0.6rem;
+}
+
+.tmEngine .tmEngineActions {
+  margin-top: 0.6rem;
+}
+
+.tmSkel72 { height: 72px; }
+.tmSkel48 { height: 48px; }
+.tmSkel96 { height: 96px; }
+
+/* ── Threat chain summary (shared panel on Alerts / Incidents) ─────── */
+/* A populated chain is not an empty state: it gets a solid, quiet frame and
+   a step row. Unlinked steps stay neutral and dashed — "n/a" never reads as
+   a completed link. */
+.emptyStatePanel.tmChainPanel {
+  border-style: solid;
+  border-color: var(--border);
+  background: var(--bg-surface);
+  text-align: left;
+}
+
+.tmChainPanel h4 {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.tmChainSteps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  list-style: none;
+}
+
+.tmChainStep {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tmChainStep .tableMeta {
+  margin: 0;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  font-size: 0.78rem;
+}
+
+.tmChainStep[data-linked="false"] .tableMeta {
+  border-style: dashed;
+  border-color: var(--neutral-bdr);
+  color: var(--text-muted);
+}
+
+.tmChainStep[data-linked="true"] .tableMeta {
+  border-color: var(--border-accent);
+}
+
+.tmChainStep a {
+  color: var(--text-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.tmChainStep a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tmChainStep a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.tmChainStep + .tmChainStep::before {
+  content: '';
+  width: 0.6rem;
+  height: 1px;
+  margin-right: 0.4rem;
+  background: var(--border-strong);
+}
+
+.tmChainPanel > .tableMeta {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.tmChainPanel .statusLine {
+  margin: 0.6rem 0 0;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.82rem;
+}
+
+.tmChainPanel .tmChainEvidenceBtn {
+  margin-top: 0.75rem;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  /* Inline 2fr/1fr split → one column; !important is the only way past the
+     inline grid the source contract pins. */
+  .tmScreen .tmOverviewGrid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .tmHeader {
+    margin-top: -0.5rem;
+  }
+
+  .tmHeaderControls {
+    width: 100%;
+  }
+
+  .tmWindowSelect {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .tmKpiRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .tmKpi .metricValue {
+    font-size: 1.45rem;
+  }
+
+  .tmKpiIcon {
+    display: none;
+  }
+
+  /* Four tabs stay on one row and scroll inside the strip if they must. */
+  .tmScreen .sharedTabStrip {
+    flex-wrap: nowrap;
+  }
+
+  .tmScreen .sharedTabStrip button {
+    flex: none;
+    padding-inline: 0.7rem;
+  }
+
+  .tmToolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+
+  .tmField,
+  .tmField--wide {
+    min-width: 0;
+  }
+
+  .tmField--wide {
+    grid-column: 1 / -1;
+  }
+
+  .tmScreen .tmSearchInput {
+    min-width: 0;
+  }
+
+  .tmTypeRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.3rem 0.75rem;
+  }
+
+  .tmTypeTrack {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .tmChartAxisX span:last-child {
+    text-align: right;
+  }
+
+  .tmScreen .tmDetailPanels {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .tmField2 {
+    flex-wrap: wrap;
+    gap: 0.15rem 1rem;
+  }
+}
+
+/* Summary did not load: a neutral, dashed "Unavailable" block (never an
+   empty-result message). In the chart card it keeps the chart's height. */
+.tmVolumeCard .tmUnavailable {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 9rem;
+  text-align: center;
+}
+/* ═══ Screen layer: threat — end ═══ */

@@ -9,11 +9,14 @@ export const dynamic = 'force-dynamic';
 // Operators can review readiness gate status at /settings.
 export default function ThreatPage() {
   return (
-    <main className="productPage">
+    <main className="productPage tmPage">
       <h1>Threat Monitoring</h1>
       <ThreatMonitoringScreen />
       {/* Readiness gate: link to /settings when self-serve is blocked */}
-      <Link href="/settings" style={{ display: 'none' }} aria-hidden="true" />
+      {/* Hidden by class, not an inline style: this page is server-rendered and the
+          production CSP blocks inline style attributes, which would leave an
+          aria-hidden link visible and focusable. */}
+      <Link href="/settings" className="tmHiddenLink" aria-hidden="true" tabIndex={-1} />
     </main>
   );
 }

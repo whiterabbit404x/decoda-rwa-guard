@@ -83,10 +83,41 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 
 const PAGE_SIZE = 25;
 
+/* ── Icons ──────────────────────────────────────────────────────────
+   Small stroke glyphs that inherit currentColor, so every icon takes its
+   colour from the surrounding token (never a literal). Decorative only. */
+type TmIconName = 'refresh' | 'alert' | 'info' | 'search' | 'activity' | 'target' | 'wave' | 'clock';
+
+const TM_ICON_PATHS: Record<TmIconName, string> = {
+  refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
+  alert: 'M12 4 2.5 20h19L12 4Zm0 6v4m0 3.2v.3',
+  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.2v.3',
+  search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4.5 4.5',
+  activity: 'M3 12h4l3-7 4 14 3-7h4',
+  target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-4h.01',
+  wave: 'M2 12c2.5 0 2.5-5 5-5s2.5 10 5 10 2.5-10 5-10 2.5 5 5 5',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v4.5l3 2',
+};
+
+const KPI_ICONS: Record<TrendMetric, TmIconName> = {
+  telemetry: 'activity',
+  detections: 'target',
+  anomalies: 'wave',
+  mttd: 'clock',
+};
+
+function TmIcon({ name }: { name: TmIconName }) {
+  return (
+    <svg className="tmIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d={TM_ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
 export default function ThreatMonitoringScreen() {
   // useSearchParams requires a Suspense boundary; the page owns the <h1>.
   return (
-    <Suspense fallback={<div className="muted" style={{ padding: '1.5rem 0' }}>Loading threat monitoring…</div>}>
+    <Suspense fallback={<div className="muted tmLoadingLine" role="status">Loading threat monitoring…</div>}>
       <ThreatMonitoringScreenInner />
     </Suspense>
   );
@@ -198,15 +229,15 @@ function ThreatMonitoringScreenInner() {
     // Left-aligned (no auto-centering) so the header/content share the SAME left edge
     // as the page <h1> above — the title never sits isolated at the far left while the
     // subtitle starts in a centered column. maxWidth keeps ultra-wide lines readable.
-    <div style={{ maxWidth: '1680px', width: '100%' }}>
+    <div className="tmScreen" style={{ maxWidth: '1680px', width: '100%' }}>
       {/* Page header — the page owns the <h1>; the subtitle sits directly beneath it as
           one title block, with the window selector + Refresh aligned to the right. */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', marginTop: '-0.75rem', marginBottom: '1.5rem' }}>
-        <p className="muted" data-testid="threat-subtitle" style={{ margin: 0, fontSize: '0.95rem', maxWidth: '60ch', color: 'var(--text-secondary)' }}>
+      <header className="tmHeader">
+        <p className="muted tmSubtitle" data-testid="threat-subtitle">
           Correlated telemetry, behavioral anomalies, and exploit detections.
         </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-          <div style={{ minWidth: '180px' }}>
+        <div className="tmHeaderControls">
+          <div className="tmWindowSelect">
             <Select
               value={windowKey}
               onValueChange={(v) => setUrl({ window: v as WindowKey })}
@@ -215,7 +246,8 @@ function ThreatMonitoringScreenInner() {
               testId="window-selector"
             />
           </div>
-          <button type="button" className="btn btn-secondary" onClick={() => { setLoading(true); void loadSummary(); }}>
+          <button type="button" className="btn btn-secondary tmRefreshBtn" aria-busy={loading} onClick={() => { setLoading(true); void loadSummary(); }}>
+            <TmIcon name="refresh" />
             Refresh
           </button>
         </div>
@@ -223,13 +255,13 @@ function ThreatMonitoringScreenInner() {
 
       {notice ? (
         <div
-          className={notice.tone === 'warning' ? 'statusLine statusLine-warning' : 'statusLine'}
+          className={notice.tone === 'warning' ? 'statusLine statusLine-warning tmNotice' : 'statusLine tmNotice'}
           role="status"
           data-testid="degraded-banner"
           data-tone={notice.tone}
-          style={{ marginBottom: '1rem' }}
         >
-          {notice.text}
+          <TmIcon name={notice.tone === 'warning' ? 'alert' : 'info'} />
+          <span>{notice.text}</span>
         </div>
       ) : null}
 
@@ -237,14 +269,14 @@ function ThreatMonitoringScreenInner() {
       <KpiRow summary={summary} loading={loading} windowKey={windowKey} liveCoverageFresh={liveCoverageFresh} />
 
       {error ? (
-        <p className="statusLine" style={{ color: 'var(--danger-fg)', margin: '0 0 1rem' }} role="alert">{error}</p>
+        <p className="statusLine tmError" role="alert">{error}</p>
       ) : null}
 
       <TabStrip tabs={TABS} active={activeTab} onChange={(k) => setUrl({ tab: k as TabKey })} />
 
       {activeTab === 'overview' ? (
-        <div role="tabpanel" aria-label="Overview" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '1.5rem', marginTop: '0.5rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', minWidth: 0 }}>
+        <div role="tabpanel" aria-label="Overview" className="tmTabPanel tmOverviewGrid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '1.5rem', marginTop: '0.5rem' }}>
+          <div className="tmOverviewMain">
             <TelemetryVolumeCard summary={summary} loading={loading} liveCoverageFresh={liveCoverageFresh} />
             <DetectionsByTypeCard summary={summary} loading={loading} />
             <WatchlistCard summary={summary} loading={loading} onViewEvidence={onViewEvidence} liveCoverageFresh={liveCoverageFresh} />
@@ -284,10 +316,7 @@ function KpiRow({ summary, loading, windowKey, liveCoverageFresh }: { summary: T
     variant: dataFreshnessVariant(freshness),
   });
   return (
-    <div
-      style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1.25rem', margin: '0 0 1.5rem' }}
-      data-testid="kpi-row"
-    >
+    <div className="tmKpiRow" data-testid="kpi-row">
       <Kpi
         label="Telemetry Events"
         value={loading || !summary ? '—' : metricCount(summary.telemetry_events_count)}
@@ -342,18 +371,23 @@ function Kpi({
 }) {
   const t = trend(metric, changePercent);
   return (
-    <article className="metricCard sharedMetricTile" data-testid={`kpi-${metric}`}>
-      <p className="metricLabel" title={tooltip} style={{ cursor: 'help' }}>{label}</p>
+    <article className="metricCard sharedMetricTile tmKpi" data-testid={`kpi-${metric}`}>
+      <div className="tmKpiHead">
+        <p className="metricLabel tmKpiLabel" title={tooltip}>{label}</p>
+        <span className="tmKpiIcon" aria-hidden="true"><TmIcon name={KPI_ICONS[metric]} /></span>
+      </div>
       <p className="metricValue">{value}</p>
-      <p className="metricMeta" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+      <p className="metricMeta tmKpiMeta">
         <span data-testid={`kpi-window-${metric}`}>{windowText}</span>
         {t ? (
-          <span data-testid={`trend-${metric}`} style={{ color: trendColor(t.tone), fontWeight: 600 }}>
+          // Tone comes from the canonical trend() helper (an increase in detections is
+          // "bad", telemetry volume is informational); trendColor() stays the colour source.
+          <span data-testid={`trend-${metric}`} className="tmTrend" data-tone={t.tone} style={{ color: trendColor(t.tone) }}>
             {t.arrow} {t.label}
           </span>
         ) : null}
         {freshnessLabel ? <StatusPill label={freshnessLabel} variant={freshnessVariant ?? 'neutral'} /> : null}
-        {emptyHint ? <span className="muted">{emptyHint}</span> : null}
+        {emptyHint ? <span className="muted tmKpiHint">{emptyHint}</span> : null}
       </p>
     </article>
   );
@@ -369,73 +403,133 @@ function TelemetryVolumeCard({ summary, loading, liveCoverageFresh }: { summary:
     latestEverAt: summary?.last_security_telemetry_ever_at ?? null,
     stale: coverageIncompleteWarningApplies(ingestionStale, liveCoverageFresh),
   });
+  // Bars are stacked from the two counts the backend returns per bucket: the live
+  // share and whatever is left (simulator / replay). Non-live volume is drawn with a
+  // distinct hatched fill and named in the legend, so it can never pass as live.
+  const anyNonLive = buckets.some((b) => b.count > b.live_count);
+  const firstBucket = buckets[0];
+  const lastBucket = buckets[buckets.length - 1];
   return (
-    <article className="dataCard" aria-label="Telemetry Volume" style={{ minHeight: '12rem' }}>
-      <p className="sectionEyebrow">Security Telemetry Volume · {windowLabel(summary?.window)}</p>
+    <article className="dataCard tmCard tmVolumeCard" aria-label="Telemetry Volume">
+      <div className="tmCardHead">
+        <p className="sectionEyebrow">Security Telemetry Volume · {windowLabel(summary?.window)}</p>
+        {!loading && buckets.length > 0 ? (
+          <ul className="tmLegend" aria-label="Chart legend">
+            <li><span className="tmLegendSwatch" data-series="live" aria-hidden="true" />Live</li>
+            {anyNonLive ? <li><span className="tmLegendSwatch" data-series="non-live" aria-hidden="true" />Non-live (e.g. simulator, replay)</li> : null}
+          </ul>
+        ) : null}
+      </div>
       {loading ? (
-        <div className="skelBlock" style={{ height: '8rem' }} aria-hidden="true" />
+        <div className="skelBlock tmChartSkeleton" aria-hidden="true" />
+      ) : !summary ? (
+        <SummaryUnavailable section="telemetry volume" />
       ) : buckets.length === 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '8rem', color: 'var(--text-muted)', gap: '0.35rem', textAlign: 'center', padding: '0 1rem' }} data-testid="chart-empty-state">
-          <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{emptyCopy.title}</span>
-          <span style={{ fontSize: '0.875rem' }}>{emptyCopy.body}</span>
-          {emptyCopy.staleWarning ? <span style={{ fontSize: '0.8rem', color: 'var(--warning-fg)' }}>{emptyCopy.staleWarning}</span> : null}
+        <div className="tmChartEmpty" data-testid="chart-empty-state">
+          <span className="tmChartEmptyTitle">{emptyCopy.title}</span>
+          <span className="tmChartEmptyBody">{emptyCopy.body}</span>
+          {emptyCopy.staleWarning ? <span className="tmChartEmptyWarning" role="status">{emptyCopy.staleWarning}</span> : null}
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '3px', height: '8rem', padding: '0.5rem 0 0', overflowX: 'auto' }} data-testid="telemetry-volume-bars">
-          {buckets.map((b) => {
-            const h = max > 0 ? Math.max(4, Math.round((b.count / max) * 100)) : 4;
-            const nonLive = b.count > b.live_count;
-            return (
-              <div
-                key={b.bucket_epoch}
-                title={`${new Date(b.bucket_epoch * 1000).toLocaleString()} · ${b.count} events${nonLive ? ` (${b.count - b.live_count} non-live)` : ''}`}
-                style={{ flex: '1 0 6px', minWidth: '6px', background: nonLive ? 'var(--text-accent)' : 'var(--accent-blue)', borderRadius: '2px 2px 0 0', height: `${h}%` }}
-              />
-            );
-          })}
+        <div className="tmChart">
+          <div className="tmChartAxisY" aria-hidden="true">
+            <span>{max}</span>
+            <span>0</span>
+          </div>
+          <div className="tmChartPlot">
+            <div
+              className="tmBars"
+              data-testid="telemetry-volume-bars"
+              role="img"
+              aria-label={`Security telemetry volume across ${buckets.length} intervals; peak ${max} events in one interval${anyNonLive ? '; includes non-live events' : ''}.`}
+            >
+              {buckets.map((b) => {
+                const h = max > 0 ? Math.max(4, Math.round((b.count / max) * 100)) : 4;
+                const nonLive = b.count > b.live_count;
+                const nonLiveShare = nonLive && b.count > 0 ? Math.round(((b.count - b.live_count) / b.count) * 100) : 0;
+                return (
+                  <div
+                    key={b.bucket_epoch}
+                    className="tmBarCol"
+                    title={`${new Date(b.bucket_epoch * 1000).toLocaleString()} · ${b.count} events${nonLive ? ` (${b.count - b.live_count} non-live)` : ''}`}
+                  >
+                    <div className="tmBar" data-empty={b.count === 0 ? 'true' : undefined} style={{ height: `${h}%` }}>
+                      {nonLive ? <span className="tmBarNonLive" style={{ height: `${nonLiveShare}%` }} /> : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {firstBucket && lastBucket ? (
+              <div className="tmChartAxisX" aria-hidden="true">
+                <span>{bucketTick(firstBucket.bucket_epoch)}</span>
+                <span>{bucketTick(lastBucket.bucket_epoch)}</span>
+              </div>
+            ) : null}
+          </div>
         </div>
       )}
-      <p className="muted" style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>
-        {summary?.ingestion_health?.last_security_telemetry_at ? `Last security event ${relativeTime(summary.ingestion_health.last_security_telemetry_at)}` : 'No security events received'}
+      <p className="muted tmCardFoot">
+        {/* Without a summary there is no fact to state: never "No security events received". */}
+        {!summary ? (loading ? '' : 'Last security event: unavailable') : summary.ingestion_health?.last_security_telemetry_at ? `Last security event ${relativeTime(summary.ingestion_health.last_security_telemetry_at)}` : 'No security events received'}
         {summary && summary.ingestion_health?.source_breakdown?.simulator ? ' · includes simulator data' : ''}
       </p>
     </article>
   );
 }
 
+/** Axis tick for a bucket start: short date + time in the viewer's locale. */
+function bucketTick(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 /* ── Detections by type ─────────────────────────────────────────── */
 function DetectionsByTypeCard({ summary, loading }: { summary: ThreatSummary | null; loading: boolean }) {
   const rows = summary?.detections_by_type ?? [];
   const unsupported = rows.filter((r) => !r.supported);
+  // Bar lengths are relative to the largest real count in this window; with no
+  // detections every track stays empty rather than drawing a placeholder.
+  const maxCount = rows.reduce((m, r) => (r.supported ? Math.max(m, r.count) : m), 0);
   return (
-    <article className="dataCard" aria-label="Detections by Type" style={{ minHeight: '10rem' }}>
+    <article className="dataCard tmCard" aria-label="Detections by Type">
       <p className="sectionEyebrow">Detections by Type</p>
       {loading ? (
-        <div className="skelBlock" style={{ height: '6rem' }} aria-hidden="true" />
+        <div className="skelBlock tmTypeSkeleton" aria-hidden="true" />
+      ) : !summary ? (
+        <SummaryUnavailable section="detector results" />
       ) : (
         <>
           {/* Every canonical detection type is listed. Supported detectors show a
               real count (0 is a valid "evaluated, none found"); unsupported ones show
               "Not evaluated" so a 0 is never mistaken for an executed detector. */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }} data-testid="detections-by-type">
+          <div className="tmTypeList" data-testid="detections-by-type">
             {rows.map((r) => (
-              <div key={r.type} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>{r.label}</span>
+              <div key={r.type} className="tmTypeRow" data-supported={r.supported ? 'true' : 'false'}>
+                <span className="tmTypeLabel">{r.label}</span>
+                <span className="tmTypeTrack" aria-hidden="true">
+                  {r.supported && r.count > 0 && maxCount > 0 ? (
+                    <span className="tmTypeFill" style={{ width: `${Math.max(3, Math.round((r.count / maxCount) * 100))}%` }} />
+                  ) : null}
+                </span>
                 {r.supported ? (
-                  <span style={{ color: 'var(--text-accent)', fontWeight: 700, minWidth: '2rem', textAlign: 'right' }}>{r.count}</span>
+                  <span className="tmTypeCount">{r.count}</span>
                 ) : (
-                  <span className="muted" title={r.unsupported_reason ?? 'Evidence unavailable'} style={{ fontSize: '0.78rem', textAlign: 'right' }}>Not evaluated</span>
+                  <span className="tmTypeUnsupported" title={r.unsupported_reason ?? 'Evidence unavailable'}>Not evaluated</span>
                 )}
               </div>
             ))}
           </div>
+          {rows.length === 0 ? (
+            <p className="muted tmDetailNote" data-testid="detections-by-type-empty">No detector results were reported for this window.</p>
+          ) : null}
           {unsupported.length > 0 ? (
             <p
-              className="assessorMeta"
+              className="assessorMeta tmCapabilityNote"
               data-testid="detector-capability-note"
-              style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.45 }}
             >
-              <strong style={{ fontWeight: 600 }}>Evidence unavailable</strong> — not evaluated: {unsupported.map((r) => r.label).join(', ')}. These detectors need trace/oracle evidence this workspace does not collect.
+              <strong>Evidence unavailable</strong> — not evaluated: {unsupported.map((r) => r.label).join(', ')}. These detectors need trace/oracle evidence this workspace does not collect.
             </p>
           ) : null}
         </>
@@ -453,33 +547,35 @@ function WatchlistCard({ summary, loading, onViewEvidence, liveCoverageFresh }: 
   const coverageStale = summary ? summary.data_freshness !== 'fresh' || summary.worker_status === 'stale' || summary.worker_status === 'offline' : false;
   const stale = coverageIncompleteWarningApplies(coverageStale, liveCoverageFresh);
   return (
-    <article className="dataCard" aria-label="Active Watchlist Matches">
+    <article className="dataCard tmCard" aria-label="Active Watchlist Matches">
       <p className="sectionEyebrow">Active Watchlist Matches</p>
       {loading ? (
-        <div className="skelBlock" style={{ height: '5rem' }} aria-hidden="true" />
+        <div className="skelBlock tmWatchSkeleton" aria-hidden="true" />
+      ) : !summary ? (
+        <SummaryUnavailable section="watchlist matches" />
       ) : matches.length === 0 ? (
-        <div data-testid="watchlist-empty-state" style={{ padding: '0.5rem 0' }}>
-          <p style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-secondary)', margin: 0 }}>No active watchlist matches</p>
-          <p className="muted" style={{ fontSize: '0.85rem', margin: '0.25rem 0 0' }}>No monitored addresses matched active watchlists during the selected period.</p>
+        <div data-testid="watchlist-empty-state" className="tmInlineEmpty">
+          <p className="tmInlineEmptyTitle">No active watchlist matches</p>
+          <p className="muted tmInlineEmptyBody">No monitored addresses matched active watchlists during the selected period.</p>
           {stale ? (
-            <p className="statusLine statusLine-warning" role="status" data-testid="watchlist-stale-warning" style={{ marginTop: '0.5rem', fontSize: '0.82rem' }}>
+            <p className="statusLine statusLine-warning tmInlineWarning" role="status" data-testid="watchlist-stale-warning">
               Results may be incomplete until telemetry ingestion resumes.
             </p>
           ) : null}
         </div>
       ) : (
-        <TableShell headers={['Actor', 'Asset', 'Reason', 'Confidence', 'First seen', 'Last seen', 'Status', 'Evidence']} compact>
+        <TableShell headers={['Actor', 'Asset', 'Reason', 'Confidence', 'First seen', 'Last seen', 'Status', 'Evidence']} compact className="tmTable tmWatchTable">
           {matches.map((m) => (
             <tr key={`${m.detection_id}-${m.actor_address}`}>
-              <td style={{ fontFamily: 'monospace', fontSize: '0.82rem' }}>{shortHex(m.actor_address)}</td>
+              <td className="tmMono" title={m.actor_address ?? undefined}>{shortHex(m.actor_address)}</td>
               <td>{m.asset_name ?? '—'}</td>
-              <td>{m.match_reason ?? '—'}</td>
-              <td title={CONFIDENCE_TOOLTIP}>{confidencePercent(m.confidence)}</td>
-              <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(m.first_seen_at)}</td>
-              <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(m.last_seen_at)}</td>
+              <td className="tmReasonCell">{m.match_reason ?? '—'}</td>
+              <td title={CONFIDENCE_TOOLTIP} className="tmNum">{confidencePercent(m.confidence)}</td>
+              <td className="tmNowrap">{relativeTime(m.first_seen_at)}</td>
+              <td className="tmNowrap">{relativeTime(m.last_seen_at)}</td>
               <td><StatusPill label={detectionStatusLabel(m.status)} variant={detectionStatusVariant(m.status)} /></td>
               <td>
-                <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => onViewEvidence(m.detection_id)}>
+                <button type="button" className="btn btn-secondary tmBtnSm" onClick={() => onViewEvidence(m.detection_id)}>
                   View
                 </button>
               </td>
@@ -564,7 +660,7 @@ function DetectionsTab({
   const showAmounts = operationalSelected || rows.some((r) => isOperationalIntegrity(r.category));
 
   return (
-    <div role="tabpanel" aria-label="Detections" style={{ marginTop: '0.75rem' }}>
+    <div role="tabpanel" aria-label="Detections" className="tmTabPanel">
       <DetectionFilterBar
         severity={severity}
         type={type}
@@ -583,11 +679,11 @@ function DetectionsTab({
         <OperationalCoverageStrip notice={operationalNotice} operational={operational} />
       ) : null}
 
-      {investigateError ? <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{investigateError}</p> : null}
+      {investigateError ? <p className="statusLine tmError" role="alert">{investigateError}</p> : null}
       {loading ? (
-        <p className="muted" style={{ padding: '1.5rem 0' }}>Loading detections…</p>
+        <p className="muted tmLoadingLine" role="status">Loading detections…</p>
       ) : err ? (
-        <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
+        <p className="statusLine tmError" role="alert">{err}</p>
       ) : rows.length === 0 ? (
         <StaleEmptyState
           title={operationalSelected ? 'No operational integrity detections' : 'No detections'}
@@ -605,6 +701,7 @@ function DetectionsTab({
               'Status', 'Confidence', 'First seen', 'Action',
             ]}
             compact
+            className="tmTable tmDetectionTable"
           >
             {rows.map((d) => {
               const operationalRow = isOperationalIntegrity(d.category);
@@ -616,15 +713,28 @@ function DetectionsTab({
                   data-testid={`detection-row-${d.id}`}
                   data-category={String(d.category ?? '')}
                   aria-selected={selected}
+                  // Severity tone comes from the canonical severityVariant() helper; it
+                  // only drives the row's edge marker, the pill still spells the level.
+                  data-severity-tone={severityVariant(d.severity)}
+                  className="tmDetectionRow"
+                  tabIndex={0}
                   onClick={() => setSelectedId(selected ? null : d.id)}
-                  style={{ cursor: 'pointer', background: selected ? 'var(--surface-raised)' : undefined }}
+                  onKeyDown={(e) => {
+                    // Keyboard parity with the click: Enter/Space on the row itself (not on
+                    // the Investigate button inside it) opens or closes the details.
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedId(selected ? null : d.id);
+                    }
+                  }}
                 >
                   <td title={SEVERITY_TOOLTIP}><StatusPill label={severityLabel(d.severity)} variant={severityVariant(d.severity)} /></td>
-                  <td>
-                    <span style={{ display: 'block', fontWeight: 600 }}>
+                  <td className="tmDetectionCell">
+                    <span className="tmDetectionName">
                       {d.detection_type_label || detectionTypeLabel(d.detection_type)}
                     </span>
-                    <span className="muted" style={{ fontSize: '0.76rem' }}>
+                    <span className="muted tmDetectionSub">
                       {operationalRow
                         ? reasonCodeLabel(d.deterministic_reason_code)
                         : categoryLabel(d.category ?? 'CYBER_SECURITY')}
@@ -633,12 +743,12 @@ function DetectionsTab({
                   <td>{d.asset_name ?? '—'}</td>
                   {showAmounts ? (
                     <>
-                      <td style={{ whiteSpace: 'nowrap' }} data-testid="observed-amount">
+                      <td className="tmNowrap tmNum" data-testid="observed-amount">
                         {operationalRow
                           ? formatAmount(d.observed_amount, d.amount_decimals, { signed: true, unit: d.amount_unit })
                           : '—'}
                       </td>
-                      <td style={{ whiteSpace: 'nowrap' }} data-testid="expected-amount">
+                      <td className="tmNowrap tmNum" data-testid="expected-amount">
                         {operationalRow
                           ? formatAmount(d.expected_amount, d.amount_decimals, { unit: d.amount_unit })
                           : '—'}
@@ -647,14 +757,14 @@ function DetectionsTab({
                   ) : null}
                   <td><StatusPill label={detectionStatusLabel(d.status)} variant={detectionStatusVariant(d.status)} /></td>
                   <td title={CONFIDENCE_TOOLTIP}><StatusPill label={`${confidencePercent(d.confidence)} (${confidenceBand(d.confidence)})`} variant={confidenceVariant(d.confidence)} /></td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(d.first_seen_at)}</td>
+                  <td className="tmNowrap">{relativeTime(d.first_seen_at)}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     {d.status === 'open' ? (
-                      <button type="button" className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} disabled={investigatingId === d.id} onClick={() => onInvestigate(d.id)}>
+                      <button type="button" className="btn btn-secondary tmBtnSm" disabled={investigatingId === d.id} aria-busy={investigatingId === d.id} onClick={() => onInvestigate(d.id)}>
                         {investigatingId === d.id ? 'Opening…' : 'Investigate'}
                       </button>
                     ) : (
-                      <span className="muted" style={{ fontSize: '0.82rem' }}>{detectionStatusLabel(d.status)}</span>
+                      <span className="muted tmActionNote">{detectionStatusLabel(d.status)}</span>
                     )}
                   </td>
                 </tr>
@@ -689,24 +799,23 @@ function OperationalCoverageStrip({
 }) {
   const unsupported = (operational?.by_type ?? []).filter((t) => !t.supported);
   return (
-    <div style={{ marginBottom: '0.75rem' }}>
+    <div className="tmCoverageStrip">
       {notice ? (
         <p
-          className={notice.tone === 'warning' ? 'statusLine statusLine-warning' : 'statusLine'}
+          className={notice.tone === 'warning' ? 'statusLine statusLine-warning tmNotice' : 'statusLine tmNotice'}
           role="status"
           data-testid="operational-coverage-notice"
           data-tone={notice.tone}
-          style={{ marginBottom: '0.5rem' }}
         >
           {notice.text}
         </p>
       ) : null}
-      <p className="muted" style={{ fontSize: '0.8rem', margin: 0 }} data-testid="operational-telemetry-source">
+      <p className="muted tmCoverageSource" data-testid="operational-telemetry-source">
         {coverageSourceLine(operational?.coverage ?? null)}
       </p>
       {unsupported.length > 0 ? (
-        <p className="muted" style={{ fontSize: '0.78rem', margin: '0.3rem 0 0', lineHeight: 1.45 }} data-testid="operational-unsupported-note">
-          <strong style={{ fontWeight: 600 }}>Not evaluated</strong>: {unsupported.map((t) => t.label).join(', ')}. These
+        <p className="muted tmCoverageUnsupported" data-testid="operational-unsupported-note">
+          <strong>Not evaluated</strong>: {unsupported.map((t) => t.label).join(', ')}. These
           detectors need an authoritative source this workspace does not have; a count of zero would not mean they ran.
         </p>
       ) : null}
@@ -740,14 +849,15 @@ function AnomaliesTab({ authHeaders, windowKey, stale }: { authHeaders: () => Re
   }, [offset, windowKey, authHeaders]);
 
   return (
-    <div role="tabpanel" aria-label="Anomalies" style={{ marginTop: '0.75rem' }}>
-      <p className="muted" style={{ fontSize: '0.9rem', marginBottom: '0.75rem' }}>
-        Deviations that have not yet crossed detection criteria. An anomaly is not a confirmed threat.
+    <div role="tabpanel" aria-label="Anomalies" className="tmTabPanel">
+      <p className="muted tmTabIntro">
+        <TmIcon name="info" />
+        <span>Deviations that have not yet crossed detection criteria. An anomaly is not a confirmed threat.</span>
       </p>
       {loading ? (
-        <p className="muted" style={{ padding: '1.5rem 0' }}>Loading anomalies…</p>
+        <p className="muted tmLoadingLine" role="status">Loading anomalies…</p>
       ) : err ? (
-        <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
+        <p className="statusLine tmError" role="alert">{err}</p>
       ) : rows.length === 0 ? (
         <StaleEmptyState
           title="No anomalies tracked"
@@ -758,17 +868,17 @@ function AnomaliesTab({ authHeaders, windowKey, stale }: { authHeaders: () => Re
         />
       ) : (
         <>
-          <TableShell headers={['Type', 'Asset', 'Confidence', 'Evidence', 'First seen', 'Last seen', 'Promotion status', 'Why not promoted']} compact>
+          <TableShell headers={['Type', 'Asset', 'Confidence', 'Evidence', 'First seen', 'Last seen', 'Promotion status', 'Why not promoted']} compact className="tmTable tmAnomalyTable">
             {rows.map((a) => (
               <tr key={a.id}>
-                <td>{a.detection_type_label || detectionTypeLabel(a.detection_type)}</td>
+                <td className="tmStrongCell">{a.detection_type_label || detectionTypeLabel(a.detection_type)}</td>
                 <td>{a.asset_name ?? '—'}</td>
-                <td title={CONFIDENCE_TOOLTIP}>{confidencePercent(a.confidence)} ({confidenceBand(a.confidence)})</td>
-                <td>{a.evidence_count}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(a.first_seen_at)}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{relativeTime(a.last_seen_at)}</td>
+                <td title={CONFIDENCE_TOOLTIP} className="tmNowrap tmNum">{confidencePercent(a.confidence)} ({confidenceBand(a.confidence)})</td>
+                <td className="tmNum">{a.evidence_count}</td>
+                <td className="tmNowrap">{relativeTime(a.first_seen_at)}</td>
+                <td className="tmNowrap">{relativeTime(a.last_seen_at)}</td>
                 <td><StatusPill label="Not promoted" variant="neutral" /></td>
-                <td className="muted" style={{ maxWidth: '22rem' }}>{a.not_promoted_reason ?? 'Below the promotion threshold.'}</td>
+                <td className="muted tmReasonCell">{a.not_promoted_reason ?? 'Below the promotion threshold.'}</td>
               </tr>
             ))}
           </TableShell>
@@ -831,7 +941,7 @@ function TelemetryTab({ authHeaders, windowKey }: { authHeaders: () => Record<st
   }, []);
 
   return (
-    <div role="tabpanel" aria-label="Telemetry" style={{ marginTop: '0.75rem' }}>
+    <div role="tabpanel" aria-label="Telemetry" className="tmTabPanel">
       <TelemetryFilterBar
         eventType={eventType}
         source={source}
@@ -840,32 +950,35 @@ function TelemetryTab({ authHeaders, windowKey }: { authHeaders: () => Record<st
         onSource={(v) => { setSource(v); setOffset(0); }}
         onFreshness={(v) => { setFreshness(v); setOffset(0); }}
       />
-      <p className="muted" style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
-        Canonical on-chain security telemetry for the selected window. Ingestion heartbeats (RPC polling, provider checks) are shown under Monitoring Sources, not here. Times are your local timezone.
+      <p className="muted tmTabIntro">
+        <TmIcon name="info" />
+        <span>Canonical on-chain security telemetry for the selected window. Ingestion heartbeats (RPC polling, provider checks) are shown under Monitoring Sources, not here. Times are your local timezone.</span>
       </p>
       {loading ? (
-        <p className="muted" style={{ padding: '1.5rem 0' }}>Loading telemetry…</p>
+        <p className="muted tmLoadingLine" role="status">Loading telemetry…</p>
       ) : err ? (
-        <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
+        <p className="statusLine tmError" role="alert">{err}</p>
       ) : sorted.length === 0 ? (
         <EmptyStateBlocker title="No security telemetry" body="No canonical on-chain security telemetry has been ingested for this workspace in the selected window." ctaHref={SOURCE_DIAGNOSTIC_HREF} ctaLabel="Check Monitoring Sources" />
       ) : (
         <>
-          <TableShell headers={['Event Type', 'Asset', 'Transaction', 'Block', 'Ingestion Source', 'Evidence Quality', 'Freshness', 'Observed At']} compact>
+          <TableShell headers={['Event Type', 'Asset', 'Transaction', 'Block', 'Ingestion Source', 'Evidence Quality', 'Freshness', 'Observed At']} compact className="tmTable tmTelemetryTable">
             {sorted.map((e) => (
-              <tr key={e.id}>
-                <td>{eventTypeLabel(e.event_type)}</td>
+              // The row's evidence mode is the same canonical field the pill renders;
+              // it only adds an edge marker so non-live rows stand apart while scanning.
+              <tr key={e.id} data-evidence-mode={String(e.evidence_mode ?? e.evidence_source ?? '').toLowerCase()}>
+                <td className="tmStrongCell">{eventTypeLabel(e.event_type)}</td>
                 <td>{e.asset_name ?? '—'}</td>
                 <td>
                   {e.tx_hash ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-                      <span style={{ fontFamily: 'monospace', fontSize: '0.82rem' }} title={e.tx_hash}>{shortHex(e.tx_hash)}</span>
+                    <span className="tmHashCell">
+                      <span className="tmMono" title={e.tx_hash}>{shortHex(e.tx_hash)}</span>
                       <button
                         type="button"
-                        className="btn btn-secondary"
+                        className="btn btn-secondary tmCopyBtn"
                         aria-label="Copy transaction hash"
                         title="Copy transaction hash"
-                        style={{ fontSize: '0.7rem', padding: '0.1rem 0.35rem', lineHeight: 1.2 }}
+                        data-copied={copied === e.tx_hash ? 'true' : undefined}
                         onClick={() => copyHash(e.tx_hash as string)}
                       >
                         {copied === e.tx_hash ? '✓' : 'Copy'}
@@ -873,17 +986,17 @@ function TelemetryTab({ authHeaders, windowKey }: { authHeaders: () => Record<st
                     </span>
                   ) : '—'}
                 </td>
-                <td>{e.block_number ?? '—'}</td>
-                <td>{ingestionSourceLabel(e.ingestion_source)}</td>
+                <td className="tmMono tmNum">{e.block_number ?? '—'}</td>
+                <td className="tmNowrap">{ingestionSourceLabel(e.ingestion_source)}</td>
                 <td title={EVIDENCE_QUALITY_TOOLTIP}>{evidenceQualityLabel(e.evidence_quality)}</td>
                 <td>
-                  <span style={{ display: 'inline-flex', gap: '0.3rem', alignItems: 'center' }}>
+                  <span className="tmPillPair">
                     <StatusPill label={evidenceSourceLabel(e.evidence_mode ?? e.evidence_source)} variant={evidenceSourceVariant(e.evidence_mode ?? e.evidence_source)} />
                     <StatusPill label={rowFreshnessLabel(e.freshness)} variant={rowFreshnessVariant(e.freshness)} />
                   </span>
                 </td>
-                <td style={{ whiteSpace: 'nowrap' }} title={e.observed_at ?? ''}>
-                  <button type="button" className="btnLink" onClick={() => setSortDesc((s) => !s)} title="Sort by observed time" style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0 }}>
+                <td className="tmNowrap" title={e.observed_at ?? ''}>
+                  <button type="button" className="btnLink tmSortBtn" onClick={() => setSortDesc((s) => !s)} title="Sort by observed time">
                     {relativeTime(e.observed_at)}
                   </button>
                 </td>
@@ -893,6 +1006,21 @@ function TelemetryTab({ authHeaders, windowKey }: { authHeaders: () => Record<st
           <Pager offset={offset} total={total} onPrev={() => setOffset(Math.max(0, offset - PAGE_SIZE))} onNext={() => setOffset(offset + PAGE_SIZE)} />
         </>
       )}
+    </div>
+  );
+}
+
+/* ── Shared: summary unavailable ─────────────────────────────────── */
+/**
+ * The summary did not load (request failed, or the payload carried no summary).
+ * Fail closed: say the section has no result rather than rendering an empty
+ * state that would read as "nothing arrived" or "no matches".
+ */
+function SummaryUnavailable({ section }: { section: string }) {
+  return (
+    <div className="tmInlineEmpty tmUnavailable" data-testid="summary-unavailable">
+      <p className="tmInlineEmptyTitle">Unavailable</p>
+      <p className="muted tmInlineEmptyBody">The threat monitoring summary did not load, so {section} cannot be shown. Use Refresh to try again.</p>
     </div>
   );
 }
@@ -907,10 +1035,10 @@ function StaleEmptyState({ title, body, stale, staleWarning, nextAction }: { tit
       <h4>{title}</h4>
       <p className="muted">{body}</p>
       {stale ? (
-        <p className="statusLine statusLine-warning" role="status" data-testid="empty-stale-warning" style={{ marginTop: '0.6rem' }}>{staleWarning}</p>
+        <p className="statusLine statusLine-warning tmInlineWarning" role="status" data-testid="empty-stale-warning">{staleWarning}</p>
       ) : null}
       {showDiagnostic ? (
-        <a href={SOURCE_DIAGNOSTIC_HREF} className="btn btn-secondary" data-testid="run-source-diagnostic" style={{ marginTop: '0.75rem', display: 'inline-block' }}>
+        <a href={SOURCE_DIAGNOSTIC_HREF} className="btn btn-secondary tmEmptyCta" data-testid="run-source-diagnostic">
           {nextActionLabel('diagnose_ingestion') || RUN_SOURCE_DIAGNOSTIC_LABEL}
         </a>
       ) : null}
@@ -948,7 +1076,7 @@ function DetectionFilterBar({
         { value: 'privileged_action', label: 'Privileged/Admin Action' },
       ];
   return (
-    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }} data-testid="detection-filter-bar">
+    <div className="tmToolbar" data-testid="detection-filter-bar">
       <FilterField label="Category">
         <Select
           value={category}
@@ -994,28 +1122,19 @@ function DetectionFilterBar({
           ]}
         />
       </FilterField>
-      <FilterField label="Search">
-        <input
-          type="search"
-          className="input"
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Search detections..."
-          aria-label="Search detections"
-          data-testid="detection-search"
-          // Matches the Evidence & Audit search field so the toolbar reads as
-          // one control row rather than a new input style.
-          style={{
-            width: '100%',
-            minWidth: '180px',
-            padding: '0.45rem 0.6rem',
-            fontSize: '0.85rem',
-            background: 'var(--bg-input)',
-            border: '1px solid var(--border)',
-            borderRadius: '6px',
-            color: 'inherit',
-          }}
-        />
+      <FilterField label="Search" wide>
+        <span className="tmSearch">
+          <TmIcon name="search" />
+          <input
+            type="search"
+            className="input tmSearchInput"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search detections..."
+            aria-label="Search detections"
+            data-testid="detection-search"
+          />
+        </span>
       </FilterField>
     </div>
   );
@@ -1026,7 +1145,7 @@ function TelemetryFilterBar({ eventType, source, freshness, onEventType, onSourc
   onEventType: (v: string) => void; onSource: (v: string) => void; onFreshness: (v: string) => void;
 }) {
   return (
-    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+    <div className="tmToolbar" data-testid="telemetry-filter-bar">
       <FilterField label="Event type">
         <Select
           value={eventType}
@@ -1071,11 +1190,11 @@ function TelemetryFilterBar({ eventType, source, freshness, onEventType, onSourc
   );
 }
 
-function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
+function FilterField({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '160px' }}>
-      {label}
-      <span style={{ marginTop: '0.25rem' }}>{children}</span>
+    <label className={wide ? 'tmField tmField--wide' : 'tmField'}>
+      <span className="tmFieldLabel">{label}</span>
+      <span className="tmFieldControl">{children}</span>
     </label>
   );
 }
@@ -1084,9 +1203,9 @@ function Pager({ offset, total, onPrev, onNext }: { offset: number; total: numbe
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + PAGE_SIZE, total);
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem' }}>
-      <span className="muted" style={{ fontSize: '0.85rem' }} data-testid="pager-total">{from}–{to} of {total}</span>
-      <div style={{ display: 'flex', gap: '0.5rem' }}>
+    <div className="tmPager">
+      <span className="muted tmPagerTotal" data-testid="pager-total">{from}–{to} of {total}</span>
+      <div className="tmPagerButtons">
         <button type="button" className="btn btn-secondary" disabled={offset <= 0} onClick={onPrev}>Previous</button>
         <button type="button" className="btn btn-secondary" disabled={offset + PAGE_SIZE >= total} onClick={onNext}>Next</button>
       </div>
