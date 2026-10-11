@@ -11904,10 +11904,29 @@ a.mktTrustBadge:hover {
   from { opacity: 0; transform: translateY(-50%) scaleY(0.3); }
 }
 
+/* A metric changed: the NEW backend value settles in. Two identical
+   keyframes so alternating data-changed="a"/"b" restarts the animation on
+   every change. No intermediate value is ever rendered. */
+@keyframes dcValueSettleA {
+  from { opacity: 0.35; transform: translate3d(0, -3px, 0); }
+}
+
+@keyframes dcValueSettleB {
+  from { opacity: 0.35; transform: translate3d(0, -3px, 0); }
+}
+
 @keyframes dcBrandShimmer {
   from { background-position: 120% 0; }
   to   { background-position: -20% 0; }
 }
+
+/* ── Metric change cue ────────────────────────────────────────────── */
+.dcAnimatedNumber {
+  display: inline-block;
+}
+
+.dcAnimatedNumber[data-changed="a"] { animation: dcValueSettleA 450ms var(--ease-out); }
+.dcAnimatedNumber[data-changed="b"] { animation: dcValueSettleB 450ms var(--ease-out); }
 
 /* ── Typography ───────────────────────────────────────────────────── */
 body {

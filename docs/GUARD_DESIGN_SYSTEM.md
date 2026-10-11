@@ -61,9 +61,10 @@ Tokens: `--ease-out`, `--ease-in-out`, `--ease-spring`, `--dur-fast` (120ms),
 - A data refresh never replays an entrance; table rows and polled lists are never
   animated.
 - Only loading indicators (spinner, shimmer, pulse) may loop.
-- `AnimatedNumber` (`app/components/motion.tsx`) eases a count between two
-  **backend-reported** values on change; the first render is the real value, and
-  reduced motion shows the new value at once.
+- `AnimatedNumber` (`app/components/motion.tsx`) never interpolates: the text is
+  always the backend value (a tween from 2 to 10 would render 3…9, counts the
+  workspace never had). A change only replays a short CSS settle cue on the new
+  figure; the first render has no cue, and reduced motion removes it.
 - `prefers-reduced-motion: reduce` collapses all durations globally (top of the
   stylesheet).
 
@@ -74,7 +75,9 @@ Tokens: `--ease-out`, `--ease-in-out`, `--ease-spring`, `--dur-fast` (120ms),
   appear as tooltips).
 - 768–1100px: icon rail automatically.
 - < 768px: off-canvas drawer opened from the header menu button; Escape, the scrim
-  and the close button dismiss it; focus moves in and back.
+  and the close button dismiss it; focus moves in, Tab wraps inside it, the page
+  behind is `inert`, and focus returns to the menu button. Leaving the phone
+  breakpoint closes it and releases the scroll lock.
 - The header bell opens `/alerts`; it never shows a count of its own.
 - Brand mark: `DecodaShieldMark` (`app/components/brand-mark.tsx`), the repository's
   Decoda shield geometry in brand tokens. Replace its paths with the canonical

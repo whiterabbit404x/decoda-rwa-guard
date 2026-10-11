@@ -456,8 +456,8 @@ function MetricCard({
 }: {
   label: string;
   value: string;
-  /** The same figure as `value`, when it is a count: it then eases between
-   *  backend-reported values on refresh instead of jumping. */
+  /** The same figure as `value`, when it is a count: a refresh that changes
+   *  it shows the new backend value at once with a short settle cue. */
   numeric?: number;
   meta?: string;
   delta?: { text: string; tone: 'up' | 'down' | 'flat' };
