@@ -12593,10 +12593,13 @@ body {
     min-height: 3.25rem;
   }
 
+  /* Menu button and shield lead the phone header; the older 760px rule
+     moved the title in front of them. */
   .shellPageTitle {
     flex: 1 1 auto;
     flex-basis: auto;
     min-width: 0;
+    order: 0;
   }
 
   .shellBreadcrumb {

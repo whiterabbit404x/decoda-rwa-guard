@@ -21,10 +21,13 @@ theme/contrast specs mount the real components against that one file.
    `--brand-navy`, `--brand-grid-line` and the `--sidebar-*` set. Identical in both
    themes (the sidebar is navy in Light and Dark).
 4. **Component rules** — the original per-screen sections.
-5. **Decoda brand layer** — the final section of the file. Shared polish for the
-   shell, cards, buttons, inputs, pills, tabs, tables, overlays, empty states,
-   skeletons, the dashboard and the onboarding stepper, followed by per-screen
-   sections.
+5. **Decoda brand layer** — shared polish for the shell, cards, buttons,
+   inputs, pills, tabs, tables, overlays, empty states, skeletons, the dashboard
+   and the onboarding stepper.
+6. **Screen layers** — one block per screen at the end of the file, between
+   `/* ═══ Screen layer: <name> — begin/end ═══ */` markers (alerts, incidents,
+   system-health, onboarding, …). Selectors are scoped to that screen's own
+   classes; a shared primitive is never restyled globally from a screen layer.
 
 ## Colour rules
 
@@ -33,7 +36,7 @@ theme/contrast specs mount the real components against that one file.
 | Interaction (links, focus, selection, primary action, active nav) | `--accent-*`, `--text-accent`, `--border-hover`, `--ring` | Teal. **Never a status.** The `accent-blue` names are historical. |
 | Critical / high / failure | `--danger-*` | |
 | Medium / degraded / stale-with-fallback | `--warning-*` | |
-| Low / informational / investigating | `--info-*` | Blue is reserved for this. |
+| Low severity / informational / investigating | `--info-*` | Blue is reserved for this. `statusVariantFromSeverity('low')` is `info`, so a low-severity alert or incident never wears healthy green. |
 | Healthy / verified (only when proven) | `--success-*` | |
 | Unknown / no data / not configured / disabled | `--neutral-*` | No data is never shown as safe. |
 | Governance / human decision | `--violet-*` | |
