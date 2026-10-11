@@ -12834,6 +12834,69 @@ a:focus-visible > .dataCard {
   50% { box-shadow: 0 0 0 5px transparent; }
 }
 
+/* The legacy CTA family (.primaryCta / .secondaryCta / .tertiaryCta) still
+   marks links and buttons on several product screens. Inside the shell it
+   follows the button system: same height, radius and fills. A <button>
+   wearing .secondaryCta used to keep the browser's grey fill under the
+   theme's ink (1.1:1 in Dark). Public pages keep their own treatment. */
+.appShellFrame :is(.primaryCta, .secondaryCta, .tertiaryCta) {
+  min-height: var(--control-h);
+  padding: 0.45rem 0.95rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.appShellFrame .primaryCta {
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  box-shadow: inset 0 1px 0 var(--btn-highlight), var(--shadow-xs);
+}
+
+.appShellFrame .primaryCta:hover { background: var(--accent-solid-hover); }
+
+.appShellFrame .secondaryCta {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+}
+
+.appShellFrame .secondaryCta:hover {
+  border-color: var(--border-hover);
+  color: var(--text-accent);
+}
+
+.appShellFrame .tertiaryCta {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.appShellFrame .tertiaryCta:hover {
+  background: var(--overlay-03);
+  color: var(--text-primary);
+}
+
+.appShellFrame :is(.primaryCta, .secondaryCta, .tertiaryCta):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.appShellFrame :is(.primaryCta, .secondaryCta, .tertiaryCta):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 /* ── Form controls ────────────────────────────────────────────────── */
 :where(.appShellFrame, .dataCard)
   :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):hover:not(:disabled):not(:focus) {
@@ -18201,3 +18264,1125 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   }
 }
 /* ═══ Screen layer: system-health — end ═══ */
+
+/* ═══ Screen layer: onboarding — begin ═══ */
+/* ═════════════════════════════════════════════════════════════════════
+   SCREENS 1 + 3 — ONBOARDING AGENT and ASSET RISK (group: onboarding-assets)
+   ─────────────────────────────────────────────────────────────────────
+   Extends the Decoda brand layer. Tokens only; severity hues keep their
+   meaning; teal marks interaction and progress, never health. Entrance
+   motion is one-shot and sits on mounts (a card, a notice, a revealed
+   panel), never on rows that re-render while polling.
+   ═════════════════════════════════════════════════════════════════════ */
+
+@keyframes dcOnbSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Onboarding · page frame ─────────────────────────────────────── */
+.onbHeader {
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.onbHeaderMeta {
+  gap: 0.6rem;
+}
+
+.onbGrid {
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+.onbMain {
+  gap: 1rem;
+}
+
+/* Sibling cards settle in as a short cascade when a new stage mounts
+   (intake → execution log → findings → proposal). Delay only; the
+   animation itself is the brand layer's one-shot dcFadeUp. */
+.onbMain > .onbCard:nth-child(2) { animation-delay: 40ms; }
+.onbMain > .onbCard:nth-child(3) { animation-delay: 80ms; }
+.onbMain > .onbCard:nth-child(n + 4) { animation-delay: 120ms; }
+.onbSide > .onbCard { animation-delay: 60ms; }
+
+.onbCard {
+  padding: 1.15rem 1.25rem 1.25rem;
+}
+
+.onbCardHead {
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.onbCard .sectionEyebrow {
+  margin: 0;
+}
+
+.onbCardTitle {
+  margin-top: 0.2rem;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+/* Agent identity: a quiet mark beside the agent's name. */
+.onbAgentIdentity {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.onbAgentMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-accent);
+  background: var(--accent-blue-bg);
+  color: var(--text-accent);
+  box-shadow: var(--shadow-xs);
+}
+
+/* ── Onboarding · notices (failure, warning, expired session) ───── */
+.onbNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding: 0.85rem 1rem;
+}
+
+:where(.onbNotice) {
+  animation: dcPopIn var(--dur-base) var(--ease-out) backwards;
+}
+
+.onbNotice--danger {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+}
+
+.onbNotice--warning {
+  border-color: var(--warning-bdr);
+  background: var(--warning-bg);
+}
+
+.onbNoticeIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--bg-card);
+}
+
+.onbNoticeIcon--danger { color: var(--danger-fg); border-color: var(--danger-bdr); }
+.onbNoticeIcon--warning { color: var(--warning-fg); border-color: var(--warning-bdr); }
+
+.onbNotice .onboardingError,
+.onbNotice .onbWarn {
+  margin: 0.25rem 0 0;
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.onbErrorNotice {
+  flex: 1;
+  min-width: 0;
+  gap: 0.5rem;
+}
+
+.onbErrorNotice .onboardingError {
+  margin-top: 0.25rem;
+}
+
+.onbErrorCode,
+.onbErrorRef {
+  padding: 0.12rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+}
+
+.onbErrorActions {
+  margin: 0.15rem 0 0;
+}
+
+.onbInlineLink {
+  color: var(--text-accent);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.onbSkeleton {
+  gap: 0.65rem;
+}
+
+.onbSkeletonLabel {
+  margin: 0 0 0.25rem;
+  font-size: 0.82rem;
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+
+/* ── Onboarding · intake: instruction panel ──────────────────────── */
+.onbInstruction {
+  margin: 0 0 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.onbInstruction .onbLead {
+  margin: 0 0 0.8rem;
+  max-width: 76ch;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.onbHowItWorks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onbHowItWorks li {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 0.78rem;
+  font-weight: 550;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.onbHowNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--accent-blue-bg);
+  color: var(--text-accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Onboarding · intake: grouped form ───────────────────────────── */
+.onbForm {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.onbFieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.onbLegend {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  margin: 0 0 0.8rem;
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.onbLegend::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.onbLegendNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  font-size: 0.66rem;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.onbFieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.1rem;
+}
+
+.onbField {
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.onbField > span:first-child {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.45rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.onbField em.req {
+  margin-left: 0;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--danger-fg);
+}
+
+.onbField em.hint {
+  margin-left: 0;
+  font-size: 0.74rem;
+  font-weight: 450;
+  color: var(--text-muted);
+}
+
+.onbField input,
+.onbField textarea {
+  min-height: var(--control-h);
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.onbField textarea {
+  min-height: 5.25rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.onbField input:hover:not(:focus),
+.onbField textarea:hover:not(:focus) {
+  border-color: var(--border-hover);
+}
+
+.onbField input:focus,
+.onbField textarea:focus {
+  outline: none;
+  border-color: var(--border-hover);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+.onbField .onbMonoInput {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+}
+
+/* Inline validation: the border, a ring and the message all change, so the
+   state never rests on colour alone. */
+.onbField input[data-valid="false"],
+.onbField input[data-valid="false"]:hover {
+  border-color: var(--danger-fg);
+}
+
+.onbField input[data-valid="false"]:focus {
+  border-color: var(--danger-fg);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
+.onbField input[data-valid="true"] {
+  border-color: var(--success-bdr);
+}
+
+.onbFieldHint,
+.onbFieldError,
+.onbFieldOk {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.onbFieldHint { color: var(--text-secondary); }
+
+.onbFieldError {
+  color: var(--danger-fg);
+  font-weight: 550;
+}
+
+.onbFieldOk {
+  color: var(--success-fg);
+  font-weight: 550;
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+.onbFieldError::before,
+.onbFieldOk::before {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-top: 0.08rem;
+  border-radius: 50%;
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.onbFieldError::before {
+  content: '!' / '';
+  border: 1px solid var(--danger-bdr);
+  background: var(--danger-bg);
+}
+
+.onbFieldOk::before {
+  content: '\2713' / '';
+  border: 1px solid var(--success-bdr);
+  background: var(--success-bg);
+}
+
+.onbSubmitRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  margin: 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.onbSubmitHint {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* ── Onboarding · execution log (vertical progress log) ──────────── */
+.onbTimeline {
+  gap: 0.15rem;
+}
+
+.onbTimelineItem {
+  gap: 0.8rem;
+  padding: 0.6rem 0.7rem 0.6rem 0.3rem;
+  border-radius: var(--radius-md);
+  transition: background-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
+}
+
+/* The rail between two steps. It turns teal (progress, not health) once
+   the step above it has completed. */
+.onbTimelineItem:not(:last-child)::before {
+  left: calc(0.3rem + 11px);
+  top: 38px;
+  bottom: -9px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background-color var(--dur-slow) var(--ease-out);
+}
+
+.onbTimelineItem[data-status="completed"]:not(:last-child)::before {
+  background: var(--border-accent);
+}
+
+.onbDot {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  border-width: 1.5px;
+  border-style: solid;
+  border-color: var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out);
+}
+
+.onbDot-pending,
+.onbDot-skipped {
+  border-style: dashed;
+}
+
+.onbDot-completed {
+  border-color: var(--accent-solid);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+
+.onbDot-failed {
+  border-color: var(--danger-solid);
+  background: var(--danger-solid);
+  color: var(--on-accent);
+}
+
+.onbDot-needs_attention {
+  border-color: var(--warning-fg);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+/* A step in flight: a turning arc around a steady core. The spinner is a
+   loading indicator, so it loops; reduced motion leaves the static arc. */
+.onbDot-running {
+  border-color: var(--border-accent);
+  background: var(--bg-card);
+  animation: none;
+}
+
+.onbDot-running::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+}
+
+.onbDot-running::after {
+  content: '';
+  position: absolute;
+  inset: -2.5px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--accent-blue);
+  border-right-color: var(--accent-blue);
+  animation: dcOnbSpin 900ms linear infinite;
+}
+
+.onbTimelineItem[data-status="running"] {
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.onbTimelineItem[data-status="failed"] {
+  background: var(--danger-bg);
+  box-shadow: inset 0 0 0 1px var(--danger-bdr);
+}
+
+.onbTimelineItem[data-status="needs_attention"] {
+  background: var(--warning-bg);
+  box-shadow: inset 0 0 0 1px var(--warning-bdr);
+}
+
+.onbTimelineBody {
+  padding-top: 1px;
+}
+
+.onbTimelineTop {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  min-height: 22px;
+}
+
+.onbStepTitle {
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.onbTimelineTop .sharedStatusPill {
+  flex-shrink: 0;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.68rem;
+  text-transform: capitalize;
+}
+
+.onbTimelineItem[data-status="pending"] .onbStepTitle,
+.onbTimelineItem[data-status="skipped"] .onbStepTitle {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* A step that has not started has no times or evidence yet; its
+   placeholder meta line ("Start — Done —") carries no information. */
+.onbTimelineItem[data-status="pending"] .onbStepMeta {
+  display: none;
+}
+
+.onbStepSummary {
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.onbStepError {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--danger-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 0.8rem;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.onbStepMeta {
+  align-items: center;
+  gap: 0.25rem 0.9rem;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.onbLinkBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: -0.35rem;
+  padding: 0.12rem 0.35rem;
+  border-radius: var(--radius-xs);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.onbLinkBtn::after {
+  content: '';
+  width: 0.32rem;
+  height: 0.32rem;
+  margin-top: -0.12rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--dur-fast) var(--ease-out), margin var(--dur-fast) var(--ease-out);
+}
+
+.onbLinkBtn[aria-expanded="true"]::after {
+  margin-top: 0.12rem;
+  transform: rotate(-135deg);
+}
+
+.onbLinkBtn:hover {
+  background: var(--accent-blue-bg);
+}
+
+.onbLinkBtn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.onbEvidence {
+  margin-top: 0.5rem;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+:where(.onbEvidence) {
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ── Onboarding · discovery findings ─────────────────────────────── */
+.onbSummaryGrid {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 0.6rem;
+}
+
+.onbSummaryCell {
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.onbSummaryLabel {
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.onbSummaryValue {
+  font-size: 0.9rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.onbMono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0;
+}
+
+.onbSummaryCell .sharedStatusPill {
+  align-self: flex-start;
+  margin-top: 0.15rem;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.66rem;
+  text-transform: capitalize;
+}
+
+.onbCaps {
+  margin-top: 0.9rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.onbCapRow .sharedStatusPill {
+  font-size: 0.72rem;
+}
+
+/* ── Onboarding · RPC benchmark ──────────────────────────────────── */
+.onbExplain {
+  margin: 0 0 0.9rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.onbRpcTable th,
+.onbRpcTable td {
+  padding: 0.5rem 0.6rem;
+  white-space: nowrap;
+}
+
+.onbRpcTable td {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.onbRpcTable td.onbRpcHost {
+  max-width: 13rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 550;
+}
+
+.onbRpcTable .sharedStatusPill {
+  text-transform: capitalize;
+}
+
+/* ── Onboarding · proposal review ────────────────────────────────── */
+.onbApprovalGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.onbProposalStat {
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.onbProposalValue {
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.onbProposalStat--text {
+  grid-column: span 2;
+}
+
+.onbProposalStat--text .onbProposalValue {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.onbTwoCol {
+  gap: 1rem 1.25rem;
+}
+
+.onbSubhead {
+  margin: 0 0 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.onbTwoCol ul + .onbSubhead {
+  margin-top: 1rem;
+}
+
+.onbRuleList,
+.onbReviewList {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.onbRuleList li,
+.onbReviewList li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  padding: 0.45rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.onbRuleList li:last-child,
+.onbReviewList li:last-child {
+  border-bottom: 0;
+}
+
+.onbRuleList .sharedStatusPill,
+.onbReviewList .sharedStatusPill {
+  justify-content: center;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.66rem;
+  text-transform: capitalize;
+}
+
+.onbRuleList .sharedStatusPill {
+  min-width: 4.3rem;
+}
+
+.onbRuleTitle {
+  font-weight: 550;
+}
+
+.onbRuleList li[data-enabled="false"] {
+  background: var(--bg-subtle);
+}
+
+.onbRuleList li[data-enabled="false"] .onbRuleTitle {
+  color: var(--text-secondary);
+  font-weight: 450;
+}
+
+.onbLimitList {
+  gap: 0.35rem;
+  padding-left: 1.1rem;
+}
+
+.onbLimitList li {
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/* The decision bar closes the proposal card: approval, then activation,
+   with the reason activation is held stated beside it. */
+.onbApproveRow {
+  margin: 1.1rem -1.25rem -1.25rem;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--bg-subtle);
+}
+
+.onbApproveHint {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+/* ── Onboarding · protection active (backend status: completed) ──── */
+.onbProtected {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--success-bdr);
+}
+
+.onbProtected::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--success-fg);
+  opacity: 0.75;
+}
+
+.onbProtectedHead {
+  gap: 0.9rem;
+}
+
+.onbProtectedHead .muted {
+  margin: 0.2rem 0 0;
+  font-size: 0.86rem;
+}
+
+.onbProtectedIcon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--success-bdr);
+  border-radius: var(--radius-md);
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+/* ── Onboarding · agent panel (right rail) ───────────────────────── */
+.onbAgentPanel {
+  padding: 1.1rem 1.15rem 1.15rem;
+}
+
+.onbAgentPanelHead {
+  margin-bottom: 0.95rem;
+}
+
+.onbAgentPanel .onbCardTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.02rem;
+}
+
+/* The state dot echoes the backend session status the label names. */
+.onbStateDot {
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--neutral-fg);
+  box-shadow: 0 0 0 3px var(--neutral-bg);
+}
+
+.onbAgentPanelHead:is([data-state="discovering"], [data-state="benchmarking"], [data-state="activating"]) .onbStateDot {
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+  animation: onbPulse 1.6s var(--ease-in-out) infinite;
+}
+
+.onbAgentPanelHead:is([data-state="proposal_ready"], [data-state="approved"]) .onbStateDot {
+  background: var(--info-fg);
+  box-shadow: 0 0 0 3px var(--info-bg);
+}
+
+.onbAgentPanelHead:is([data-state="partial"], [data-state="unknown"]) .onbStateDot {
+  background: var(--warning-fg);
+  box-shadow: 0 0 0 3px var(--warning-bg);
+}
+
+.onbAgentPanelHead[data-state="failed"] .onbStateDot {
+  background: var(--danger-fg);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
+.onbAgentPanelHead[data-state="completed"] .onbStateDot {
+  background: var(--success-fg);
+  box-shadow: 0 0 0 3px var(--success-bg);
+}
+
+.onbProgress {
+  margin: 0 0 0.85rem;
+  padding: 0.7rem 0.75rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.onbProgressLabel {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.onbProgressLabel strong {
+  font-size: 0.84rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.onbProgressBar {
+  height: 6px;
+  margin: 0;
+  background: var(--overlay-06);
+}
+
+.onbProgressBar span {
+  background: linear-gradient(90deg, var(--brand-teal), var(--brand-cyan));
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.onbAgentState {
+  gap: 0;
+  margin-bottom: 1rem;
+}
+
+.onbAgentRow {
+  align-items: baseline;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.onbAgentRow:last-child {
+  border-bottom: 0;
+}
+
+.onbAgentRow span {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.onbAgentRow strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.onbAgentRow--active strong {
+  color: var(--text-accent);
+}
+
+.onbAgentActions {
+  gap: 0.5rem;
+}
+
+.onbAsk {
+  gap: 0.45rem;
+  padding-top: 0.9rem;
+}
+
+.onbAsk input {
+  min-height: var(--control-h);
+  border-color: var(--border-strong);
+  background: var(--bg-input);
+}
+
+.onbAsk input:focus {
+  border-color: var(--border-hover);
+  box-shadow: 0 0 0 3px var(--accent-blue-bg);
+}
+
+.onbAskAnswer {
+  border-left: 3px solid var(--border-accent);
+  background: var(--bg-subtle);
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.onbAskHint {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+/* No session yet: neutral and dashed — nothing is running, nothing is
+   healthy. */
+.onbAgentEmpty {
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+/* ── Onboarding · responsive ─────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .onbGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  /* Five steps stay on one row on a phone: smaller marks, two-line labels,
+     and the progress connectors kept rather than dropped. */
+  .onboardingStepper {
+    flex-wrap: nowrap;
+    gap: 0;
+    padding: 1rem 0.25rem 1.1rem;
+  }
+
+  .onboardingStepItem {
+    min-width: 0;
+    gap: 0.45rem;
+  }
+
+  .stepConnector {
+    display: block;
+    top: 15px;
+    left: calc(-50% + 19px);
+    right: calc(50% + 19px);
+    height: 2px;
+  }
+
+  .stepCircle {
+    width: 32px;
+    height: 32px;
+    font-size: 0.78rem;
+  }
+
+  .stepLabel {
+    padding: 0 0.1rem;
+    font-size: 0.66rem;
+    line-height: 1.25;
+  }
+}
+
+@media (max-width: 640px) {
+  .onbCard { padding: 1rem; }
+  .onbFieldGrid,
+  .onbHowItWorks { grid-template-columns: minmax(0, 1fr); }
+  .onbApprovalGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .onbApproveRow { margin: 1rem -1rem -1rem; padding: 0.8rem 1rem; }
+  .onbCardHead { flex-wrap: wrap; }
+  .onbTimelineTop { flex-wrap: wrap; }
+}
+/* ═══ Screen layer: onboarding — end ═══ */

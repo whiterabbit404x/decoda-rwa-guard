@@ -305,9 +305,10 @@ export default function OnboardingPageClient() {
         </div>
 
         {sessionExpired ? (
-          <SurfaceCard className="onbNotice">
+          <SurfaceCard className="onbNotice onbNotice--warning">
+            <NoticeIcon tone="warning" />
             <p className="onboardingError" data-testid="session-expired-notice">
-              Session expired. Please <Link href="/sign-in" prefetch={false} style={{ color: 'var(--text-accent)' }}>sign in again</Link> to continue.
+              Session expired. Please <Link href="/sign-in" prefetch={false} className="onbInlineLink">sign in again</Link> to continue.
             </p>
           </SurfaceCard>
         ) : null}
@@ -317,7 +318,10 @@ export default function OnboardingPageClient() {
           <SessionErrorNotice session={snapshot.session} onRetry={onRetry} busy={busy} />
         ) : null}
         {snapshot?.warnings?.length ? (
-          <SurfaceCard className="onbNotice"><p className="onbWarn" data-testid="onboarding-warning">{snapshot.warnings.join(' ')}</p></SurfaceCard>
+          <SurfaceCard className="onbNotice onbNotice--warning">
+            <NoticeIcon tone="warning" />
+            <p className="onbWarn" data-testid="onboarding-warning">{snapshot.warnings.join(' ')}</p>
+          </SurfaceCard>
         ) : null}
 
         <div className="onbGrid">
@@ -325,7 +329,12 @@ export default function OnboardingPageClient() {
             {!snapshot && !initializing ? (
               <IntakeForm form={form} setForm={setForm} onCreate={onCreate} busy={busy} contractValid={contractValid} />
             ) : null}
-            {initializing ? <SurfaceCard className="onbSkeleton"><div className="skeletonRow" /><div className="skeletonRow" /><div className="skeletonRow" /></SurfaceCard> : null}
+            {initializing ? (
+              <SurfaceCard className="onbSkeleton">
+                <p className="onbSkeletonLabel" role="status">Restoring your onboarding session…</p>
+                <div className="skeletonRow" /><div className="skeletonRow" /><div className="skeletonRow" />
+              </SurfaceCard>
+            ) : null}
 
             {snapshot ? (
               <AgentTimeline snapshot={snapshot} expanded={expanded} setExpanded={setExpanded} onRetry={onRetry} busy={busy} />
@@ -355,6 +364,56 @@ export default function OnboardingPageClient() {
   );
 }
 
+// Agent identity mark — a decorative glyph beside the agent's name. Status is never
+// carried by it; the state label and pills beside it say what the agent is doing.
+function AgentMark() {
+  return (
+    <span className="onbAgentMark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+        <path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}
+
+// Severity glyph for a notice. The tone mirrors the notice it sits in (danger for a
+// failure, warning for an expiring session / backend warning) — never a success mark.
+function NoticeIcon({ tone }: { tone: 'danger' | 'warning' }) {
+  return (
+    <span className={`onbNoticeIcon onbNoticeIcon--${tone}`} aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+        {tone === 'danger' ? (
+          <>
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+            <path d="M12 7.5v5.5M12 16.2v.3" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          </>
+        ) : (
+          <>
+            <path d="M12 3.5L21 19.5H3L12 3.5z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+            <path d="M12 10v4M12 16.8v.2" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          </>
+        )}
+      </svg>
+    </span>
+  );
+}
+
+// Step glyph for the execution log. Purely a visual echo of the backend step status
+// (the StatusPill beside it states the status in words).
+function StepGlyph({ status }: { status: string }) {
+  if (status === 'completed') {
+    return <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+  }
+  if (status === 'failed') {
+    return <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
+  }
+  if (status === 'needs_attention') {
+    return <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 3.5v5.5M8 12v.3" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>;
+  }
+  return null;
+}
+
 function StreamBadge({ status, active }: { status: StreamStatus; active: boolean }) {
   if (status === 'live') return <StatusPill label="Live updates" variant="success" />;
   if (active) return <StatusPill label="Polling" variant="info" />;
@@ -366,7 +425,8 @@ function StreamBadge({ status, active }: { status: StreamStatus; active: boolean
 // address). Never renders a raw exception, HTML body, or "Failed to fetch" string.
 function ErrorNotice({ error, onRetry, busy }: { error: OnboardingErrorInfo; onRetry: () => void; busy: Busy }) {
   return (
-    <SurfaceCard className="onbNotice">
+    <SurfaceCard className="onbNotice onbNotice--danger">
+      <NoticeIcon tone="danger" />
       <div className="onbErrorNotice" data-testid="onboarding-error-notice" data-error-code={error.code ?? undefined}>
         <p className="onboardingError" data-testid="onboarding-error">{error.message}</p>
         <div className="onbErrorMeta">
@@ -398,7 +458,8 @@ function ErrorNotice({ error, onRetry, busy }: { error: OnboardingErrorInfo; onR
 function SessionErrorNotice({ session, onRetry, busy }: { session: OnboardingSession; onRetry: () => void; busy: Busy }) {
   const info = describeOnboardingError(session.error_code, session.error_message);
   return (
-    <SurfaceCard className="onbNotice">
+    <SurfaceCard className="onbNotice onbNotice--danger">
+      <NoticeIcon tone="danger" />
       <div className="onbErrorNotice" data-testid="onboarding-session-error" data-error-code={session.error_code ?? undefined}>
         <p className="onboardingError">{info.message}</p>
         <div className="onbErrorMeta">
@@ -431,78 +492,112 @@ function IntakeForm({ form, setForm, onCreate, busy, contractValid }: {
   // that carried an unsupported chain id.
   const chainSupported = SUPPORTED_CHAIN_IDS.has(form.chain_id);
   const canSubmit = contractValid && chainSupported && busy === null;
+  const contractTouched = form.primary_contract !== '';
+  // Why the submit button is inert, stated from the same two facts that gate it.
+  const submitHint = !contractValid
+    ? 'Enter a valid primary contract address to start discovery.'
+    : !chainSupported
+      ? 'Select Base Mainnet to start discovery.'
+      : 'You review and approve the proposed configuration before anything is activated.';
   return (
-    <SurfaceCard className="onbCard">
+    <SurfaceCard className="onbCard onbIntake">
       <div className="onbCardHead">
-        <div>
-          <p className="sectionEyebrow">AI Onboarding Agent</p>
-          <h2 className="onbCardTitle">Automated infrastructure discovery and security configuration</h2>
+        <div className="onbAgentIdentity">
+          <AgentMark />
+          <div>
+            <p className="sectionEyebrow">AI Onboarding Agent</p>
+            <h2 className="onbCardTitle">Automated infrastructure discovery and security configuration</h2>
+          </div>
         </div>
       </div>
-      <p className="muted onbLead">
-        Provide a contract address and one or more RPC endpoints. The agent verifies the chain, inspects deployed
-        bytecode, detects standards, roles and capabilities, benchmarks providers, and drafts a monitoring workspace
-        for your review.
-      </p>
+      <div className="onbInstruction">
+        <p className="muted onbLead">
+          Provide a contract address and one or more RPC endpoints. The agent verifies the chain, inspects deployed
+          bytecode, detects standards, roles and capabilities, benchmarks providers, and drafts a monitoring workspace
+          for your review.
+        </p>
+        <ol className="onbHowItWorks" aria-label="How automated discovery works">
+          <li><span className="onbHowNum" aria-hidden="true">1</span><span>Provide a contract and RPC endpoints</span></li>
+          <li><span className="onbHowNum" aria-hidden="true">2</span><span>The agent discovers and benchmarks</span></li>
+          <li><span className="onbHowNum" aria-hidden="true">3</span><span>You review and approve before activation</span></li>
+        </ol>
+      </div>
       <div className="onbForm">
-        <label className="onbField">
-          <span>Workspace name</span>
-          <input value={form.workspace_name} onChange={(e) => setForm({ ...form, workspace_name: e.target.value })}
-            placeholder="Acme Capital" data-testid="input-workspace-name" />
-        </label>
-        <div className="onbField">
-          <span id="onb-field-network">Network</span>
-          <Select
-            testId="input-chain"
-            ariaLabelledBy="onb-field-network"
-            value={String(form.chain_id)}
-            onValueChange={(v) => setForm({ ...form, chain_id: Number(v) })}
-            options={CHAINS.map((c) => ({
-              value: String(c.id),
-              label: c.supported ? `${c.label} — Supported` : `${c.label} — Coming soon`,
-              disabled: !c.supported,
-            }))}
-          />
-          <span className="onbFieldHint">
-            {chainSupported
-              ? 'Base Mainnet (8453) is validated for automated discovery today. Additional EVM networks are coming soon.'
-              : 'Automated discovery currently runs on Base Mainnet only. Select Base Mainnet to continue — additional networks are coming soon.'}
-          </span>
-        </div>
-        <label className="onbField onbFieldWide">
-          <span>Primary contract address <em className="req">required</em></span>
-          <input value={form.primary_contract} onChange={(e) => setForm({ ...form, primary_contract: e.target.value })}
-            placeholder="0x…" spellCheck={false} data-testid="input-contract"
-            data-valid={form.primary_contract === '' ? undefined : contractValid} />
-          {form.primary_contract !== '' && !contractValid ? (
-            <span className="onbFieldError">Enter a valid 0x-prefixed 40-hex-character address.</span>
-          ) : null}
-        </label>
-        <label className="onbField onbFieldWide">
-          <span>RPC endpoints <em className="hint">one per line — keys are encrypted and never stored in the clear</em></span>
-          <textarea value={form.rpc_endpoints} onChange={(e) => setForm({ ...form, rpc_endpoints: e.target.value })}
-            placeholder="https://…" rows={3} spellCheck={false} data-testid="input-rpc" />
-        </label>
-        <div className="onbField">
-          <span id="onb-field-mode">Monitoring mode</span>
-          <Select
-            testId="input-mode"
-            ariaLabelledBy="onb-field-mode"
-            value={form.monitoring_mode}
-            onValueChange={(v) => setForm({ ...form, monitoring_mode: v })}
-            options={MODES.map((m) => ({ value: m.id, label: m.label }))}
-          />
-          <span className="onbFieldHint">{MODES.find((m) => m.id === form.monitoring_mode)?.detail}</span>
-        </div>
-        <label className="onbField">
-          <span>Protocol name <em className="hint">optional</em></span>
-          <input value={form.protocol_name} onChange={(e) => setForm({ ...form, protocol_name: e.target.value })} placeholder="e.g. Acme RWA" />
-        </label>
+        <fieldset className="onbFieldset">
+          <legend className="onbLegend"><span className="onbLegendNum" aria-hidden="true">1</span>Contract &amp; data sources</legend>
+          <div className="onbFieldGrid">
+            <label className="onbField onbFieldWide">
+              <span>Primary contract address <em className="req">required</em></span>
+              <input value={form.primary_contract} onChange={(e) => setForm({ ...form, primary_contract: e.target.value })}
+                placeholder="0x…" spellCheck={false} data-testid="input-contract" className="onbMonoInput"
+                aria-invalid={contractTouched && !contractValid ? true : undefined}
+                aria-describedby="onb-contract-feedback"
+                data-valid={form.primary_contract === '' ? undefined : contractValid} />
+              {contractTouched && !contractValid ? (
+                <span className="onbFieldError" id="onb-contract-feedback">Enter a valid 0x-prefixed 40-hex-character address.</span>
+              ) : contractTouched && contractValid ? (
+                <span className="onbFieldOk" id="onb-contract-feedback">Address format is valid.</span>
+              ) : (
+                <span className="onbFieldHint" id="onb-contract-feedback">The token or protocol contract the agent should inspect.</span>
+              )}
+            </label>
+            <div className="onbField">
+              <span id="onb-field-network">Network</span>
+              <Select
+                testId="input-chain"
+                ariaLabelledBy="onb-field-network"
+                value={String(form.chain_id)}
+                onValueChange={(v) => setForm({ ...form, chain_id: Number(v) })}
+                options={CHAINS.map((c) => ({
+                  value: String(c.id),
+                  label: c.supported ? `${c.label} — Supported` : `${c.label} — Coming soon`,
+                  disabled: !c.supported,
+                }))}
+              />
+              <span className="onbFieldHint">
+                {chainSupported
+                  ? 'Base Mainnet (8453) is validated for automated discovery today. Additional EVM networks are coming soon.'
+                  : 'Automated discovery currently runs on Base Mainnet only. Select Base Mainnet to continue — additional networks are coming soon.'}
+              </span>
+            </div>
+            <label className="onbField">
+              <span>Protocol name <em className="hint">optional</em></span>
+              <input value={form.protocol_name} onChange={(e) => setForm({ ...form, protocol_name: e.target.value })} placeholder="e.g. Acme RWA" />
+            </label>
+            <label className="onbField onbFieldWide">
+              <span>RPC endpoints <em className="hint">one per line — keys are encrypted and never stored in the clear</em></span>
+              <textarea value={form.rpc_endpoints} onChange={(e) => setForm({ ...form, rpc_endpoints: e.target.value })}
+                placeholder="https://…" rows={3} spellCheck={false} data-testid="input-rpc" className="onbMonoInput" />
+            </label>
+          </div>
+        </fieldset>
+        <fieldset className="onbFieldset">
+          <legend className="onbLegend"><span className="onbLegendNum" aria-hidden="true">2</span>Workspace &amp; coverage</legend>
+          <div className="onbFieldGrid">
+            <label className="onbField">
+              <span>Workspace name <em className="hint">optional</em></span>
+              <input value={form.workspace_name} onChange={(e) => setForm({ ...form, workspace_name: e.target.value })}
+                placeholder="Acme Capital" data-testid="input-workspace-name" />
+            </label>
+            <div className="onbField">
+              <span id="onb-field-mode">Monitoring mode</span>
+              <Select
+                testId="input-mode"
+                ariaLabelledBy="onb-field-mode"
+                value={form.monitoring_mode}
+                onValueChange={(v) => setForm({ ...form, monitoring_mode: v })}
+                options={MODES.map((m) => ({ value: m.id, label: m.label }))}
+              />
+              <span className="onbFieldHint">{MODES.find((m) => m.id === form.monitoring_mode)?.detail}</span>
+            </div>
+          </div>
+        </fieldset>
       </div>
-      <div className="buttonRow">
+      <div className="buttonRow onbSubmitRow">
         <Button variant="primary" onClick={onCreate} disabled={!canSubmit} data-testid="btn-create">
           {busy === 'create' ? 'Starting discovery…' : 'Run Automated Discovery'}
         </Button>
+        <span className="onbSubmitHint" data-ready={canSubmit ? 'true' : 'false'}>{submitHint}</span>
       </div>
     </SurfaceCard>
   );
@@ -514,11 +609,14 @@ function AgentTimeline({ snapshot, expanded, setExpanded, onRetry, busy }: {
 }) {
   const hasFailure = snapshot.steps.some((s) => s.status === 'failed');
   return (
-    <SurfaceCard className="onbCard">
+    <SurfaceCard className="onbCard onbTimelineCard">
       <div className="onbCardHead">
-        <div>
-          <p className="sectionEyebrow">AI Onboarding Agent</p>
-          <h2 className="onbCardTitle">Automated infrastructure discovery and security configuration</h2>
+        <div className="onbAgentIdentity">
+          <AgentMark />
+          <div>
+            <p className="sectionEyebrow">AI Onboarding Agent</p>
+            <h2 className="onbCardTitle">Automated infrastructure discovery and security configuration</h2>
+          </div>
         </div>
         {hasFailure ? (
           <Button variant="secondary" onClick={onRetry} disabled={busy !== null} data-testid="btn-retry">
@@ -534,7 +632,7 @@ function AgentTimeline({ snapshot, expanded, setExpanded, onRetry, busy }: {
           return (
             <li key={key} className="onbTimelineItem" data-step={key} data-status={step.status}>
               <span className={`onbDot onbDot-${step.status}`} aria-hidden="true">
-                {step.status === 'completed' ? '✓' : step.status === 'failed' ? '✕' : step.status === 'needs_attention' ? '!' : ''}
+                <StepGlyph status={step.status} />
               </span>
               <div className="onbTimelineBody">
                 <div className="onbTimelineTop">
@@ -547,7 +645,7 @@ function AgentTimeline({ snapshot, expanded, setExpanded, onRetry, busy }: {
                   <span>Start {fmtTime(step.started_at)}</span>
                   <span>Done {fmtTime(step.completed_at)}</span>
                   {hasEvidence ? (
-                    <button type="button" className="onbLinkBtn" data-testid="evidence-toggle"
+                    <button type="button" className="onbLinkBtn" data-testid="evidence-toggle" aria-expanded={isOpen}
                       onClick={() => setExpanded((e: any) => ({ ...e, [key]: !e[key] }))}>
                       {isOpen ? 'Hide evidence' : 'Show evidence'}
                     </button>
@@ -584,7 +682,7 @@ const CAPABILITY_FIELDS = ['mint_capability', 'burn_capability', 'pausable', 'up
 function DiscoverySummary({ findings }: { findings: OnboardingFinding[] }) {
   const caps = CAPABILITY_FIELDS.map((t) => findValue(findings, t)).filter(Boolean) as OnboardingFinding[];
   return (
-    <SurfaceCard className="onbCard">
+    <SurfaceCard className="onbCard onbDiscoveryCard">
       <div className="onbCardHead"><div><p className="sectionEyebrow">Discovery</p><h2 className="onbCardTitle">Verified findings</h2></div></div>
       <div className="onbSummaryGrid" data-testid="discovery-summary">
         {SUMMARY_FIELDS.map(({ type, label }) => {
@@ -593,7 +691,7 @@ function DiscoverySummary({ findings }: { findings: OnboardingFinding[] }) {
           return (
             <div key={type} className="onbSummaryCell" data-finding={type}>
               <span className="onbSummaryLabel">{label}</span>
-              <span className="onbSummaryValue" title={String(f.value)}>{formatVal(f.value)}</span>
+              <span className={HEX_ADDRESS.test(String(f.value)) ? 'onbSummaryValue onbMono' : 'onbSummaryValue'} title={String(f.value)}>{formatVal(f.value)}</span>
               <StatusPill label={f.confidence.replace('_', ' ')} variant={confidenceVariant(f.confidence)} />
             </div>
           );
@@ -632,10 +730,10 @@ function RpcBenchmark({ snapshot, onBenchmark, busy }: { snapshot: OnboardingSna
       </div>
       {run?.explanation ? <p className="onbExplain" data-testid="rpc-explanation">{run.explanation}</p> : null}
       <div className="onbTableScroll">
-        <TableShell headers={['Provider', 'Status', 'Median', 'P95', 'Errors', 'Latest block', 'Lag', 'Chain', 'Recommendation']} compact>
+        <TableShell headers={['Provider', 'Status', 'Median', 'P95', 'Errors', 'Latest block', 'Lag', 'Chain', 'Recommendation']} compact className="onbRpcTable">
           {results.map((r: BenchmarkResult) => (
             <tr key={r.endpoint_host} data-testid="rpc-row" data-recommendation={r.recommendation}>
-              <td title={r.redacted_url ?? undefined}>{r.endpoint_host}</td>
+              <td className="onbRpcHost" title={r.redacted_url ?? undefined}>{r.endpoint_host}</td>
               <td>{r.connection_status}</td>
               <td>{r.median_latency_ms != null ? `${r.median_latency_ms} ms` : '—'}</td>
               <td>{r.p95_latency_ms != null ? `${r.p95_latency_ms} ms` : '—'}</td>
@@ -675,8 +773,8 @@ function ProposalReview({ snapshot, onApprove, onActivate, busy }: {
         <ProposalStat label="Monitoring targets" value={prop.monitoring_targets?.length ?? 0} />
         <ProposalStat label="Rules to enable" value={rules.filter((r) => r.enabled).length} />
         <ProposalStat label="Event subscriptions" value={prop.event_subscriptions?.length ?? 0} />
-        <ProposalStat label="Primary RPC" value={prop.rpc_sources?.primary_host ?? '—'} />
-        <ProposalStat label="Fallback RPC" value={prop.rpc_sources?.fallback_host ?? '—'} />
+        <ProposalStat label="Primary RPC" value={prop.rpc_sources?.primary_host ?? '—'} text />
+        <ProposalStat label="Fallback RPC" value={prop.rpc_sources?.fallback_host ?? '—'} text />
       </div>
 
       <div className="onbTwoCol">
@@ -684,7 +782,7 @@ function ProposalReview({ snapshot, onApprove, onActivate, busy }: {
           <p className="onbSubhead">Baseline monitoring rules</p>
           <ul className="onbRuleList" data-testid="rule-list">
             {rules.map((r) => (
-              <li key={r.key}>
+              <li key={r.key} data-enabled={r.enabled ? 'true' : 'false'}>
                 <StatusPill label={r.severity} variant={r.severity === 'critical' ? 'danger' : r.severity === 'high' ? 'warning' : 'info'} />
                 <span className="onbRuleTitle">{r.title}</span>
                 {!r.enabled ? <span className="muted"> (disabled)</span> : null}
@@ -727,9 +825,9 @@ function ProposalReview({ snapshot, onApprove, onActivate, busy }: {
   );
 }
 
-function ProposalStat({ label, value }: { label: string; value: unknown }) {
+function ProposalStat({ label, value, text = false }: { label: string; value: unknown; text?: boolean }) {
   return (
-    <div className="onbProposalStat">
+    <div className={text ? 'onbProposalStat onbProposalStat--text' : 'onbProposalStat'}>
       <span className="onbSummaryLabel">{label}</span>
       <span className="onbProposalValue">{formatVal(value)}</span>
     </div>
@@ -742,7 +840,9 @@ function ProtectionActive({ snapshot }: { snapshot: OnboardingSnapshot }) {
   return (
     <SurfaceCard className="onbCard onbProtected">
       <div className="onbProtectedHead">
-        <span className="onbProtectedIcon" aria-hidden="true">✓</span>
+        <span className="onbProtectedIcon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5.5c0 4.4-3 8-7 9.5-4-1.5-7-5.1-7-9.5V6l7-3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /><path d="M8.5 12.2l2.4 2.4 4.6-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </span>
         <div>
           <h2 className="onbCardTitle">Protection Active</h2>
           <p className="muted">Your monitoring workspace is live and provisioning coverage.</p>
@@ -779,7 +879,17 @@ function AgentPanel({ snapshot, streamStatus, busy, onDiscover, onBenchmark, onA
 
   return (
     <SurfaceCard className="onbCard onbAgentPanel">
-      <div className="onbCardHead"><div><p className="sectionEyebrow">Onboarding Agent</p><h2 className="onbCardTitle">{view.stateLabel}</h2></div></div>
+      {/* data-state mirrors the canonical backend session status (or "none" before a
+          session exists) so the identity dot can echo it; the label states it in words. */}
+      <div className="onbCardHead onbAgentPanelHead" data-state={view.unknownStatus ? 'unknown' : (s?.status ?? 'none')}>
+        <div className="onbAgentIdentity">
+          <AgentMark />
+          <div>
+            <p className="sectionEyebrow">Onboarding Agent</p>
+            <h2 className="onbCardTitle"><span className="onbStateDot" aria-hidden="true" />{view.stateLabel}</h2>
+          </div>
+        </div>
+      </div>
 
       {view.unknownStatus ? (
         <p className="onbWarn" data-testid="agent-unknown-status">
@@ -789,16 +899,18 @@ function AgentPanel({ snapshot, streamStatus, busy, onDiscover, onBenchmark, onA
 
       {s ? (
         <>
+          <div className="onbProgress">
+            <div className="onbProgressLabel"><span>Overall progress</span><strong>{`${completed}/${totalSteps} steps`}</strong></div>
+            <div className="onbProgressBar" aria-hidden="true"><span style={{ width: `${Math.round((completed / totalSteps) * 100)}%` }} /></div>
+          </div>
           <div className="onbAgentState" data-testid="agent-state">
-            <Row label="Current operation" value={view.currentOperation ?? '—'} />
-            <Row label="Overall progress" value={`${completed}/${totalSteps} steps`} />
+            <Row label="Current operation" value={view.currentOperation ?? '—'} highlight={view.currentOperation !== null} />
             <Row label="Confidence" value={confidenceLabel(agent)} />
             <Row label="Verified findings" value={agent?.verified_findings ?? 0} />
             <Row label="Findings to review" value={agent?.review_findings ?? 0} />
             <Row label="Est. remaining steps" value={Math.max(0, totalSteps - completed)} />
             <Row label="Live updates" value={streamStatus === 'live' ? 'SSE connected' : streamStatus === 'polling' ? 'Polling fallback' : 'Idle'} />
           </div>
-          <div className="onbProgressBar" aria-hidden="true"><span style={{ width: `${Math.round((completed / totalSteps) * 100)}%` }} /></div>
 
           <div className="onbAgentActions" data-testid="agent-actions">
             {(s.status === 'draft' || s.status === 'partial') ? (
@@ -832,14 +944,14 @@ function AgentPanel({ snapshot, streamStatus, busy, onDiscover, onBenchmark, onA
           </div>
         </>
       ) : (
-        <p className="muted">Start a discovery run to see live agent status, findings and provider recommendations here.</p>
+        <p className="muted onbAgentEmpty">Start a discovery run to see live agent status, findings and provider recommendations here.</p>
       )}
     </SurfaceCard>
   );
 }
 
-function Row({ label, value }: { label: string; value: unknown }) {
-  return <div className="onbAgentRow"><span>{label}</span><strong>{String(value)}</strong></div>;
+function Row({ label, value, highlight = false }: { label: string; value: unknown; highlight?: boolean }) {
+  return <div className={highlight ? 'onbAgentRow onbAgentRow--active' : 'onbAgentRow'}><span>{label}</span><strong>{String(value)}</strong></div>;
 }
 
 function confidenceLabel(agent: OnboardingSnapshot['agent'] | undefined): string {
