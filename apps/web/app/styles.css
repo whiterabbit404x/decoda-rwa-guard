@@ -12009,6 +12009,16 @@ body {
   gap: 1.25rem;
 }
 
+/* The page grids get an explicit shrinkable track. With the implicit
+   `auto` track a wide table's min-content width stretched the whole page
+   sideways on phones (Evidence, System Health); now the table scrolls
+   inside its own wrapper and the page never does. */
+.appShellPage,
+.appShellPage > .productShellContent {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
 .productShellContent > main.container,
 .productShellContent > .container,
 .productShellContent > div > main.container {
@@ -13230,6 +13240,21 @@ tbody tr.isSelected {
 .productShellContent .sectionHeader h1 + p {
   margin: 0;
   max-width: 72ch;
+}
+
+/* Evidence & Audit metric row. */
+.evidenceMetricRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 760px) {
+  .evidenceMetricRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
 }
 
 /* ── Dashboard (Screen 2) ────────────────────────────────────────── */

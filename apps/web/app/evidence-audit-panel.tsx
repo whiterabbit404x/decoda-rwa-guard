@@ -1891,14 +1891,9 @@ export default function EvidenceAuditPanel() {
       </div>
 
       {/* ── Metric row ──────────────────────────────────────────── */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: '1rem',
-          marginBottom: '1.5rem',
-        }}
-      >
+      {/* Four tiles on desktop, two per row on phones (a fixed four-column
+          inline grid pushed the page 100px+ sideways at 390px). */}
+      <div className="evidenceMetricRow">
         <MetricTile label="Evidence Packages" value={metrics?.total_packages ?? packages.length} />
         <MetricTile
           label="Audit Events"
