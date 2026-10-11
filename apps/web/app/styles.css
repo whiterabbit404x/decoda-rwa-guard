@@ -23013,3 +23013,153 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   }
 }
 /* ═══ Screen layer: monitoring-sources — end ═══ */
+
+/* ═══ Screen layer: assets — begin ═══ */
+/* ═════════════════════════════════════════════════════════════════════
+   ASSETS — protected asset registry, AI risk assessor, asset drawer.
+   Scoped to the registry's own classes; shared primitives untouched.
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* One filter row that wraps evenly instead of a ragged second line: the
+   search takes the most room, every select grows equally. */
+.assetsToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.assetsToolbar > .assetsToolbarSearch {
+  flex: 2 1 220px;
+  min-width: 180px;
+}
+
+.assetsToolbar > select {
+  flex: 1 1 140px;
+  min-width: 130px;
+}
+
+/* Registry table: eight columns beside the assessor panel. The full
+   on-chain identifier pushed Risk Score, Monitoring Health and Assessment
+   out of view; it is truncated here (tooltip + drawer keep the full value),
+   headers may wrap, and cells are tightened so the risk columns stay on
+   screen at common laptop widths. */
+.assetsRegistryMain .tableWrap th {
+  white-space: normal;
+  line-height: 1.25;
+  padding-inline: 0.6rem;
+  vertical-align: bottom;
+}
+
+.assetsRegistryMain .tableWrap td {
+  padding-inline: 0.6rem;
+}
+
+.assetRowName {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.assetRowIdentifier {
+  display: block;
+  max-width: 17ch;
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* Rows open the asset drawer: a clear hover/focus state and the accent
+   rail on keyboard focus. Rows never animate. */
+.assetRow:hover {
+  background: var(--bg-hover);
+}
+
+.assetRow:focus-visible {
+  background: var(--bg-hover);
+  box-shadow: inset 3px 0 0 var(--accent-blue);
+}
+
+/* Risk badge sits as a compact, tabular chip. */
+.assetsRegistryLayout .riskBadge {
+  min-width: 2.4rem;
+  border-radius: var(--radius-xs);
+}
+
+/* AI assessor panel: a quieter frame with an accent top edge, and section
+   titles that match the product's eyebrow style. */
+.assetsRegistryLayout .assessorPanel {
+  border-top: 2px solid var(--accent-blue);
+  box-shadow: var(--shadow-sm);
+}
+
+.assetsRegistryLayout .assessorSectionTitle {
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.assetsRegistryLayout .assessorLink {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+/* Detail drawer: header and tab strip breathe; dimension bars grow in once
+   when the drawer opens (never on refresh). */
+.assetsRegistryLayout .drawerCard {
+  padding: 1.5rem 1.75rem;
+}
+
+.assetsRegistryLayout .drawerCardWide {
+  border-top-left-radius: var(--radius-xl);
+  border-bottom-left-radius: var(--radius-xl);
+}
+
+.assetsRegistryLayout .drawerSectionTitle {
+  font-size: 0.82rem;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.assetsRegistryLayout .drawerKvRow {
+  padding: 0.3rem 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.assetsRegistryLayout .drawerKvRow:last-child {
+  border-bottom: 0;
+}
+
+:where(.assetsRegistryLayout .drawerCard) :where(.dimBarFill) {
+  transform-origin: left;
+  animation: dcGrowX 600ms var(--ease-out) backwards;
+}
+
+.assetsRegistryLayout .dimBarTrack {
+  background: var(--bg-subtle);
+}
+
+.assetsRegistryLayout .dimBarFill {
+  background: var(--accent-blue);
+}
+
+/* The add-asset modal: template choices read as selectable cards. */
+.assetsRegistryLayout .modalCard {
+  padding: 1.6rem 1.75rem;
+}
+
+@media (max-width: 760px) {
+  .assetsToolbar > select {
+    flex-basis: calc(50% - 0.3rem);
+  }
+
+  .assetsRegistryLayout .drawerCard {
+    padding: 1.1rem 1rem;
+  }
+}
+/* ═══ Screen layer: assets — end ═══ */

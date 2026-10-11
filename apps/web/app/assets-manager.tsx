@@ -779,26 +779,26 @@ export default function AssetsManager({ apiUrl }: Props) {
         </div>
 
         {/* ── Filters ──────────────────────────────────────────────── */}
-        <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div className="assetsToolbar">
           <input
             aria-label="Search assets"
             placeholder="Search assets..."
             value={filters.search}
             onChange={(e) => updateFilter({ search: e.target.value })}
-            style={{ flex: '1 1 220px', minWidth: '160px' }}
+            className="assetsToolbarSearch"
           />
-          <select value={filters.asset_type} onChange={(e) => updateFilter({ asset_type: e.target.value })} aria-label="Filter by asset type" style={{ flex: '0 0 auto', minWidth: '150px' }}>
+          <select value={filters.asset_type} onChange={(e) => updateFilter({ asset_type: e.target.value })} aria-label="Filter by asset type">
             <option value="all">All Types</option>
             {RWA_TYPE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
           </select>
-          <select value={filters.risk_level} onChange={(e) => updateFilter({ risk_level: e.target.value })} aria-label="Filter by risk level" style={{ flex: '0 0 auto', minWidth: '130px' }}>
+          <select value={filters.risk_level} onChange={(e) => updateFilter({ risk_level: e.target.value })} aria-label="Filter by risk level">
             <option value="all">All Risk</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
             <option value="critical">Critical</option>
           </select>
-          <select value={filters.monitoring_health} onChange={(e) => updateFilter({ monitoring_health: e.target.value })} aria-label="Filter by monitoring health" style={{ flex: '0 0 auto', minWidth: '150px' }}>
+          <select value={filters.monitoring_health} onChange={(e) => updateFilter({ monitoring_health: e.target.value })} aria-label="Filter by monitoring health">
             <option value="all">All Monitoring</option>
             <option value="healthy">Healthy</option>
             <option value="warning">Warning</option>
@@ -807,13 +807,13 @@ export default function AssetsManager({ apiUrl }: Props) {
             <option value="not_configured">Not configured</option>
           </select>
           {facets.networks.length > 0 ? (
-            <select value={filters.network} onChange={(e) => updateFilter({ network: e.target.value })} aria-label="Filter by network" style={{ flex: '0 0 auto', minWidth: '140px' }}>
+            <select value={filters.network} onChange={(e) => updateFilter({ network: e.target.value })} aria-label="Filter by network">
               <option value="all">All Networks</option>
               {facets.networks.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           ) : null}
           {facets.custodians.length > 0 ? (
-            <select value={filters.custodian} onChange={(e) => updateFilter({ custodian: e.target.value })} aria-label="Filter by custodian" style={{ flex: '0 0 auto', minWidth: '140px' }}>
+            <select value={filters.custodian} onChange={(e) => updateFilter({ custodian: e.target.value })} aria-label="Filter by custodian">
               <option value="all">All Custodians</option>
               {facets.custodians.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -891,9 +891,11 @@ export default function AssetsManager({ apiUrl }: Props) {
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDrawerAsset(asset); } }}
                   >
                     <td>
-                      <strong style={{ display: 'block', color: 'var(--text-primary)' }}>{asset.name}</strong>
+                      <strong className="assetRowName">{asset.name}</strong>
+                      {/* Truncated in the list so the risk columns stay on screen;
+                          the full identifier is the tooltip and is shown in the drawer. */}
                       {asset.identifier ? (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{asset.identifier}</span>
+                        <span className="assetRowIdentifier" title={asset.identifier}>{asset.identifier}</span>
                       ) : null}
                     </td>
                     <td>{rwaTypeLabel(asset.rwa_asset_type, asset.asset_type)}</td>
