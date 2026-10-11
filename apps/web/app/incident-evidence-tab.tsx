@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 
 import { StatusPill, TableShell } from './components/ui-primitives';
 import {
@@ -76,29 +76,29 @@ export default function IncidentEvidenceTab({ data, load, onRetry }: {
   );
 
   if (load === 'idle' || load === 'loading') {
-    return <p className="muted" style={{ fontSize: '0.85rem' }} aria-busy="true">Loading incident evidence…</p>;
+    return <p className="muted incidentEvidenceState" aria-busy="true">Loading incident evidence…</p>;
   }
   if (load === 'unauthorized') {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentEvidenceState" role="alert">
         You do not have permission to view this incident&apos;s evidence in the current workspace.
       </p>
     );
   }
   if (load === 'not_found') {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentEvidenceState" role="alert">
         This incident could not be found in the current workspace.
       </p>
     );
   }
   if (load === 'error') {
     return (
-      <div role="alert">
-        <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+      <div role="alert" className="incidentEvidenceError">
+        <p className="muted incidentEvidenceState">
           Evidence is unavailable — the evidence service could not be reached. No evidence is shown rather than a partial view presented as complete.
         </p>
-        <button type="button" className="btn btn-secondary" style={{ fontSize: '0.78rem' }} onClick={onRetry}>
+        <button type="button" className="btn btn-secondary incidentEvidenceAction" onClick={onRetry}>
           Retry
         </button>
       </div>
@@ -110,11 +110,11 @@ export default function IncidentEvidenceTab({ data, load, onRetry }: {
   const evidencePackage = data?.evidence_package ?? {};
 
   return (
-    <div className="incidentEvidenceTab" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+    <div className="incidentEvidenceTab">
       {/* A read that FAILED is stated. A partial directory is never presented as
           the complete evidence record. */}
       {data?.partial ? (
-        <p className="statusLine statusLine-warning" role="alert" style={{ margin: 0, fontSize: '0.8rem' }}>
+        <p className="statusLine statusLine-warning incidentEvidenceNotice" role="alert">
           Partial evidence: {(data.unreadable ?? []).join(', ') || 'one or more sources'} could not be read. Records from
           those sources are missing from this directory.
         </p>
@@ -152,7 +152,7 @@ export default function IncidentEvidenceTab({ data, load, onRetry }: {
 
       {/* ── Forensic evidence directory ──────────────────────────────────── */}
       {visible.length === 0 ? (
-        <p className="muted" style={{ fontSize: '0.85rem', margin: 0 }}>{emptyEvidenceMessage(filter)}</p>
+        <p className="muted incidentEvidenceEmpty">{emptyEvidenceMessage(filter)}</p>
       ) : (
         <div className="incidentEvidenceTable">
           <TableShell headers={DIRECTORY_HEADERS} compact>
@@ -164,7 +164,7 @@ export default function IncidentEvidenceTab({ data, load, onRetry }: {
       )}
 
       {data?.truncated ? (
-        <p className="muted" style={{ fontSize: '0.78rem', margin: 0 }}>
+        <p className="muted incidentEvidenceCaption">
           This directory is capped. The complete inventory remains available through the evidence package.
         </p>
       ) : null}
@@ -189,18 +189,18 @@ function DomainCard({ label, count, active, accent, surface, border, onSelect }:
       aria-pressed={active}
       className="incidentEvidenceDomainCard"
       style={{
-        background: active ? surface : 'var(--overlay-03)',
-        border: `1px solid ${active ? border : 'var(--border)'}`,
-        borderLeft: `3px solid ${accent}`,
-      }}
+        '--incident-domain-accent': accent,
+        '--incident-domain-surface': surface,
+        '--incident-domain-border': border,
+      } as CSSProperties}
     >
-      <span className="tableMeta" style={{ fontSize: '0.72rem' }}>{label}</span>
+      <span className="incidentEvidenceDomainLabel">{label}</span>
       {/* A count the backend did not report is "not reported", never a rendered 0
           — an absent bucket must not read as "there is none". */}
-      <span style={{ fontSize: '1.15rem', fontWeight: 700, color: accent, lineHeight: 1.1 }}>
+      <span className="incidentEvidenceDomainCount">
         {count === null ? '—' : count}
       </span>
-      <span className="tableMeta" style={{ fontSize: '0.68rem' }}>
+      <span className="incidentEvidenceDomainUnit">
         {count === null ? 'not reported' : count === 1 ? 'artifact' : 'artifacts'}
       </span>
     </button>
@@ -215,7 +215,7 @@ function SnapshotStrip({ snapshot, evidencePackage }: {
   const packaged = hasEvidencePackage(evidencePackage);
   return (
     <div className="incidentEvidenceSnapshot">
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem' }}>
+      <div className="incidentEvidenceSnapshotGroup">
         <StatusPill
           label={snapshotStatusLabel(snapshot.status)}
           variant={snapshotStatusVariant(snapshot.status)}
@@ -224,12 +224,11 @@ function SnapshotStrip({ snapshot, evidencePackage }: {
             verification result is reported as the backend computed it — a hash that
             did not re-compute is stated, never hidden. */}
         {snapshot.snapshot_hash ? (
-          <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)' }}
-            title={snapshot.snapshot_hash}>
+          <span className="incidentEvidenceDigest" title={snapshot.snapshot_hash}>
             {shortDigest(snapshot.snapshot_hash)}
           </span>
         ) : (
-          <span className="muted" style={{ fontSize: '0.75rem' }}>No evidence snapshot recorded yet</span>
+          <span className="muted incidentEvidenceMeta">No evidence snapshot recorded yet</span>
         )}
         {snapshot.hash_verified === true ? <StatusPill label="Hash verified" variant="success" /> : null}
         {snapshot.hash_verified === false ? <StatusPill label="Hash mismatch" variant="danger" /> : null}
@@ -237,16 +236,16 @@ function SnapshotStrip({ snapshot, evidencePackage }: {
           ? <StatusPill label="Hash not verified" variant="neutral" />
           : null}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem' }}>
+      <div className="incidentEvidenceSnapshotGroup">
         {packaged ? (
           <>
-            <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>{evidencePackage.package_number}</span>
+            <span className="incidentEvidencePackageNo">{evidencePackage.package_number}</span>
             <StatusPill
               label={evidencePackage.integrity_label ?? 'Unknown'}
               variant={evidencePackage.integrity_status === 'verified' ? 'success' : 'info'}
             />
             {evidencePackage.sealed_at ? (
-              <span className="tableMeta" style={{ fontSize: '0.72rem' }}>
+              <span className="tableMeta incidentEvidenceMeta">
                 Sealed {formatForensicDate(evidencePackage.sealed_at)}
               </span>
             ) : null}
@@ -255,14 +254,13 @@ function SnapshotStrip({ snapshot, evidencePackage }: {
             <Link
               href={evidencePackage.route ?? `/evidence?package_id=${encodeURIComponent(evidencePackage.package_id ?? '')}`}
               prefetch={false}
-              className="btn btn-secondary"
-              style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem' }}
+              className="btn btn-secondary incidentEvidenceAction"
             >
               View Evidence Package
             </Link>
           </>
         ) : (
-          <span className="muted" style={{ fontSize: '0.78rem' }}>
+          <span className="muted incidentEvidenceMeta">
             {evidencePackageAbsenceLabel(evidencePackage)}
           </span>
         )}
@@ -275,33 +273,33 @@ function SnapshotStrip({ snapshot, evidencePackage }: {
 function PolicyForensics({ evaluations }: { evaluations: IncidentPolicyEvaluation[] }) {
   return (
     <div className="incidentPolicyForensics" aria-label="Policy forensics">
-      <p className="sectionEyebrow" style={{ margin: '0 0 0.4rem' }}>Policy forensics</p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <p className="sectionEyebrow incidentPolicyEyebrow">Policy forensics</p>
+      <div className="incidentPolicyStack">
         {evaluations.map((evaluation) => (
           <div key={evaluation.evaluation_id} className="incidentPolicyRow">
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.45rem' }}>
-              <span style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>
+            <div className="incidentPolicyHead">
+              <span className="incidentPolicyKey">
                 {evaluation.policy_key ?? 'Policy'}
               </span>
               {evaluation.policy_version !== null && evaluation.policy_version !== undefined ? (
-                <span className="tableMeta" style={{ fontSize: '0.72rem' }}>v{evaluation.policy_version}</span>
+                <span className="tableMeta incidentPolicyMeta">v{evaluation.policy_version}</span>
               ) : null}
               {/* The authoritative decision, verbatim from the deterministic engine.
                   No AI explanation is ever promoted into this field. */}
               <StatusPill label={evaluation.decision ?? 'No decision recorded'} variant={policyDecisionVariant(evaluation.decision)} />
-              <span className="tableMeta" style={{ fontSize: '0.72rem' }}>
+              <span className="tableMeta incidentPolicyMeta">
                 {formatForensicDate(evaluation.evaluated_at)}
               </span>
             </div>
             {(evaluation.reason_codes ?? []).length > 0 ? (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.3rem' }}>
+              <div className="incidentReasonCodeList incidentPolicyCodes">
                 {(evaluation.reason_codes ?? []).map((code) => (
                   <span key={code} className="incidentReasonCode">{code}</span>
                 ))}
               </div>
             ) : null}
             {(evaluation.required_approvals ?? []).length > 0 ? (
-              <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.72rem' }}>
+              <p className="tableMeta incidentPolicyApprovals">
                 Required approval roles: {(evaluation.required_approvals ?? []).join(', ')}
               </p>
             ) : null}
@@ -320,21 +318,22 @@ function ArtifactRow({ artifact }: { artifact: IncidentEvidenceArtifact }) {
   const provenance = artifactEvidenceSource(artifact);
   return (
     <tr>
-      <td style={{ fontFamily: 'monospace', fontSize: '0.74rem' }} title={artifact.file_name ?? undefined}>
+      <td className="incidentArtifactName" title={artifact.file_name ?? undefined}>
         {artifact.file_name ?? 'Unnamed artifact'}
       </td>
-      <td style={{ fontSize: '0.78rem' }}>{artifactTypeLabel(artifact.artifact_type)}</td>
+      <td className="incidentArtifactType">{artifactTypeLabel(artifact.artifact_type)}</td>
       <td>
         {domain ? (
-          <span className="incidentDomainTag" style={{ color: domainAccentVar(domain), borderColor: domainBorderVar(domain) }}>
+          <span className="incidentDomainTag incidentArtifactDomain"
+            style={{ '--incident-domain-accent': domainAccentVar(domain), '--incident-domain-border': domainBorderVar(domain) } as CSSProperties}>
             {domainLabel(domain)}
           </span>
         ) : (
-          <span className="muted" style={{ fontSize: '0.74rem' }}>Unclassified</span>
+          <span className="muted incidentArtifactMuted">Unclassified</span>
         )}
       </td>
-      <td style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-        <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.3rem' }}>
+      <td className="incidentArtifactSource">
+        <span className="incidentArtifactInline">
           <span>{artifact.source ?? 'Unknown source'}</span>
           {/* Evidence provenance, in the product's existing vocabulary: simulator
               and replay data are labelled as such so they can never be read as
@@ -350,14 +349,14 @@ function ArtifactRow({ artifact }: { artifact: IncidentEvidenceArtifact }) {
           ) : null}
         </span>
       </td>
-      <td style={{ fontSize: '0.74rem', whiteSpace: 'nowrap' }} title={artifact.collected_at ?? undefined}>
+      <td className="incidentArtifactTime" title={artifact.collected_at ?? undefined}>
         {/* Millisecond time at the precision the record carries, with the calendar
             day beneath it: a directory can span days, and a bare time would make
             records from different days look like one collection burst. */}
         {artifact.collected_at ? (
           <>
-            <span style={{ fontFamily: 'monospace' }}>{formatForensicTime(artifact.collected_at)}</span>
-            <span className="tableMeta" style={{ display: 'block', fontSize: '0.68rem' }}>
+            <span className="incidentArtifactTimeValue">{formatForensicTime(artifact.collected_at)}</span>
+            <span className="tableMeta incidentArtifactDay">
               {forensicDay(artifact.collected_at) ?? ''}
             </span>
           </>
@@ -365,12 +364,12 @@ function ArtifactRow({ artifact }: { artifact: IncidentEvidenceArtifact }) {
           <span className="muted">Not recorded</span>
         )}
       </td>
-      <td style={{ fontFamily: 'monospace', fontSize: '0.72rem' }} title={artifact.content_sha256 ?? undefined}>
+      <td className="incidentArtifactDigest" title={artifact.content_sha256 ?? undefined}>
         {/* No digest means no digest. A placeholder hash is never rendered. */}
         {digest ?? <span className="muted">Not hashed</span>}
       </td>
       <td>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+        <span className="incidentArtifactInline">
           <StatusPill
             label={artifact.integrity_label ?? integrityLabel(artifact.integrity_status)}
             variant={integrityVariant(artifact.integrity_status)}
@@ -379,7 +378,7 @@ function ArtifactRow({ artifact }: { artifact: IncidentEvidenceArtifact }) {
               inside a hash-verified snapshot. An ordinary row never earns it. */}
           {showsImmutableMark(artifact) ? (
             <span aria-label="Tamper-evident" title="Sealed inside a hash-verified evidence snapshot"
-              style={{ color: 'var(--success-fg)', fontSize: '0.8rem' }}>✓</span>
+              className="incidentArtifactSealMark">✓</span>
           ) : null}
         </span>
       </td>

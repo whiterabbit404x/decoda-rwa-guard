@@ -61,15 +61,17 @@ export default function ThreatChainPanel({
   const evidenceCount = Number(linkedEvidenceCount || 0);
 
   return (
-    <div className="emptyStatePanel">
+    <div className="emptyStatePanel tmChainPanel">
       <h4>Threat chain summary</h4>
-      <div className="buttonRow">
+      <ol className="tmChainSteps" aria-label="Detection to response chain">
         {chainSteps.map((step) => (
-          <p key={step.key} className="tableMeta">
-            {step.id ? <Link href={step.href} prefetch={false}>{step.label}: {step.id}</Link> : `${step.label}: n/a`}
-          </p>
+          <li key={step.key} className="tmChainStep" data-linked={step.id ? 'true' : 'false'}>
+            <p className="tableMeta">
+              {step.id ? <Link href={step.href} prefetch={false}>{step.label}: {step.id}</Link> : `${step.label}: n/a`}
+            </p>
+          </li>
         ))}
-      </div>
+      </ol>
       <p className="tableMeta">
         Evidence records {evidenceCount} · Last evidence at {lastEvidenceAt ? new Date(lastEvidenceAt).toLocaleString() : 'n/a'} · Origin/source {evidenceOrigin || 'n/a'}
       </p>
@@ -78,7 +80,7 @@ export default function ThreatChainPanel({
       </p>
       {liveLikeMode && evidenceCount <= 0 ? <p className="statusLine">Degraded evidence state: LIVE/HYBRID monitoring is active but this chain has no persisted evidence yet.</p> : null}
       {!liveLikeMode && evidenceCount <= 0 ? <p className="tableMeta">No linked evidence is currently persisted for this chain.</p> : null}
-      <button type="button" onClick={onOpenEvidence}>{evidenceDrawerLabel}</button>
+      <button type="button" className="btn btn-secondary tmChainEvidenceBtn" onClick={onOpenEvidence}>{evidenceDrawerLabel}</button>
     </div>
   );
 }

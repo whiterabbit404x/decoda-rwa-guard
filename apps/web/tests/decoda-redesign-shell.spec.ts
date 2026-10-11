@@ -9,8 +9,8 @@
  *     remembered, and every link keeps its accessible name while folded;
  *   • phone: the sidebar is an off-canvas drawer — the menu button opens it,
  *     Escape and the scrim close it, and focus returns to the menu button;
- *   • AnimatedNumber shows the backend value on first render (no count-up
- *     from zero) and settles exactly on each new backend value;
+ *   • AnimatedNumber only ever renders backend values — no count-up on load
+ *     and no interpolated intermediate counts on change, only a CSS cue;
  *   • the dashboard posture strip reports each backend fact separately and
  *     never renders period activity the backend did not report.
  */
@@ -157,6 +157,45 @@ test.describe('shell', () => {
     await expect(firstLink).toBeHidden();
     await expect(menu).toHaveAttribute('aria-expanded', 'false');
   });
+
+  test('phone: focus stays inside the open drawer and the page behind is inert', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await stubSession(page, '/dashboard');
+    await page.goto(harness.url);
+
+    await page.locator('.shellMenuBtn').click();
+    await expect(page.getByRole('button', { name: 'Close navigation' })).toBeFocused();
+    await expect(page.locator('.appShellContent')).toHaveAttribute('inert', '');
+
+    const insideSidebar = () => page.evaluate(() => Boolean(document.activeElement?.closest('#app-sidebar')));
+    for (let i = 0; i < 30; i++) {
+      await page.keyboard.press('Tab');
+      expect(await insideSidebar(), `Tab ${i + 1} left the drawer`).toBe(true);
+    }
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('Shift+Tab');
+      expect(await insideSidebar(), `Shift+Tab ${i + 1} left the drawer`).toBe(true);
+    }
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.appShellContent')).not.toHaveAttribute('inert', /.*/);
+    await expect(page.locator('.shellMenuBtn')).toBeFocused();
+  });
+
+  test('phone: leaving the phone breakpoint closes the drawer and releases the scroll lock', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await stubSession(page, '/dashboard');
+    await page.goto(harness.url);
+
+    await page.locator('.shellMenuBtn').click();
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+
+    // Rotate / resize past 767px: the menu and close buttons are hidden there.
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await expect(page.locator('.appShellFrame')).toHaveAttribute('data-mobile-nav', 'closed');
+    await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('');
+    await expect(page.locator('.appShellContent')).not.toHaveAttribute('inert', /.*/);
+  });
 });
 
 const NUMBER_BOOTSTRAP = `
@@ -191,19 +230,23 @@ test.describe('AnimatedNumber', () => {
     expect(seen.every((text) => text === '7')).toBe(true);
   });
 
-  test('a change settles exactly on the new backend value', async ({ page }) => {
+  test('a change never renders a count the backend did not report', async ({ page }) => {
     await page.goto(harness.url);
     await expect(page.locator('#n')).toHaveText('7');
+    const number = page.locator('#n .dcAnimatedNumber');
+    await expect(number).not.toHaveAttribute('data-changed', /.+/);
+
     await page.evaluate(() => (window as any).__setValue(12));
     await expect(page.locator('#n')).toHaveText('12');
-    // Every intermediate frame stays between the two real values and is whole.
+    // Only the two real values ever reach the DOM — 8…11 never do.
+    await page.waitForTimeout(600);
     const seen: string[] = await page.evaluate(() => (window as any).__seen);
-    for (const text of seen) {
-      const n = Number(text);
-      expect(Number.isInteger(n)).toBe(true);
-      expect(n).toBeGreaterThanOrEqual(7);
-      expect(n).toBeLessThanOrEqual(12);
-    }
+    expect([...new Set(seen)].sort()).toEqual(['12', '7']);
+    // The change is marked for the CSS cue, and re-marked on the next change.
+    await expect(number).toHaveAttribute('data-changed', 'a');
+    await page.evaluate(() => (window as any).__setValue(2));
+    await expect(number).toHaveAttribute('data-changed', 'b');
+    await expect(page.locator('#n')).toHaveText('2');
   });
 
   test('reduced motion shows the new value at once', async ({ page }) => {

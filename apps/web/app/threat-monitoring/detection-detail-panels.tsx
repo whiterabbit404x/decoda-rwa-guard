@@ -28,6 +28,7 @@ import {
   checkStatusLabel,
   conclusionColor,
   conclusionLabel,
+  conclusionVariant,
   formatAmount,
   isOperationalIntegrity,
   isPreconfirmed,
@@ -57,17 +58,9 @@ export type DetectionDetail = DetectionRow & {
 /** One label/value row. A missing value reads "Not recorded", never a blank. */
 function Field({ label, children, mono = false }: { label: string; children: React.ReactNode; mono?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', padding: '0.35rem 0', borderBottom: '1px solid var(--border-subtle)' }}>
-      <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{label}</span>
-      <span
-        style={{
-          color: 'var(--text-primary)',
-          fontSize: '0.85rem',
-          textAlign: 'right',
-          fontFamily: mono ? 'monospace' : undefined,
-          wordBreak: mono ? 'break-all' : 'normal',
-        }}
-      >
+    <div className="tmField2">
+      <span className="tmField2Label">{label}</span>
+      <span className={mono ? 'tmField2Value tmField2Value--mono' : 'tmField2Value'}>
         {children}
       </span>
     </div>
@@ -124,6 +117,7 @@ export default function DetectionDetailPanels({
     <section
       data-testid="detection-detail-panels"
       aria-label="Detection details"
+      className="tmDetailPanels"
       // Two columns on desktop; the grid collapses to one on narrow layouts so
       // Details stacks above Analysis rather than overflowing horizontally.
       style={{
@@ -134,12 +128,11 @@ export default function DetectionDetailPanels({
       }}
     >
       <article className="dataCard" aria-label="Detection Details">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Detection Details</p>
+        <div className="tmDetailHead">
+          <p className="sectionEyebrow tmDetailEyebrow">Detection Details</p>
           <button
             type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
+            className="btn btn-secondary tmBtnSm"
             onClick={onClose}
             data-testid="close-detection-details"
           >
@@ -147,13 +140,13 @@ export default function DetectionDetailPanels({
           </button>
         </div>
         {loading ? (
-          <div className="skelBlock" style={{ height: '10rem', marginTop: '0.75rem' }} aria-hidden="true" />
+          <div className="skelBlock tmDetailSkeleton" aria-hidden="true" />
         ) : err ? (
-          <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{err}</p>
+          <p className="statusLine tmError" role="alert">{err}</p>
         ) : !detail ? (
-          <p className="muted" style={{ marginTop: '0.75rem' }}>This detection is no longer available.</p>
+          <p className="muted tmDetailNote">This detection is no longer available.</p>
         ) : (
-          <div style={{ marginTop: '0.75rem' }} data-testid="detection-details-fields">
+          <div className="tmDetailFields" data-testid="detection-details-fields">
             <Field label="Detection">
               {detail.detection_type_label || detectionTypeLabel(detail.detection_type)}
             </Field>
@@ -194,7 +187,7 @@ export default function DetectionDetailPanels({
                   stage it can honestly claim. Never a "Flashblocks" or "200 ms"
                   badge that the runtime did not produce. */}
               {detail.telemetry_source ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <span className="tmSourceValue">
                   {telemetrySourceLabel(detail.telemetry_source)}
                   <StatusPill
                     label={telemetryStageLabel(detail.telemetry_stage)}
@@ -247,48 +240,50 @@ export function OperationalIntegrityAnalysis({
 }) {
   return (
     <article className="dataCard" aria-label="Operational Integrity Analysis" data-testid="operational-integrity-analysis">
-      <p className="sectionEyebrow" style={{ margin: 0 }}>Operational Integrity Analysis</p>
+      <div className="tmDetailHead">
+        <p className="sectionEyebrow tmDetailEyebrow">Operational Integrity Analysis</p>
+      </div>
       {loading ? (
-        <div className="skelBlock" style={{ height: '10rem', marginTop: '0.75rem' }} aria-hidden="true" />
+        <div className="skelBlock tmDetailSkeleton" aria-hidden="true" />
       ) : error ? (
-        <p className="statusLine" role="alert" style={{ color: 'var(--danger-fg)' }}>{error}</p>
+        <p className="statusLine tmError" role="alert">{error}</p>
       ) : !applicable ? (
-        <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }} data-testid="analysis-not-applicable">
+        <p className="muted tmDetailNote" data-testid="analysis-not-applicable">
           This is a cyber-security detection. Operational integrity checks reconcile an on-chain
           event against authorized business state and do not apply here.
         </p>
       ) : !analysis ? (
-        <p className="muted" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>{CHECKS_UNAVAILABLE_COPY}</p>
+        <p className="muted tmDetailNote">{CHECKS_UNAVAILABLE_COPY}</p>
       ) : (
-        <div style={{ marginTop: '0.75rem' }}>
+        <div className="tmAnalysisBody">
           {analysis.checks_available ? (
-            <ul
-              style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.6rem' }}
-              data-testid="operational-checks"
-            >
+            <ul className="tmChecks" data-testid="operational-checks">
               {analysis.checks.map((check) => (
                 <li
                   key={check.key}
+                  className="tmCheck"
                   data-testid={`operational-check-${check.key}`}
                   data-status={String(check.status ?? '').toUpperCase()}
-                  style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}
                 >
                   <span
                     aria-hidden="true"
-                    style={{ color: checkStatusColor(check.status), fontWeight: 700, lineHeight: 1.4, width: '1rem' }}
+                    className="tmCheckGlyph"
+                    // Colour from the canonical checkStatusColor(): PASS green, FAIL
+                    // red, anything else (not evaluated) amber — never a pass.
+                    style={{ color: checkStatusColor(check.status) }}
                   >
                     {checkGlyph(check.status)}
                   </span>
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                  <span className="tmCheckText">
+                    <span className="tmCheckLabel">
                       {check.label}
                       <span className="sr-only"> — {checkStatusLabel(check.status)}</span>
                     </span>
-                    <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    <span className="tmCheckReason">
                       {check.reason}
                     </span>
                     {check.source ? (
-                      <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      <span className="tmCheckSource">
                         Source: {check.source}
                       </span>
                     ) : null}
@@ -297,35 +292,36 @@ export function OperationalIntegrityAnalysis({
               ))}
             </ul>
           ) : (
-            <p className="muted" style={{ fontSize: '0.85rem' }} data-testid="checks-unavailable">{CHECKS_UNAVAILABLE_COPY}</p>
+            <p className="muted tmDetailNote" data-testid="checks-unavailable">{CHECKS_UNAVAILABLE_COPY}</p>
           )}
 
-          <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
-            <p className="metricLabel" style={{ margin: 0 }}>Conclusion</p>
+          <div className="tmVerdict" data-tone={conclusionVariant(analysis.conclusion)}>
+            <p className="metricLabel tmVerdictLabel">Conclusion</p>
             <p
               data-testid="operational-conclusion"
               data-conclusion={String(analysis.conclusion ?? '').toUpperCase()}
-              style={{ margin: '0.25rem 0 0', fontWeight: 700, letterSpacing: '0.02em', color: conclusionColor(analysis.conclusion) }}
+              className="tmVerdictValue"
+              style={{ color: conclusionColor(analysis.conclusion) }}
             >
               {conclusionLabel(analysis.conclusion)}
             </p>
-            <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8rem' }}>
+            <p className="muted tmVerdictReason">
               {reasonCodeLabel(analysis.deterministic_reason_code)}
               {analysis.matcher_version ? ` · ${analysis.matcher_version}` : ''}
             </p>
-            <p className="metricMeta" style={{ margin: '0.5rem 0 0' }} title={CONFIDENCE_TOOLTIP}>
+            <p className="metricMeta tmVerdictConfidence" title={CONFIDENCE_TOOLTIP}>
               Confidence {confidencePercent(analysis.confidence)}
             </p>
           </div>
 
           {analysis.narrative || analysis.ai_summary ? (
-            <div style={{ marginTop: '0.9rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
-              <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }} data-testid="operational-narrative">
+            <div className="tmNarrative">
+              <p className="tmNarrativeText" data-testid="operational-narrative">
                 {analysis.ai_summary || `${analysis.narrative?.finding ?? ''} ${analysis.narrative?.explanation ?? ''}`.trim()}
               </p>
               {/* Low-key authority label: the text above explains an already
                   decided verdict, it never produced one. */}
-              <p className="muted" style={{ margin: '0.4rem 0 0', fontSize: '0.72rem' }} data-testid="ai-authority-label">
+              <p className="muted tmNarrativeAuthority" data-testid="ai-authority-label">
                 {analysis.ai_authority ?? 'AI Analysis: Explanation only'}
               </p>
             </div>

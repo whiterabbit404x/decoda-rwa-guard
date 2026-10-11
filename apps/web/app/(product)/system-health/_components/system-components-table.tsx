@@ -32,13 +32,13 @@ export function SystemComponentsTable({ components }: Props) {
                   ? c.disabled_reason ?? c.reason ?? 'Disabled by configuration.'
                   : c.reason ?? '—';
               return (
-                <tr key={c.component} className="shOpsRow">
+                <tr key={c.component} className="shOpsRow" data-status={c.status}>
                   <td>
                     <strong>{c.label}</strong>
                     {c.critical ? <span className="shRelTag">critical path</span> : null}
                   </td>
                   <td>
-                    <span className={reliabilityPillClass(c.status)} style={{ fontSize: '0.72rem' }}>
+                    <span className={`${reliabilityPillClass(c.status)} shBadgeSm`}>
                       {reliabilityStatusLabel(c.status)}
                     </span>
                   </td>

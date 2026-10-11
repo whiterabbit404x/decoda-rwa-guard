@@ -538,7 +538,20 @@ test('the artifact table scrolls inside its own wrapper, never the page', () => 
 
 test('the Screen 7 forensic styles introduce no gradients, glows or animations', () => {
   const css = styles();
-  const block = css.slice(css.indexOf('.incidentEvidenceDomains {'));
+  // The forensic section runs from the evidence-domain grid to the next
+  // Screen 7 section header. Slicing to the end of the file instead swept in
+  // unrelated later layers (the shell's page entrance, other screens).
+  const start = css.indexOf('.incidentEvidenceDomains {');
+  const end = css.indexOf('/* --- Screen 7 · Incident queue', start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const block = css.slice(start, end);
   expect(block).not.toMatch(/linear-gradient|radial-gradient/);
   expect(block).not.toMatch(/@keyframes|animation:/);
+
+  // Any later rule that restyles the evidence directory stays flat too.
+  const later = css.slice(end).replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const [, selector, body] of later.matchAll(/([^{}]*incidentEvidence[^{}]*)\{([^}]*)\}/g)) {
+    expect(body, selector.trim()).not.toMatch(/linear-gradient|radial-gradient|animation\s*:/);
+  }
 });

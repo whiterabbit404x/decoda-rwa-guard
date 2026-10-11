@@ -346,49 +346,19 @@ function TelemetryDetailModal({
       role="dialog"
       aria-modal="true"
       aria-label="Telemetry event details"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        background: 'var(--scrim)',
-        padding: '2rem 1rem',
-        overflowY: 'auto',
-      }}
+      className="msrcModal"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div
-        style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border-accent)',
-          borderRadius: 'var(--radius-lg)',
-          width: '100%',
-          maxWidth: '720px',
-          padding: '1.5rem',
-          marginBottom: '2rem',
-        }}
-      >
+      <div className="msrcModalPanel">
         {/* Modal header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            marginBottom: '1rem',
-          }}
-        >
-          <div>
-            <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700 }}>
+        <div className="msrcModalHead">
+          <div className="msrcModalHeadText">
+            <h2 className="msrcModalTitle">
               Telemetry Event Details
             </h2>
-            <p
-              className="muted"
-              style={{ margin: '0.2rem 0 0', fontSize: '0.78rem', fontFamily: 'monospace' }}
-            >
+            <p className="msrcModalId">
               {row.id}
             </p>
           </div>
@@ -396,16 +366,7 @@ function TelemetryDetailModal({
             type="button"
             aria-label="Close"
             onClick={onClose}
-            style={{
-              background: 'none',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-xs)',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-              lineHeight: 1,
-              padding: '0.3rem 0.65rem',
-            }}
+            className="msrcModalClose"
           >
             ✕
           </button>
@@ -413,66 +374,26 @@ function TelemetryDetailModal({
 
         {/* Event classification banner */}
         {kind === 'wallet_transfer' && (
-          <div
-            style={{
-              background: 'var(--success-bg)',
-              border: '1px solid var(--success-bdr)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--success-fg)',
-              display: 'inline-flex',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              marginBottom: '1rem',
-              padding: '0.35rem 0.85rem',
-            }}
-          >
+          <div className="msrcKindBanner msrcKindBanner--transfer">
             Wallet transfer detected
           </div>
         )}
         {kind === 'block_poll' && (
-          <div
-            style={{
-              background: 'var(--info-bg)',
-              border: '1px solid var(--info-bdr)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--info-fg)',
-              display: 'inline-flex',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              marginBottom: '1rem',
-              padding: '0.35rem 0.85rem',
-            }}
-          >
+          <div className="msrcKindBanner msrcKindBanner--poll">
             RPC polling heartbeat — no wallet transfer detected
           </div>
         )}
 
         {/* Human-readable summary grid */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'max-content 1fr',
-            columnGap: '1.25rem',
-            rowGap: '0.45rem',
-            marginBottom: '1.25rem',
-            fontSize: '0.875rem',
-          }}
-        >
+        <div className="msrcSummaryGrid">
           {summaryFields
             .filter(([, v]) => v != null && v !== '')
             .map(([label, value]) => (
               <Fragment key={label}>
-                <span className="muted" style={{ whiteSpace: 'nowrap', alignSelf: 'center' }}>
+                <span className="msrcSummaryKey">
                   {label}:
                 </span>
-                <code
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: '0.82rem',
-                    wordBreak: 'break-all',
-                    color: 'var(--text-primary)',
-                  }}
-                >
+                <code className="msrcSummaryVal">
                   {value}
                 </code>
               </Fragment>
@@ -481,20 +402,11 @@ function TelemetryDetailModal({
           {/* Transaction hash with optional Basescan link */}
           {txHash && (
             <Fragment key="tx_hash">
-              <span className="muted" style={{ whiteSpace: 'nowrap', alignSelf: 'center' }}>
+              <span className="msrcSummaryKey">
                 Transaction hash:
               </span>
-              <span
-                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}
-              >
-                <code
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: '0.82rem',
-                    wordBreak: 'break-all',
-                    color: 'var(--text-primary)',
-                  }}
-                >
+              <span className="msrcSummaryTx">
+                <code className="msrcSummaryVal">
                   {txHash}
                 </code>
                 {isBaseScan && (
@@ -502,11 +414,7 @@ function TelemetryDetailModal({
                     href={`${BASESCAN_TX_BASE}${txHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{
-                      color: 'var(--text-accent)',
-                      fontSize: '0.78rem',
-                      whiteSpace: 'nowrap',
-                    }}
+                    className="msrcExtLink"
                   >
                     View on Basescan ↗
                   </a>
@@ -518,49 +426,16 @@ function TelemetryDetailModal({
 
         {/* Exact tx-hash detection-path diagnosis (wallet transfers only) */}
         {kind === 'wallet_transfer' && txHash ? (
-          <div
-            data-testid="tx-detection-diagnosis"
-            style={{
-              background: 'var(--bg-base)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-sm)',
-              marginBottom: '1.25rem',
-              padding: '0.85rem 1rem',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '0.75rem',
-                flexWrap: 'wrap',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                  color: 'var(--text-secondary)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.07em',
-                }}
-              >
+          <div data-testid="tx-detection-diagnosis" className="msrcDiagnosis">
+            <div className="msrcDiagnosisHead">
+              <span className="msrcSectionLabel">
                 Detection Path Diagnosis
               </span>
               <button
                 type="button"
                 onClick={runDiagnosis}
                 disabled={diagnosing}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-xs)',
-                  color: diagnosing ? 'var(--text-muted)' : 'var(--text-accent)',
-                  cursor: diagnosing ? 'default' : 'pointer',
-                  fontSize: '0.78rem',
-                  padding: '0.25rem 0.7rem',
-                }}
+                className="msrcGhostBtn"
               >
                 {diagnosing
                   ? 'Checking scan windows…'
@@ -570,47 +445,29 @@ function TelemetryDetailModal({
               </button>
             </div>
             {!diagnosis && !diagnosing && !diagnosisError ? (
-              <p className="muted" style={{ margin: '0.5rem 0 0', fontSize: '0.78rem' }}>
+              <p className="msrcDiagnosisHint">
                 Fetches this tx by hash, compares its block number to the realtime
                 worker&apos;s scanned live-tail windows, and reports whether it was realtime
                 matched, imported, stable-polling detected, or duplicate-skipped.
               </p>
             ) : null}
             {diagnosisError ? (
-              <p style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: 'var(--danger-fg)' }}>
+              <p className="msrcDiagnosisError">
                 {diagnosisError}
               </p>
             ) : null}
             {diagnosis ? (
-              <div style={{ marginTop: '0.65rem' }}>
-                <div
-                  style={{
-                    background: 'var(--bg-surface)',
-                    border: '1px solid var(--border-accent)',
-                    borderRadius: 'var(--radius-xs)',
-                    fontSize: '0.82rem',
-                    fontWeight: 600,
-                    marginBottom: '0.6rem',
-                    padding: '0.4rem 0.7rem',
-                  }}
-                >
+              <div className="msrcDiagnosisResult">
+                <div className="msrcVerdict">
                   {formatRealtimeVerdict(diagnosis.realtime_verdict)}
                 </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'max-content 1fr',
-                    columnGap: '1.25rem',
-                    rowGap: '0.35rem',
-                    fontSize: '0.8rem',
-                  }}
-                >
+                <div className="msrcDiagnosisGrid">
                   <span className="muted">Tx block:</span>
-                  <code style={{ fontFamily: 'monospace' }}>
+                  <code className="msrcMono">
                     {diagnosis.block_number != null ? diagnosis.block_number : 'not found'}
                   </code>
                   <span className="muted">Last live-tail window:</span>
-                  <code style={{ fontFamily: 'monospace' }}>
+                  <code className="msrcMono">
                     {diagnosis.live_tail_from_block != null && diagnosis.live_tail_to_block != null
                       ? `${diagnosis.live_tail_from_block}–${diagnosis.live_tail_to_block}${
                           diagnosis.block_number != null
@@ -623,11 +480,11 @@ function TelemetryDetailModal({
                       : 'no live-tail window recorded'}
                   </code>
                   <span className="muted">Scanned spans:</span>
-                  <code style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  <code className="msrcMono msrcBreak">
                     {formatSpans(diagnosis.realtime_scanned_spans) ?? 'none recorded'}
                   </code>
                   <span className="muted">Block was scanned:</span>
-                  <code style={{ fontFamily: 'monospace' }}>
+                  <code className="msrcMono">
                     {diagnosis.was_block_scanned === true
                       ? 'yes'
                       : diagnosis.was_block_scanned === false
@@ -635,7 +492,7 @@ function TelemetryDetailModal({
                         : 'unknown'}
                   </code>
                   <span className="muted">Persisted row detected by:</span>
-                  <code style={{ fontFamily: 'monospace' }}>
+                  <code className="msrcMono">
                     {diagnosis.existing_detected_by
                       ? formatDetectedBy(diagnosis.existing_detected_by)
                       : 'no persisted row found'}
@@ -643,7 +500,7 @@ function TelemetryDetailModal({
                   {diagnosis.realtime_duplicate_skipped ? (
                     <>
                       <span className="muted">Duplicate handling:</span>
-                      <code style={{ fontFamily: 'monospace' }}>
+                      <code className="msrcMono">
                         realtime duplicate skipped — first detector kept
                       </code>
                     </>
@@ -651,7 +508,7 @@ function TelemetryDetailModal({
                   {diagnosis.rate_limited_at_time === true ? (
                     <>
                       <span className="muted">Rate limited at tx time:</span>
-                      <code style={{ fontFamily: 'monospace' }}>yes</code>
+                      <code className="msrcMono">yes</code>
                     </>
                   ) : null}
                 </div>
@@ -661,40 +518,16 @@ function TelemetryDetailModal({
         ) : null}
 
         {/* Raw Response toolbar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: '0.5rem',
-          }}
-        >
-          <span
-            style={{
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              color: 'var(--text-secondary)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.07em',
-            }}
-          >
+        <div className="msrcRawHead">
+          <span className="msrcSectionLabel">
             Raw Response
           </span>
-          <div style={{ display: 'flex', gap: '0.4rem' }}>
+          <div className="msrcRawActions">
             {txHash && (
               <button
                 type="button"
                 onClick={copyTxHash}
-                style={{
-                  background: copiedTx ? 'var(--success-bg)' : 'transparent',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-xs)',
-                  color: copiedTx ? 'var(--success-fg)' : 'var(--text-secondary)',
-                  cursor: 'pointer',
-                  fontSize: '0.75rem',
-                  padding: '0.25rem 0.65rem',
-                  transition: 'color 0.15s, background 0.15s',
-                }}
+                className={copiedTx ? 'msrcGhostBtn msrcGhostBtn--done' : 'msrcGhostBtn'}
               >
                 {copiedTx ? 'Copied!' : 'Copy Tx Hash'}
               </button>
@@ -702,41 +535,16 @@ function TelemetryDetailModal({
             <button
               type="button"
               onClick={copyJson}
-              style={{
-                background: copiedJson ? 'var(--success-bg)' : 'transparent',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                color: copiedJson ? 'var(--success-fg)' : 'var(--text-secondary)',
-                cursor: 'pointer',
-                fontSize: '0.75rem',
-                padding: '0.25rem 0.65rem',
-                transition: 'color 0.15s, background 0.15s',
-              }}
+              className={copiedJson ? 'msrcGhostBtn msrcGhostBtn--done' : 'msrcGhostBtn'}
             >
               {copiedJson ? 'Copied!' : 'Copy JSON'}
             </button>
           </div>
         </div>
 
-        {/* Dark-mode JSON viewer */}
-        <pre
-          style={{
-            background: 'var(--bg-base)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--text-primary)',
-            fontFamily: '"Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, monospace',
-            fontSize: '0.78rem',
-            lineHeight: 1.65,
-            margin: 0,
-            maxHeight: '360px',
-            overflowX: 'auto',
-            overflowY: 'auto',
-            padding: '1rem',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-          }}
-        >
+        {/* JSON viewer on the inset base surface (var(--bg-base)), monospace. This
+            modal only mounts on click, so the inline token is applied client-side. */}
+        <pre className="msrcJson" style={{ background: 'var(--bg-base)', fontFamily: 'var(--font-mono), monospace' }}>
           {jsonString}
         </pre>
       </div>
@@ -1125,16 +933,34 @@ export default function TargetTelemetryPage() {
     if (quicknodeStreamState === 'stale') return { label: 'Stale — stream not delivering', tone: 'warning' };
     return { label: 'No stream activity', tone: 'muted' };
   })();
-  const TONE_COLOR: Record<string, string> = {
-    success: 'var(--success-fg)',
-    info: 'var(--info-fg)',
-    warning: 'var(--warning-fg)',
-    danger: 'var(--danger-fg)',
-    muted: 'var(--text-muted)',
-  };
+  // ── Detection-path pairing (presentation only) ─────────────────────────────
+  // Restates the two facts above side by side so a stale stream is read WITH its
+  // fallback: "Stream: Stale · Polling fallback: Active". Nothing new is derived —
+  // the stream half is the quicknodeStatus label (split at its em dash into
+  // state + reason) and the polling half is the same three-way label the Stable
+  // RPC Polling worker card shows. The stream's tone is never upgraded; when the
+  // stream is not current and neither polling nor the legacy WebSocket is active,
+  // the pairing is shown as a failure rather than a warning (fail-closed).
+  const [streamShort, ...streamReasonParts] = quicknodeStatus.label.split(' — ');
+  const streamReason = streamReasonParts.join(' — ');
+  const stablePollingLabel = stablePollingActive
+    ? 'Active fallback'
+    : lastStablePollAt
+      ? 'Idle — awaiting next poll'
+      : 'No poll recorded';
+  const pollingShort = stablePollingActive ? 'Active' : stablePollingLabel.split(' — ')[0];
+  const pollingTone = stablePollingActive ? 'info' : 'warning';
+  const streamNotCurrent = quicknodeStatus.tone === 'warning' || quicknodeStatus.tone === 'danger';
+  const noDetectionPathActive = !stablePollingActive && realtimeState !== 'active';
+  const pairingTone = streamNotCurrent && noDetectionPathActive ? 'danger' : quicknodeStatus.tone;
+  const streamPageTone = telemetryStreamConnected
+    ? 'success'
+    : streamStatus === 'reconnecting' || streamStatus === 'connecting'
+      ? 'warning'
+      : 'muted';
 
   return (
-    <main className="productPage">
+    <main className="productPage msrcPage msrcTelemetryPage">
       {selectedRow && (
         <TelemetryDetailModal
           row={selectedRow}
@@ -1143,246 +969,198 @@ export default function TargetTelemetryPage() {
         />
       )}
 
-      <div style={{ marginBottom: '1.25rem' }}>
+      <div className="msrcBackRow">
         <Link
           href="/monitoring-sources"
           prefetch={false}
-          style={{ fontSize: '0.85rem', color: 'var(--text-accent)', textDecoration: 'none' }}
+          className="msrcBack"
         >
           ← Monitoring Sources
         </Link>
       </div>
 
-      <div style={{ marginBottom: '1.25rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.45rem', fontWeight: 700 }}>Target Telemetry</h1>
-        <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem' }}>
-          Live telemetry events persisted for this monitoring target.
-        </p>
-        {monitoredAddress && (
-          <p
-            className="muted"
-            style={{ margin: '0.35rem 0 0', fontSize: '0.8rem' }}
-          >
-            Monitored address:{' '}
-            <span
-              style={{ fontFamily: 'monospace', wordBreak: 'break-all', color: 'var(--text)' }}
-              title="Full monitored wallet address — confirm this matches your wallet exactly"
-            >
-              {monitoredAddress}
-            </span>
+      <header className="msrcHeader">
+        <div className="msrcHeaderText">
+          <h1 className="productPageTitle msrcTitle">Target Telemetry</h1>
+          <p className="msrcLede">
+            Live telemetry events persisted for this monitoring target.
           </p>
-        )}
-      </div>
+          {monitoredAddress && (
+            <p className="msrcAddress">
+              Monitored address:{' '}
+              <span
+                className="msrcAddressValue"
+                title="Full monitored wallet address — confirm this matches your wallet exactly"
+              >
+                {monitoredAddress}
+              </span>
+            </p>
+          )}
+        </div>
 
-      <div
-        style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 'var(--radius-sm)',
-          padding: '0.75rem 1rem',
-          marginBottom: '1.25rem',
-          fontSize: '0.85rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.25rem',
-        }}
-      >
-        <span>
-          <span className="muted">Target ID: </span>
-          <code style={{ fontFamily: 'monospace' }}>{targetId || '-'}</code>
+        {/* Real-time telemetry push (SSE) — this PAGE's live-update channel. When
+            connected, new transfers stream into the table with no refresh. Truthful
+            degraded state on disconnect, with HTTP polling as fallback. */}
+        <div
+          data-testid="telemetry-stream-status"
+          className={`msrcStreamChip msrcTone--${streamPageTone}`}
+          title="This page's live-update channel to Decoda — separate from the ingestion paths below."
+        >
+          <span className="msrcStreamDot" aria-hidden />
+          <span className="msrcStreamText">
+            <span className="msrcStreamLabel">
+              Real-time telemetry
+            </span>
+            <span className="msrcStreamValue">
+              {telemetryStreamConnected
+                ? 'Live — streaming new events'
+                : streamStatus === 'reconnecting'
+                  ? 'Reconnecting… (HTTP refresh fallback active)'
+                  : streamStatus === 'connecting'
+                    ? 'Connecting…'
+                    : 'Offline — HTTP refresh fallback active'}
+            </span>
+          </span>
+        </div>
+      </header>
+
+      <div className="msrcIdStrip">
+        <span className="msrcIdItem">
+          <span className="msrcIdLabel">Target ID: </span>
+          <code className="msrcMono">{targetId || '-'}</code>
         </span>
         {workspaceId ? (
-          <span>
-            <span className="muted">Workspace ID: </span>
-            <code style={{ fontFamily: 'monospace' }}>{workspaceId}</code>
+          <span className="msrcIdItem">
+            <span className="msrcIdLabel">Workspace ID: </span>
+            <code className="msrcMono">{workspaceId}</code>
           </span>
         ) : null}
       </div>
 
-      {/* Worker / detection-path status strip. Three DISTINCT workers, each on its
-          own row so the legacy WebSocket status never stands in as "the" realtime
+      {/* Worker / detection-path status. Three DISTINCT workers, each in its own
+          card so the legacy WebSocket status never stands in as "the" realtime
           status: QuickNode Stream (webhook push — the primary realtime path), Stable
           RPC Polling (always-on backup), and the legacy WebSocket ingestor. When the
           QuickNode Stream is active, a paused/degraded WebSocket is expected legacy
           state and is never surfaced as the main realtime status. */}
       {realtimeEnabled !== null ? (
-        <div
-          data-testid="telemetry-worker-status"
-          style={{
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            padding: '0.75rem 1rem',
-            marginBottom: '1.25rem',
-            fontSize: '0.82rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '0.75rem',
-          }}
-        >
-          {/* Real-time telemetry push (SSE). The PRIMARY realtime indicator now:
-              when connected, new transfers stream into the table with no refresh.
-              Truthful degraded state on disconnect, with HTTP polling as fallback. */}
-          <div
-            data-testid="telemetry-stream-status"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '1.25rem',
-              alignItems: 'center',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-flex',
-                flexDirection: 'column',
-                gap: '0.1rem',
-                minWidth: '11rem',
-              }}
-            >
-              <span className="muted" style={{ fontWeight: 600 }}>
-                Real-time telemetry
-              </span>
-              <span
-                style={{
-                  fontWeight: 600,
-                  color: telemetryStreamConnected
-                    ? 'var(--success-fg)'
-                    : streamStatus === 'reconnecting' || streamStatus === 'connecting'
-                      ? 'var(--warning-fg)'
-                      : 'var(--text-muted)',
-                }}
-              >
-                {telemetryStreamConnected
-                  ? 'Live — streaming new events'
-                  : streamStatus === 'reconnecting'
-                    ? 'Reconnecting… (HTTP refresh fallback active)'
-                    : streamStatus === 'connecting'
-                      ? 'Connecting…'
-                      : 'Offline — HTTP refresh fallback active'}
-              </span>
-            </span>
+        <section data-testid="telemetry-worker-status" className="msrcPaths">
+          <div className="msrcPathsHead">
+            <p className="sectionEyebrow msrcPathsEyebrow">Detection paths</p>
+            <span className="msrcPathsHint">Each path reports on its own; a stale stream never borrows the polling status.</span>
           </div>
 
-          {/* Worker 1 — QuickNode Stream (primary realtime path) */}
-          <div
-            data-testid="worker-quicknode-stream"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '1.25rem',
-              alignItems: 'center',
-              borderTop: '1px solid var(--border)',
-              paddingTop: '0.75rem',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-flex',
-                flexDirection: 'column',
-                gap: '0.1rem',
-                minWidth: '11rem',
-              }}
-            >
-              <span className="muted" style={{ fontWeight: 600 }}>
-                QuickNode Stream
+          {/* Stream ↔ fallback pairing, with the reason. */}
+          <div data-testid="telemetry-coverage-pairing" className={`msrcPairing msrcTone--${pairingTone}`}>
+            <div className="msrcPairingChips">
+              <span className={`msrcPairChip msrcTone--${quicknodeStatus.tone}`}>
+                <span className="msrcPairDot" aria-hidden />
+                <span className="msrcPairKey">Stream:</span>
+                <span className="msrcPairVal">{streamShort}</span>
               </span>
-              <span style={{ fontWeight: 600, color: TONE_COLOR[quicknodeStatus.tone] }}>
+              <span className="msrcPairSep" aria-hidden>·</span>
+              <span className={`msrcPairChip msrcTone--${pollingTone}`}>
+                <span className="msrcPairDot" aria-hidden />
+                <span className="msrcPairKey">Polling fallback:</span>
+                <span className="msrcPairVal">{pollingShort}</span>
+              </span>
+            </div>
+            {streamNotCurrent ? (
+              <p className="msrcPairingReason">
+                {stablePollingActive ? (
+                  <>
+                    Realtime stream delivery is not current{streamReason ? ` — ${streamReason}` : ''}.
+                    {' '}Stable RPC Polling remains active as the fallback detection path (last poll {fmt(lastStablePollAt)});
+                    the Detected By column shows which path recorded each row.
+                  </>
+                ) : (
+                  <>
+                    Realtime stream delivery is not current{streamReason ? ` — ${streamReason}` : ''}.
+                    {' '}Stable RPC Polling is not active ({stablePollingLabel.toLowerCase()}).
+                  </>
+                )}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="msrcWorkers">
+            {/* Worker 1 — QuickNode Stream (primary realtime path) */}
+            <div
+              data-testid="worker-quicknode-stream"
+              className={`msrcWorker msrcTone--${quicknodeStatus.tone}`}
+            >
+              <div className="msrcWorkerHead">
+                <span className="msrcWorkerName">
+                  QuickNode Stream
+                </span>
+                <span className="msrcWorkerRole">Primary realtime path</span>
+              </div>
+              <span className="msrcWorkerStatus">
+                <span className="msrcWorkerDot" aria-hidden />
                 {quicknodeStatus.label}
               </span>
-            </span>
-            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-              <span className="muted">Last stream block</span>
-              <span style={{ fontWeight: 600, fontFamily: 'monospace' }}>
-                {lastStreamBlock != null ? String(lastStreamBlock) : '-'}
-              </span>
-            </span>
-            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-              <span className="muted">Last stream event</span>
-              <span style={{ fontWeight: 600 }}>{fmt(lastStreamEventAt)}</span>
-            </span>
-          </div>
+              <dl className="msrcWorkerFacts">
+                <div>
+                  <dt>Last stream block</dt>
+                  <dd className="msrcMono">
+                    {lastStreamBlock != null ? String(lastStreamBlock) : '-'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Last stream event</dt>
+                  <dd>{fmt(lastStreamEventAt)}</dd>
+                </div>
+              </dl>
+            </div>
 
-          {/* Worker 2 — Stable RPC Polling (always-on backup) */}
-          <div
-            data-testid="worker-stable-rpc-polling"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '1.25rem',
-              alignItems: 'center',
-              borderTop: '1px solid var(--border)',
-              paddingTop: '0.75rem',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-flex',
-                flexDirection: 'column',
-                gap: '0.1rem',
-                minWidth: '11rem',
-              }}
+            {/* Worker 2 — Stable RPC Polling (always-on backup) */}
+            <div
+              data-testid="worker-stable-rpc-polling"
+              className={`msrcWorker msrcTone--${pollingTone}`}
             >
-              <span className="muted" style={{ fontWeight: 600 }}>
-                Stable RPC Polling
-              </span>
-              <span
-                style={{
-                  fontWeight: 600,
-                  color: stablePollingActive
-                    ? 'var(--info-fg)'
-                    : 'var(--warning-fg)',
-                }}
-              >
+              <div className="msrcWorkerHead">
+                <span className="msrcWorkerName">
+                  Stable RPC Polling
+                </span>
+                <span className="msrcWorkerRole">Always-on backup</span>
+              </div>
+              <span className="msrcWorkerStatus">
+                <span className="msrcWorkerDot" aria-hidden />
                 {stablePollingActive
                   ? 'Active fallback'
                   : lastStablePollAt
                     ? 'Idle — awaiting next poll'
                     : 'No poll recorded'}
               </span>
-            </span>
-            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-              <span className="muted">Last stable poll</span>
-              <span style={{ fontWeight: 600 }}>{fmt(lastStablePollAt)}</span>
-            </span>
-          </div>
+              <dl className="msrcWorkerFacts">
+                <div>
+                  <dt>Last stable poll</dt>
+                  <dd>{fmt(lastStablePollAt)}</dd>
+                </div>
+              </dl>
+            </div>
 
-          {/* Worker 3 — Legacy WebSocket realtime ingestor */}
-          <div
-            data-testid="worker-legacy-websocket"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '1.25rem',
-              alignItems: 'center',
-              borderTop: '1px solid var(--border)',
-              paddingTop: '0.75rem',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-flex',
-                flexDirection: 'column',
-                gap: '0.1rem',
-                minWidth: '11rem',
-              }}
+            {/* Worker 3 — Legacy WebSocket realtime ingestor */}
+            <div
+              data-testid="worker-legacy-websocket"
+              className={`msrcWorker msrcWorker--legacy msrcTone--${
+                realtimeState === 'active'
+                  ? 'success'
+                  : realtimeState === 'degraded'
+                    ? 'warning'
+                    : realtimeEnabled
+                      ? 'success'
+                      : 'muted'
+              }`}
             >
-              <span className="muted" style={{ fontWeight: 600 }}>
-                Legacy WebSocket
-              </span>
-              <span
-                style={{
-                  fontWeight: 600,
-                  color:
-                    realtimeState === 'active'
-                      ? 'var(--success-fg)'
-                      : realtimeState === 'degraded'
-                        ? 'var(--warning-fg)'
-                        : realtimeEnabled
-                          ? 'var(--success-fg)'
-                          : 'var(--text-muted)',
-                }}
-              >
+              <div className="msrcWorkerHead">
+                <span className="msrcWorkerName">
+                  Legacy WebSocket
+                </span>
+                <span className="msrcWorkerRole">Legacy realtime ingestor</span>
+              </div>
+              <span className="msrcWorkerStatus">
+                <span className="msrcWorkerDot" aria-hidden />
                 {realtimeState === 'active'
                   ? 'Active'
                   : realtimeState === 'degraded'
@@ -1393,11 +1171,13 @@ export default function TargetTelemetryPage() {
                       ? 'Enabled'
                       : 'Paused / Disabled'}
               </span>
-            </span>
-            <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.1rem' }}>
-              <span className="muted">Last realtime event</span>
-              <span style={{ fontWeight: 600 }}>{fmt(lastRealtimeEventAt)}</span>
-            </span>
+              <dl className="msrcWorkerFacts">
+                <div>
+                  <dt>Last realtime event</dt>
+                  <dd>{fmt(lastRealtimeEventAt)}</dd>
+                </div>
+              </dl>
+            </div>
           </div>
 
           {/* Contextual note only when the legacy WebSocket is actually the active
@@ -1408,77 +1188,45 @@ export default function TargetTelemetryPage() {
           {/* The legacy-WebSocket note is suppressed whenever the real-time telemetry
               SSE is connected (requirement 7): while events are streaming to the page,
               a paused/degraded legacy WebSocket is expected and must never be surfaced
-              as "realtime is down". */}
+              as "realtime is down". It also never claims "stable polling active" while
+              the Stable RPC Polling worker itself reports idle / no poll. */}
           {telemetryStreamConnected ? null : quicknodeStreamState !== 'active' && realtimeState === 'degraded' ? (
-            <span className="muted" style={{ fontSize: '0.78rem' }}>
+            <p className="msrcPathsNote">
               Realtime WebSocket is degraded (provider failure). Stable RPC polling remains
               active and continues detecting wallet transfers; realtime resumes automatically
               once the provider recovers.
-            </span>
-          ) : quicknodeStreamState !== 'active' && !realtimeEnabled ? (
-            <span className="muted" style={{ fontSize: '0.78rem' }}>
+            </p>
+          ) : quicknodeStreamState !== 'active' && !realtimeEnabled && stablePollingActive ? (
+            <p className="msrcPathsNote">
               Realtime paused; stable polling active. Wallet transfers are detected by Stable RPC Polling.
-            </span>
+            </p>
           ) : null}
-        </div>
+        </section>
       ) : null}
 
       {/* Search bar */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.75rem',
-          marginBottom: '0.75rem',
-          flexWrap: 'wrap',
-        }}
-      >
-        <input
-          type="search"
-          aria-label="Search telemetry"
-          placeholder="Search by tx hash, wallet address, block number, event type, or ID…"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          style={{
-            flex: '1 1 320px',
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            color: 'var(--text-primary)',
-            fontSize: '0.875rem',
-            padding: '0.5rem 0.85rem',
-            outline: 'none',
-            minWidth: 0,
-          }}
-        />
+      <div className="msrcToolbar msrcTelemetryToolbar">
+        <label className="msrcSearch msrcSearch--wide">
+          <input
+            type="search"
+            aria-label="Search telemetry"
+            placeholder="Search by tx hash, wallet address, block number, event type, or ID…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="msrcSearchInput"
+          />
+        </label>
       </div>
 
       {/* Quick filters */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.4rem',
-          marginBottom: '1rem',
-          flexWrap: 'wrap',
-        }}
-      >
+      <div className="msrcChips">
         {QUICK_FILTERS.map((f) => (
           <button
             key={f.id}
             type="button"
             onClick={() => setQuickFilter(f.id)}
-            style={{
-              background: quickFilter === f.id ? 'var(--text-accent)' : 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-xs)',
-              color: quickFilter === f.id ? '#fff' : 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: '0.8rem',
-              fontWeight: quickFilter === f.id ? 600 : 400,
-              padding: '0.3rem 0.75rem',
-              transition: 'background 0.12s, color 0.12s',
-            }}
+            aria-pressed={quickFilter === f.id}
+            className={quickFilter === f.id ? 'msrcChip msrcChip--active' : 'msrcChip'}
           >
             {f.label}
           </button>
@@ -1487,33 +1235,16 @@ export default function TargetTelemetryPage() {
 
       {/* Pagination info */}
       {!loading && !loadError && filteredRows.length > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: '0.5rem',
-            fontSize: '0.82rem',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          <span>
+        <div className="msrcPager msrcPager--top">
+          <span className="msrcPagerInfo">
             Page {currentPage + 1} &middot; {filteredRows.length} of {displayTotalCount} row{displayTotalCount !== 1 ? 's' : ''}
           </span>
-          <div style={{ display: 'flex', gap: '0.4rem' }}>
+          <div className="msrcPagerBtns">
             <button
               type="button"
               disabled={!hasPrev}
               onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-              style={{
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                color: !hasPrev ? 'var(--text-muted)' : 'var(--text-secondary)',
-                cursor: !hasPrev ? 'default' : 'pointer',
-                fontSize: '0.78rem',
-                padding: '0.25rem 0.6rem',
-              }}
+              className="btn btn-secondary msrcRowBtn"
             >
               Prev
             </button>
@@ -1521,15 +1252,7 @@ export default function TargetTelemetryPage() {
               type="button"
               disabled={!hasNext}
               onClick={() => setCurrentPage((p) => p + 1)}
-              style={{
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-xs)',
-                color: !hasNext ? 'var(--text-muted)' : 'var(--text-secondary)',
-                cursor: !hasNext ? 'default' : 'pointer',
-                fontSize: '0.78rem',
-                padding: '0.25rem 0.6rem',
-              }}
+              className="btn btn-secondary msrcRowBtn"
             >
               Next
             </button>
@@ -1538,7 +1261,7 @@ export default function TargetTelemetryPage() {
       )}
 
       {loadError ? (
-        <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>
+        <p className="statusLine msrcNotice msrcNotice--danger">
           {loadError}
         </p>
       ) : null}
@@ -1548,43 +1271,27 @@ export default function TargetTelemetryPage() {
         // telemetry (requirement 10). A live event that arrives while a search is
         // active is added only if it matches; clearing the search re-includes the
         // already-cached live rows.
-        <div
-          style={{
-            padding: '2.5rem 1.5rem',
-            textAlign: 'center',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            color: 'var(--text-muted)',
-          }}
-        >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No matching telemetry</p>
-          <p style={{ margin: '0.5rem 0 0', fontSize: '0.875rem' }}>
+        <div className="msrcEmpty">
+          <p className="msrcEmptyTitle">No matching telemetry</p>
+          <p className="msrcEmptyBody">
             No telemetry matches this search. Clear the search or filter to see all events for this target.
           </p>
         </div>
       ) : !loading && !loadError && filteredRows.length === 0 ? (
-        <div
-          style={{
-            padding: '2.5rem 1.5rem',
-            textAlign: 'center',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            color: 'var(--text-muted)',
-          }}
-        >
-          <p style={{ margin: 0, fontWeight: 600, fontSize: '1rem' }}>No telemetry data</p>
-          <p style={{ margin: '0.5rem 0 0', fontSize: '0.875rem' }}>
+        <div className="msrcEmpty">
+          <p className="msrcEmptyTitle">No telemetry data</p>
+          <p className="msrcEmptyBody">
             No live telemetry has been persisted for this target yet. New transfers stream in
             automatically once detected — no refresh needed.
           </p>
         </div>
       ) : (
-        <TableShell headers={HEADERS} compact>
+        <TableShell headers={HEADERS} compact className="msrcTable msrcTelemetryTable">
           {loading ? (
             <tr>
               <td
                 colSpan={HEADERS.length}
-                style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}
+                className="msrcTableNote"
               >
                 Loading telemetry...
               </td>
@@ -1608,108 +1315,61 @@ export default function TargetTelemetryPage() {
               return (
                 <tr key={row.id}>
                   {/* Event Type */}
-                  <td style={{ whiteSpace: 'nowrap' }}>
+                  <td className="msrcNowrap">
                     {kind === 'wallet_transfer' ? (
-                      <span
-                        style={{
-                          background: 'var(--success-bg)',
-                          border: '1px solid var(--success-bdr)',
-                          borderRadius: 'var(--radius-xs)',
-                          color: 'var(--success-fg)',
-                          display: 'inline-block',
-                          fontSize: '0.75rem',
-                          fontWeight: 600,
-                          padding: '0.15rem 0.5rem',
-                        }}
-                      >
+                      <span className="msrcKind msrcKind--transfer">
                         Wallet transfer detected
                       </span>
                     ) : kind === 'block_poll' ? (
-                      <span
-                        style={{
-                          background: 'var(--info-bg)',
-                          border: '1px solid var(--info-bdr)',
-                          borderRadius: 'var(--radius-xs)',
-                          color: 'var(--info-fg)',
-                          display: 'inline-block',
-                          fontSize: '0.75rem',
-                          padding: '0.15rem 0.5rem',
-                        }}
-                      >
+                      <span className="msrcKind msrcKind--poll">
                         RPC polling heartbeat
                       </span>
                     ) : (
-                      <span className="muted" style={{ fontSize: '0.8rem' }}>
+                      <span className="msrcCellMuted">
                         {row.source_type ?? '-'}
                       </span>
                     )}
                   </td>
 
                   {/* Detected By — never blank for wallet transfer rows */}
-                  <td style={{ whiteSpace: 'nowrap' }}>
+                  <td className="msrcNowrap">
                     {kind === 'wallet_transfer' && detectedByRaw ? (
                       <span
-                        style={{
-                          background: detectedByIsStable
-                            ? 'var(--info-bg)'
+                        className={`msrcVia ${
+                          detectedByIsStable
+                            ? 'msrcVia--stable'
                             : detectedByIsRealtime
-                              ? 'var(--success-bg)'
-                              : 'var(--warning-bg)',
-                          border: `1px solid ${
-                            detectedByIsStable
-                              ? 'var(--info-bdr)'
-                              : detectedByIsRealtime
-                                ? 'var(--success-bdr)'
-                                : 'var(--warning-bdr)'
-                          }`,
-                          borderRadius: 'var(--radius-xs)',
-                          color: detectedByIsStable
-                            ? 'var(--info-fg)'
-                            : detectedByIsRealtime
-                              ? 'var(--success-fg)'
-                              : 'var(--warning-fg)',
-                          display: 'inline-block',
-                          fontSize: '0.72rem',
-                          fontWeight: 600,
-                          padding: '0.15rem 0.5rem',
-                        }}
+                              ? 'msrcVia--realtime'
+                              : 'msrcVia--other'
+                        }`}
                       >
                         {formatDetectedBy(detectedByRaw)}
                       </span>
                     ) : detectedByRaw ? (
-                      <span className="muted" style={{ fontSize: '0.78rem' }}>
+                      <span className="msrcCellMuted">
                         {formatDetectedBy(detectedByRaw)}
                       </span>
                     ) : (
-                      <span className="muted" style={{ fontSize: '0.8rem' }}>-</span>
+                      <span className="msrcCellMuted">-</span>
                     )}
                   </td>
 
                   {/* Tx Hash */}
                   <td>
                     {txHash ? (
-                      <span
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}
-                      >
+                      <span className="msrcTxCell">
                         {isBaseScan ? (
                           <a
                             href={`${BASESCAN_TX_BASE}${txHash}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             title={txHash}
-                            style={{
-                              fontFamily: 'monospace',
-                              fontSize: '0.78rem',
-                              color: 'var(--text-accent)',
-                            }}
+                            className="msrcTxLink msrcMono"
                           >
                             {shortenHash(txHash)} ↗
                           </a>
                         ) : (
-                          <code
-                            style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
-                            title={txHash}
-                          >
+                          <code className="msrcMono" title={txHash}>
                             {shortenHash(txHash)}
                           </code>
                         )}
@@ -1725,19 +1385,8 @@ export default function TargetTelemetryPage() {
                               .catch(() => {});
                           }}
                           title="Copy transaction hash"
-                          style={{
-                            background: 'none',
-                            border: '1px solid var(--border)',
-                            borderRadius: 'var(--radius-xs)',
-                            color:
-                              copiedTxId === row.id
-                                ? 'var(--success-fg)'
-                                : 'var(--text-secondary)',
-                            cursor: 'pointer',
-                            fontSize: '0.68rem',
-                            lineHeight: 1.4,
-                            padding: '0.1rem 0.35rem',
-                          }}
+                          aria-label="Copy transaction hash"
+                          className={copiedTxId === row.id ? 'msrcCopyBtn msrcCopyBtn--done' : 'msrcCopyBtn'}
                         >
                           {copiedTxId === row.id ? '✓' : '⧉'}
                         </button>
@@ -1750,10 +1399,7 @@ export default function TargetTelemetryPage() {
                   {/* From */}
                   <td>
                     {fromAddr ? (
-                      <code
-                        style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
-                        title={fromAddr}
-                      >
+                      <code className="msrcMono" title={fromAddr}>
                         {shortenAddress(fromAddr)}
                       </code>
                     ) : (
@@ -1764,10 +1410,7 @@ export default function TargetTelemetryPage() {
                   {/* To */}
                   <td>
                     {toAddr ? (
-                      <code
-                        style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}
-                        title={toAddr}
-                      >
+                      <code className="msrcMono" title={toAddr}>
                         {shortenAddress(toAddr)}
                       </code>
                     ) : (
@@ -1778,23 +1421,31 @@ export default function TargetTelemetryPage() {
                   {/* Amount */}
                   <td>
                     {amount ? (
-                      <code style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{amount}</code>
+                      <code className="msrcMono">{amount}</code>
                     ) : (
                       <span className="muted">-</span>
                     )}
                   </td>
 
                   {/* Chain ID */}
-                  <td>{row.chain_id ?? '-'}</td>
+                  <td className="msrcNum">{row.chain_id ?? '-'}</td>
 
                   {/* Block Number */}
-                  <td>{row.block_number != null ? String(row.block_number) : '-'}</td>
+                  <td className="msrcNum">{row.block_number != null ? String(row.block_number) : '-'}</td>
 
                   {/* Observed At */}
-                  <td style={{ whiteSpace: 'nowrap' }}>{fmt(row.observed_at)}</td>
+                  <td className="msrcNum">{fmt(row.observed_at)}</td>
 
-                  {/* Evidence Source */}
-                  <td>{row.evidence_source ?? '-'}</td>
+                  {/* Evidence Source — anything other than live stays visibly tagged. */}
+                  <td>
+                    {row.evidence_source ? (
+                      <span className={row.evidence_source === 'live' ? 'msrcEvidence' : 'msrcEvidence msrcEvidence--nonlive'}>
+                        {row.evidence_source}
+                      </span>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
 
                   {/* Details */}
                   <td>
@@ -1802,15 +1453,7 @@ export default function TargetTelemetryPage() {
                       <button
                         type="button"
                         onClick={() => setSelectedRow(row)}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--text-accent)',
-                          cursor: 'pointer',
-                          fontSize: '0.78rem',
-                          padding: 0,
-                          textDecoration: 'underline',
-                        }}
+                        className="msrcLinkBtn"
                       >
                         View
                       </button>

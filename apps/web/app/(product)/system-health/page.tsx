@@ -98,10 +98,10 @@ export default async function SystemHealthPage() {
   const apiDeployTime = null;
 
   return (
-    <main className="productPage">
+    <main className="productPage shPage">
       <RuntimeSummaryPanel />
 
-      <section className="hero compactHero">
+      <section className="hero compactHero shPageHero">
         <div>
           <p className="eyebrow">Status &amp; operations</p>
           <h1>System Health</h1>
@@ -110,16 +110,10 @@ export default async function SystemHealthPage() {
             RPC connectivity, telemetry ingestion, and alert delivery.
           </p>
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'flex-end',
-            gap: '0.75rem',
-            flexWrap: 'wrap',
-          }}
-        >
-          <a href="/system-health" className="secondaryCta" style={{ fontSize: '0.9rem' }}>
+        {/* Server-rendered markup: layout lives in classes, never inline style props,
+            which the production CSP (style-src 'self' 'nonce-…') would block. */}
+        <div className="shPageHeroActions">
+          <a href="/system-health" className="secondaryCta shRefreshCta">
             Refresh Health
           </a>
         </div>
@@ -134,35 +128,40 @@ export default async function SystemHealthPage() {
         apiDeployTime={apiDeployTime}
       />
 
+      {/* The overall verdict leads the page: an operator reads "is it healthy, and
+          if not, what do I do" before any supporting depth. An unreachable health
+          endpoint renders ONE diagnostic panel here, never an all-down grid. */}
+      {healthResult.ok ? (
+        <SystemHealthHero
+          overallStatus={overallStatus}
+          summaryText={summaryText}
+          primaryAction={primaryAction}
+          contradictionFlags={contradictionFlags}
+          environment={environment}
+          gitCommit={gitCommit}
+          frontendCommit={frontendCommit}
+          generatedAt={generatedAt}
+        />
+      ) : (
+        <SystemHealthEndpointError result={healthResult} />
+      )}
+
       {/* Screen 12 headline: Self-Healing Reliability Agent (summary cards,
           system components, operational diagnosis, autonomous status). The
           detailed panels below remain as supporting depth. */}
       <ReliabilityAgentSection result={reliabilityResult} />
 
-      {healthResult.ok ? (
+      {endpointReachable && (
         <>
-          <SystemHealthHero
-            overallStatus={overallStatus}
-            summaryText={summaryText}
-            primaryAction={primaryAction}
-            contradictionFlags={contradictionFlags}
-            environment={environment}
-            gitCommit={gitCommit}
-            frontendCommit={frontendCommit}
-            generatedAt={generatedAt}
-          />
-
           <HealthSummaryCards components={components} />
 
-          <OperationalOverview components={components} />
-
           <LiveChainMonitoringPanel chainMonitoring={chainMonitoring} />
+
+          <OperationalOverview components={components} />
         </>
-      ) : (
-        <SystemHealthEndpointError result={healthResult} />
       )}
 
-      <div className="twoColumnSection" style={{ marginTop: '1rem' }}>
+      <div className="twoColumnSection shTwoColumn">
         <StatusOverviewPanel
           truth={truth}
           presentation={presentation}
@@ -186,23 +185,20 @@ export default async function SystemHealthPage() {
         truth={truth}
       />
 
-      <section style={{ marginTop: '1.5rem' }}>
-        <h2>API Documentation</h2>
-        <p
-          style={{
-            marginBottom: '0.5rem',
-            color: 'var(--text-muted)',
-            fontSize: '0.875rem',
-          }}
-        >
-          Machine-readable API schema for enterprise integration and review.
-        </p>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+      <section className="dataCard shApiDocs">
+        <div>
+          <p className="sectionEyebrow">Integration</p>
+          <h2>API Documentation</h2>
+          <p className="shApiDocsLede">
+            Machine-readable API schema for enterprise integration and review.
+          </p>
+        </div>
+        <div className="shApiDocsLinks">
           <a
             href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/openapi.json`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ fontSize: '0.875rem' }}
+            className="shApiDocsLink"
           >
             OpenAPI Schema (JSON)
           </a>
@@ -210,7 +206,7 @@ export default async function SystemHealthPage() {
             href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/docs`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ fontSize: '0.875rem' }}
+            className="shApiDocsLink"
           >
             Interactive API Docs (Swagger UI)
           </a>
@@ -218,7 +214,7 @@ export default async function SystemHealthPage() {
             href={`${process.env.NEXT_PUBLIC_API_URL ?? ''}/redoc`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ fontSize: '0.875rem' }}
+            className="shApiDocsLink"
           >
             API Reference (ReDoc)
           </a>

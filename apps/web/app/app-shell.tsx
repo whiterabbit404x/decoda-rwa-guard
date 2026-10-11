@@ -200,6 +200,8 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileNavCloseRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   const workspaceName = user?.current_workspace?.name ?? 'Select workspace';
   const userInitials = user?.email ? initials(user.email.split('@')[0] ?? 'U') : 'U';
@@ -218,7 +220,19 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
     });
   }
 
+  // While the phone drawer is open, the page behind it is inert: not
+  // focusable, not clickable, hidden from assistive tech. Released
+  // synchronously before focus goes back to the menu button, which lives in
+  // that page.
+  function setBackgroundInert(inert: boolean) {
+    const content = contentRef.current;
+    if (!content) return;
+    if (inert) content.setAttribute('inert', '');
+    else content.removeAttribute('inert');
+  }
+
   function closeMobileNav(returnFocus: boolean) {
+    setBackgroundInert(false);
     setMobileNavOpen(false);
     if (returnFocus) mobileNavButtonRef.current?.focus();
   }
@@ -250,25 +264,60 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
     setMobileNavOpen(false);
   }, [pathname]);
 
-  // Mobile navigation drawer: Escape closes it and hands focus back to the
-  // menu button; the page behind it does not scroll while it is open.
+  // Mobile navigation drawer: a modal surface. Focus moves in and is kept
+  // in (Tab wraps; the page behind is inert), Escape closes it and hands
+  // focus back to the menu button, and the page does not scroll behind it.
+  // Leaving the phone breakpoint (rotation, resize) closes it: above 767px
+  // the menu and close buttons are hidden, so nothing else could.
   useEffect(() => {
     if (!mobileNavOpen) return;
+    const phone = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 767px)') : null;
+    if (phone && !phone.matches) {
+      closeMobileNav(false);
+      return;
+    }
+
+    setBackgroundInert(true);
     mobileNavCloseRef.current?.focus();
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        setMobileNavOpen(false);
-        mobileNavButtonRef.current?.focus();
+        closeMobileNav(true);
+        return;
       }
+      if (event.key !== 'Tab') return;
+      const sidebar = sidebarRef.current;
+      if (!sidebar) return;
+      const focusables = Array.from(
+        sidebar.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      const inside = active instanceof Node && sidebar.contains(active);
+      if (event.shiftKey && (active === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    function onBreakpointChange() {
+      if (phone && !phone.matches) closeMobileNav(false);
     }
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     document.addEventListener('keydown', onKeyDown);
+    phone?.addEventListener('change', onBreakpointChange);
     return () => {
+      setBackgroundInert(false);
       document.body.style.overflow = previousOverflow;
       document.removeEventListener('keydown', onKeyDown);
+      phone?.removeEventListener('change', onBreakpointChange);
     };
   }, [mobileNavOpen]);
 
@@ -342,7 +391,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         data-mobile-nav={mobileNavOpen ? 'open' : 'closed'}
       >
         {/* ── Sidebar ─────────────────────────────────── */}
-        <aside className="appSidebar" id="app-sidebar" aria-label="Primary navigation">
+        <aside className="appSidebar" id="app-sidebar" aria-label="Primary navigation" ref={sidebarRef}>
           <div className="sidebarBrandRow">
             <Link href="/dashboard" className="brandBlock" prefetch={false} aria-label="Decoda RWA Guard — Dashboard">
               <DecodaShieldMark />
@@ -409,7 +458,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         <div className="mobileNavScrim" aria-hidden="true" onClick={() => closeMobileNav(false)} />
 
         {/* ── Content area ────────────────────────────── */}
-        <div className="appShellContent">
+        <div className="appShellContent" ref={contentRef}>
           <header className="appShellTop">
             {/* Top bar: page context on the left, workspace + user controls
                 on the right. Kept visually light — the title carries the

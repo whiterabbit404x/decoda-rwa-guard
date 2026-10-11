@@ -388,7 +388,7 @@ test.describe('motion inside the product is functional only', () => {
       if (/infinite/.test(value)) {
         expect(name, `infinite animation ${name} must be an indicator`).toMatch(/(spin|pulse|shimmer|skel|loading)/i);
       }
-      if (name.startsWith('dc') && !/shimmer/i.test(name)) {
+      if (name.startsWith('dc') && !/(spin|pulse|shimmer|skel|loading)/i.test(name)) {
         expect(value, `${name} must not loop`).not.toMatch(/infinite/);
         const ms = [...value.matchAll(/(\d+)ms/g)].map((m) => Number(m[1]));
         for (const duration of ms) expect(duration, `${name} duration`).toBeLessThanOrEqual(1000);

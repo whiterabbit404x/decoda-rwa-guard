@@ -12,7 +12,7 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="shMetricRow">
       <span className="shMetricLabel">{label}</span>
-      <span className="shMetricValue" style={{ fontFamily: 'var(--font-mono)' }}>
+      <span className="shMetricValue shMetricValueMono">
         {value}
       </span>
     </div>
@@ -30,15 +30,12 @@ export function SystemHealthEndpointError({ result, lastSuccessfulFetchAt }: Pro
 
   return (
     <section
-      className="dataCard shHero shActionCallout-danger"
-      style={{ marginTop: '1rem' }}
+      className="dataCard shHero shActionCallout-danger shEndpointError"
+      data-status="unreachable"
       data-testid="system-health-endpoint-error"
     >
       <div className="shHeroTop">
-        <div
-          className="healthIcon healthIconOffline"
-          style={{ width: '3.5rem', height: '3.5rem', fontSize: '1.5rem', flexShrink: 0 }}
-        >
+        <div className="healthIcon healthIconOffline shHeroIcon" aria-hidden="true">
           ✕
         </div>
 
@@ -52,20 +49,20 @@ export function SystemHealthEndpointError({ result, lastSuccessfulFetchAt }: Pro
             </span>
           </div>
           <p className="shHeroSummary">{diagnosis.headline}</p>
-          <p className="explanation small" style={{ marginTop: '0.35rem' }}>
+          <p className="explanation small shEndpointNote">
             Component status is unknown while the health API is unreachable. This panel does not
             represent an all-systems outage — it means the dashboard could not read live health.
           </p>
         </div>
 
         <div className="shHeroMeta">
-          <a href="/system-health" className="secondaryCta" style={{ fontSize: '0.85rem' }}>
+          <a href="/system-health" className="secondaryCta shRefreshCta">
             Retry
           </a>
         </div>
       </div>
 
-      <div className="shMetricsGrid" style={{ marginTop: '1rem' }}>
+      <div className="shMetricsGrid shEndpointDiagnostics">
         <DiagnosticRow label="Requested endpoint" value={result.url} />
         <DiagnosticRow label="HTTP status" value={result.status != null ? String(result.status) : 'No response'} />
         <DiagnosticRow label="Error" value={diagnosis.detail} />
@@ -79,8 +76,8 @@ export function SystemHealthEndpointError({ result, lastSuccessfulFetchAt }: Pro
         />
       </div>
 
-      <div className="shActionCallout shActionCallout-warning" style={{ marginTop: '1rem' }}>
-        <span className="shActionCalloutIcon shActionCalloutIcon-warning">⚠</span>
+      <div className="shActionCallout shActionCallout-warning">
+        <span className="shActionCalloutIcon shActionCalloutIcon-warning" aria-hidden="true">⚠</span>
         <div>
           <strong className="shActionCalloutTitle shActionCalloutTitle-warning">Suggested action</strong>
           <p className="shActionCalloutBody shActionCalloutBody-warning">{diagnosis.suggestedAction}</p>

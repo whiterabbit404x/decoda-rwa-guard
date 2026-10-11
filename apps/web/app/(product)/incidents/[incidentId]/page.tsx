@@ -47,8 +47,7 @@ export default async function IncidentDetailPage({
           <Link
             href="/incidents"
             prefetch={false}
-            className="btn btn-secondary"
-            style={{ marginTop: '0.85rem', display: 'inline-flex' }}
+            className="btn btn-secondary incidentBackLink"
           >
             ← Back to Incidents
           </Link>
