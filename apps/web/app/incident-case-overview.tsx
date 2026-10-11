@@ -75,21 +75,21 @@ export default function IncidentCaseOverview({ summary, load, responseActions, r
   layout?: 'narrow' | 'wide';
 }) {
   if (load === 'idle' || load === 'loading') {
-    return <p className="muted" style={{ fontSize: '0.85rem' }} aria-busy="true">Loading case summary…</p>;
+    return <p className="muted incidentCaseState" aria-busy="true">Loading case summary…</p>;
   }
   if (load === 'unauthorized') {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentCaseState" role="alert">
         You do not have permission to view this incident&apos;s case record in the current workspace.
       </p>
     );
   }
   if (load === 'not_found') {
-    return <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">This incident could not be found in the current workspace.</p>;
+    return <p className="muted incidentCaseState" role="alert">This incident could not be found in the current workspace.</p>;
   }
   if (load === 'error' || !summary) {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentCaseState" role="alert">
         Case summary unavailable — the incident record could not be read. No partial summary is shown as the complete case.
       </p>
     );
@@ -249,7 +249,7 @@ function DetectionSection({ detection, origin, correlation }: {
           {detection.detected_at ? <CaseLine label="Detected" value={formatForensicDate(detection.detected_at)} /> : null}
         </>
       ) : (
-        <p className="muted" style={{ margin: '0.3rem 0 0', fontSize: '0.82rem' }}>
+        <p className="muted incidentCaseNote incidentCaseNote-after">
           {missingDetectionExplanation(origin)}
           {ruleName ? ' The originating rule above is the rule that record carried; it is provenance, not a linked detection.' : ''}
         </p>
@@ -286,7 +286,7 @@ function OnChainSection({ onChain }: { onChain: NonNullable<IncidentCaseSummary[
           ) : null}
         </>
       ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+        <p className="muted incidentCaseNote">
           No chain observation is recorded for this incident.
         </p>
       )}
@@ -317,7 +317,7 @@ function OperationalSection({ operational }: { operational: NonNullable<Incident
           {varianceAmount ? <CaseLine label="Variance" value={varianceAmount} /> : null}
           {operational.authoritative_source ? <CaseLine label="System of record" value={operational.authoritative_source} /> : null}
           {operational.evaluated_at ? <CaseLine label="Evaluated" value={formatForensicDate(operational.evaluated_at)} /> : null}
-          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta incidentCaseCaption">
             {operationalOutcomeDetail(outcome)}
           </p>
         </>
@@ -325,14 +325,14 @@ function OperationalSection({ operational }: { operational: NonNullable<Incident
         <>
           {/* NOT COLLECTED is not NOT MATCHED. Nothing was retrieved, so nothing was
               compared, and no verdict is claimed either way. */}
-          <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+          <p className="muted incidentCaseNote">
             {operationalOutcomeDetail(outcome)}
           </p>
           {/* Operational artifacts may exist for the ASSET while none was reconciled
               against THIS event. Saying so stops the evidence total from being read
               as proof that this event's operational state was collected. */}
           {(operational.artifact_count ?? 0) > 0 ? (
-            <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+            <p className="tableMeta incidentCaseCaption">
               {operational.artifact_count} operational {operational.artifact_count === 1 ? 'artifact' : 'artifacts'} exist
               for this asset, but none is linked to this event.
             </p>
@@ -359,13 +359,13 @@ function ReconciliationResult({ operational }: { operational: NonNullable<Incide
       {collected ? (
         <>
           <StatusPill label={operationalOutcomeLabel(outcome)} variant={operationalOutcomeVariant(outcome)} />
-          {variance ? <span className="tableMeta" style={{ fontSize: '0.72rem' }}>Variance {variance}</span> : null}
+          {variance ? <span className="tableMeta incidentCaseReconciliationMeta">Variance {variance}</span> : null}
         </>
       ) : (
         <>
           {/* "Unavailable" — never "Not matched". Nothing was retrieved to compare. */}
           <StatusPill label="Unavailable" variant="neutral" />
-          <span className="tableMeta" style={{ fontSize: '0.72rem' }}>No operational data was collected for this event</span>
+          <span className="tableMeta incidentCaseReconciliationMeta">No operational data was collected for this event</span>
         </>
       )}
     </div>
@@ -411,7 +411,7 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
             <CaseLine
               label="Reason codes"
               value={
-                <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                <span className="incidentReasonCodeList">
                   {(policy.reason_codes ?? []).map((code) => (
                     <span key={code} className="incidentReasonCode">{code}</span>
                   ))}
@@ -430,14 +430,14 @@ function PolicySection({ policy }: { policy: NonNullable<IncidentCaseSummary['po
           ) : null}
           {/* The verdict is the deterministic engine's, stated as such. An AI
               explanation never occupies this field. */}
-          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta incidentCaseCaption">
             Decided by the deterministic policy engine.
             {policyDecisionSourceDetail(decisionSource) ? ` ${policyDecisionSourceDetail(decisionSource)}` : ''}
           </p>
         </>
       ) : (
         /* NO POLICY EVALUATION is not DENY. Nothing is shown as a decision. */
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+        <p className="muted incidentCaseNote">
           No policy evaluation is recorded for this incident. No decision is claimed — this is not a denial.
         </p>
       )}
@@ -472,7 +472,7 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
       }
     >
       {!responseKnown ? (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+        <p className="muted incidentCaseNote">
           {responseLoad === 'error'
             ? 'Response state could not be read. No response state is shown rather than an unverified one.'
             : 'Reading the response record…'}
@@ -493,7 +493,7 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
             <CaseLine
               label="Approval quorum"
               value={
-                <span style={{ display: 'inline-flex', flexDirection: 'column', gap: '0.15rem' }}>
+                <span className="incidentCaseQuorumList">
                   {quorums.map((entry) => (
                     <span key={entry.id}>{entry.title} — {entry.quorum}</span>
                   ))}
@@ -502,15 +502,15 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
             />
           ) : null}
           {/* The authority boundary, stated where the response state is read. */}
-          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta incidentCaseCaption">
             AI authority: recommend only. Execution authority: deterministic policy engine plus required human authorization.
           </p>
-          <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta incidentCaseCaption">
             {RESPONSE_AUTHORITY_CAPTION}
           </p>
         </>
       ) : (
-        <p className="muted" style={{ margin: 0, fontSize: '0.82rem' }}>
+        <p className="muted incidentCaseNote">
           No response action has been recommended for this incident yet.
         </p>
       )}
@@ -518,8 +518,7 @@ function ResponseSection({ response, responseKnown, responseLoad, incidentId, ac
       <Link
         href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`}
         prefetch={false}
-        className="btn btn-secondary"
-        style={{ fontSize: '0.74rem', padding: '0.15rem 0.5rem', marginTop: '0.4rem', alignSelf: 'flex-start' }}
+        className="btn btn-secondary incidentCaseAction"
       >
         Open in Response Actions
       </Link>
@@ -555,7 +554,7 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
           {!tally.reconciles ? (
             <>
               <CaseLine label="Unclassified" value={String(tally.unclassified)} />
-              <p className="tableMeta" style={{ margin: '0.2rem 0 0', fontSize: '0.7rem' }}>
+              <p className="tableMeta incidentCaseCaption">
                 {tally.classified} of {tally.total} artifacts carry a provenance domain. The remaining
                 {' '}{tally.unclassified} could not be classified and are counted in the total only.
               </p>
@@ -582,7 +581,7 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
             <Link
               href={evidence.package_route ?? `/evidence?package_id=${encodeURIComponent(evidence.package_id ?? '')}`}
               prefetch={false}
-              style={{ fontSize: '0.8rem', color: 'var(--text-accent)' }}
+              className="incidentCaseLink"
             >
               {evidence.package_number}
             </Link>
@@ -591,7 +590,7 @@ function EvidenceSection({ evidence }: { evidence: NonNullable<IncidentCaseSumma
           )
         }
       />
-      <p className="tableMeta" style={{ margin: '0.3rem 0 0', fontSize: '0.7rem' }}>
+      <p className="tableMeta incidentCaseCaption">
         {SNAPSHOT_VS_PACKAGE_CAPTION}
       </p>
     </CaseSection>
@@ -608,10 +607,10 @@ function CaseSection({ title, state, pill, children }: {
   return (
     <section className="incidentCaseSection">
       <div className="incidentCaseSectionHead">
-        <p className="sectionEyebrow" style={{ margin: 0 }}>{title}</p>
+        <p className="sectionEyebrow incidentCaseSectionTitle">{title}</p>
         {pill ?? (state ? <StatusPill label={caseStateLabel(state)} variant={caseStateVariant(state)} /> : null)}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>{children}</div>
+      <div className="incidentCaseSectionBody">{children}</div>
     </section>
   );
 }

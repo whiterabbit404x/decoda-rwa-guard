@@ -172,7 +172,8 @@ function severityPill(severity?: string | null): { label: string; variant: PillV
   if (s === 'critical') return { label: 'Critical', variant: 'danger' };
   if (s === 'high')     return { label: 'High',     variant: 'danger' };
   if (s === 'medium')   return { label: 'Medium',   variant: 'warning' };
-  if (s === 'low')      return { label: 'Low',       variant: 'success' };
+  // Low severity is informational blue, never the green that means healthy.
+  if (s === 'low')      return { label: 'Low',       variant: 'info' };
   if (s === 'info')     return { label: 'Info',      variant: 'info' };
   return { label: 'Unknown', variant: 'neutral' };
 }
@@ -680,9 +681,9 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       </div>
 
       {/* ── Filter bar ──────────────────────────────────────────── */}
-      <div className="buttonRow" style={{ marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+      <div className="buttonRow incidentsFilterBar">
         <input placeholder="Search incidents..." value={search} onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: '1 1 200px', minWidth: '180px' }} aria-label="Search incidents" />
+          className="incidentsSearchInput" aria-label="Search incidents" />
         <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)} aria-label="Severity filter">
           <option value="">All Severities</option>
           <option value="critical">Critical</option>
@@ -701,15 +702,14 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
           <option value="suppressed">Suppressed</option>
         </select>
         <input placeholder="Assignee user ID..." value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}
-          style={{ width: '180px' }} aria-label="Assignee filter" />
+          className="incidentsAssigneeInput" aria-label="Assignee filter" />
         {/* Create Incident runs the canonical alert-escalation path (POST /alerts/{id}/escalate).
             It is disabled ONLY when the workflow prerequisite is genuinely absent — no alert is
             left to escalate — never unconditionally. RBAC still lives on the backend; a denied
             request surfaces its reason below instead of being pre-empted here, because workspace
             role permissions are DB-overridable and cannot be inferred client-side. */}
-        <button type="button" className="btn btn-primary" data-testid="create-incident"
+        <button type="button" className="btn btn-primary incidentsCreateButton" data-testid="create-incident"
           disabled={creatingIncident || !escalatableAlert}
-          style={{ opacity: creatingIncident || !escalatableAlert ? 0.45 : 1 }}
           title={escalatableAlert
             ? `Open an incident from the latest un-escalated alert (${escalatableAlert.title ?? escalatableAlert.id})`
             : 'No alert is available to escalate. Incidents are created from alerts — open an alert first.'}
@@ -721,8 +721,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       {/* The backend's own refusal (403 PERMISSION_DENIED, suppressed alert, …) is shown
           verbatim — the control never fails silently and never claims a success it did not get. */}
       {createIncidentError ? (
-        <p className="statusLine" role="alert" data-testid="create-incident-error"
-          style={{ marginBottom: '0.75rem' }}>{createIncidentError}</p>
+        <p className="statusLine incidentsCreateError" role="alert" data-testid="create-incident-error">{createIncidentError}</p>
       ) : null}
 
       {/* ── Content ─────────────────────────────────────────────── */}
@@ -749,18 +748,18 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
                   const isSelected = incident.id === selectedId;
                   return (
                     <tr key={incident.id} onClick={() => setSelectedId(incident.id)}
-                      style={{ cursor: 'pointer', background: isSelected ? 'rgba(59,130,246,0.08)' : undefined }}>
-                      <td style={{ fontFamily: 'monospace', fontSize: '0.75rem', whiteSpace: 'nowrap',
-                        maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={incident.id}>
+                      className={isSelected ? 'incidentsQueueRow incidentsQueueRow-selected' : 'incidentsQueueRow'}
+                      data-selected={isSelected ? 'true' : undefined}>
+                      <td className="incidentsCellId" title={incident.id}>
                         {incident.id}
                       </td>
                       <td><StatusPill label={sev.label} variant={sev.variant} /></td>
-                      <td style={{ maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td className="incidentsCellTitle" title={incident.title ?? undefined}>
                         {incident.title ?? '-'}
                       </td>
-                      <td style={{ fontSize: '0.8rem' }}>{incidentAsset(incident)}</td>
+                      <td className="incidentsCellAsset" title={incidentAsset(incident)}>{incidentAsset(incident)}</td>
                       <td><StatusPill label={st.label} variant={st.variant} /></td>
-                      <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{fmt(incident.created_at)}</td>
+                      <td className="incidentsCellTime" title={fmtFull(incident.created_at)}>{fmt(incident.created_at)}</td>
                       <td>
                         {/* Full-page navigation is a SEPARATE action from drawer selection. This routes to
                             the canonical incident detail page (Digital Forensics Investigator) using the
@@ -770,8 +769,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
                             row's onClick (drawer select) from also firing; preventDefault is NEVER called, so
                             the link is not swallowed and navigation is never blocked. */}
                         <Link href={`/incidents/${encodeURIComponent(incident.id)}`} prefetch={false}
-                          className="btn btn-secondary"
-                          style={{ fontSize: '0.73rem', padding: '0.2rem 0.5rem' }}
+                          className="btn btn-secondary incidentsRowAction"
                           onClick={(e) => { e.stopPropagation(); }}>
                           View Incident
                         </Link>
@@ -803,7 +801,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       )}
 
       {message ? (
-        <p className="statusLine" style={{ marginTop: '0.5rem' }}>{message}</p>
+        <p className="statusLine incidentsMessage">{message}</p>
       ) : null}
     </section>
   );
@@ -877,7 +875,7 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
     <aside className="dataCard sharedSurfaceCard caseFilePanel" aria-label="Incident detail">
       {/* ── Case identity + metadata ───────────────────────────── */}
       <div className="caseFileHeader">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+        <div className="caseFileHeaderRow">
           <p className="caseFileEyebrow">Case File</p>
           <StatusPill label={sev.label} variant={sev.variant} />
         </div>
@@ -894,7 +892,7 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
           <CaseFileField label="Assigned" value={incident.owner_user_id ?? incident.assignee_user_id ?? 'Unassigned'} />
           <CaseFileField label="Linked Alert" value={
             hasLinkedAlert
-              ? <Link href="/alerts" prefetch={false} className="caseFileMonoValue" style={{ color: 'var(--text-accent)' }}>{incident.source_alert_id}</Link>
+              ? <Link href="/alerts" prefetch={false} className="caseFileMonoValue caseFileLink">{incident.source_alert_id}</Link>
               : <span className="muted">Linked alert unavailable</span>
           } />
           <CaseFileField label="Linked Detection" value={
@@ -944,20 +942,18 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
             <Link
               href={`/response-actions?incident_id=${encodeURIComponent(incident.id)}`}
               prefetch={false}
-              className="btn btn-secondary"
-              style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem', alignSelf: 'flex-start' }}
+              className="btn btn-secondary caseFileSmallAction"
             >
               Open in Response Actions
             </Link>
           ) : responseLoad === 'empty' ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', alignItems: 'flex-start' }}>
+            <div className="caseFileRecommend">
               {recommendError ? (
-                <p style={{ fontSize: '0.6875rem', color: 'var(--danger-fg)', margin: 0 }} role="alert">{recommendError}</p>
+                <p className="caseFileError" role="alert">{recommendError}</p>
               ) : null}
               <button
                 type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: '0.75rem', padding: '0.2rem 0.55rem' }}
+                className="btn btn-secondary caseFileSmallAction"
                 onClick={onRecommend}
                 disabled={recommending}
               >
@@ -969,14 +965,14 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
 
         {/* ── Investigation progress (compact) ──────────────────── */}
         <section className="caseFileSection" aria-label="Investigation progress">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <div className="caseFileSectionHead">
             <p className="caseFileSectionTitle">Investigation</p>
             {lifecycle
               ? <StatusPill label={investigationLifecycleLabel(lifecycle)} variant={investigationLifecycleVariant(lifecycle)} />
               : null}
           </div>
           <CompactWorkflowProgress progress={progress} load={investigationLoad} />
-          <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>
+          <p className="caseFileIntegrityDetail caseFileStateLine">
             Next: {nextAction.label}
           </p>
         </section>
@@ -1019,16 +1015,16 @@ function CompactWorkflowProgress({ progress, load }: {
   progress: WorkflowProgress | null; load: InvestigationLoad;
 }) {
   if (load === 'loading' || load === 'idle') {
-    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Loading investigation workflow…</p>;
+    return <p className="caseFileIntegrityDetail caseFileStateLine">Loading investigation workflow…</p>;
   }
   if (load === 'unavailable') {
-    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Investigation workflow is not available for this deployment yet.</p>;
+    return <p className="caseFileIntegrityDetail caseFileStateLine">Investigation workflow is not available for this deployment yet.</p>;
   }
   if (load === 'error') {
-    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>Unable to load the investigation workflow.</p>;
+    return <p className="caseFileIntegrityDetail caseFileStateLine">Unable to load the investigation workflow.</p>;
   }
   if (!progress) {
-    return <p className="caseFileIntegrityDetail" style={{ margin: 0 }}>No workflow stages recorded yet.</p>;
+    return <p className="caseFileIntegrityDetail caseFileStateLine">No workflow stages recorded yet.</p>;
   }
   return (
     <>
@@ -1085,7 +1081,7 @@ function ForensicFieldFallback({ load, absent }: { load: ForensicLoadState; abse
       : load === 'not_found' ? 'Incident not found'
       : load === 'error' ? 'Unavailable'
       : absent;
-  return <span className="muted" style={{ fontSize: '0.78rem' }}>{text}</span>;
+  return <span className="muted caseFileFallback">{text}</span>;
 }
 
 /* ── Case File metadata field ────────────────────────────────────── */
@@ -1105,17 +1101,17 @@ const TIMELINE_HEADERS = ['Time', 'Event', 'Actor / System', 'Result', 'Evidence
 
 function TimelineTab({ timeline }: { timeline: TimelineEntry[] }) {
   if (timeline.length === 0) {
-    return <p className="muted" style={{ fontSize: '0.85rem' }}>No timeline events yet.</p>;
+    return <p className="muted incidentTabEmpty">No timeline events yet.</p>;
   }
   return (
     <TableShell headers={TIMELINE_HEADERS} compact>
       {timeline.map((entry, i) => (
         <tr key={entry.id ?? i}>
-          <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{fmt(entry.created_at ?? entry.timestamp)}</td>
-          <td style={{ fontSize: '0.8rem' }}>{entry.event_type ?? entry.message ?? entry.note ?? 'Event'}</td>
-          <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{entry.actor ?? entry.system ?? 'System'}</td>
-          <td style={{ fontSize: '0.78rem' }}>{entry.result ?? '-'}</td>
-          <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{entry.evidence_source ?? '-'}</td>
+          <td className="incidentsCellTime">{fmt(entry.created_at ?? entry.timestamp)}</td>
+          <td className="incidentTabCell">{entry.event_type ?? entry.message ?? entry.note ?? 'Event'}</td>
+          <td className="incidentTabCell incidentTabCell-secondary">{entry.actor ?? entry.system ?? 'System'}</td>
+          <td className="incidentTabCell">{entry.result ?? '-'}</td>
+          <td className="incidentTabCell incidentTabCell-muted">{entry.evidence_source ?? '-'}</td>
         </tr>
       ))}
     </TableShell>
@@ -1143,38 +1139,37 @@ function AlertsTab({ linkedAlert, hasLinkedAlert, workspaceEvidenceSource }: {
 }) {
   if (!hasLinkedAlert) {
     return (
-      <div className="emptyStatePanel sharedEmptyStateBlocker" style={{ padding: '0.75rem' }}>
-        <h4 style={{ fontSize: '0.9rem', marginBottom: '0.35rem' }}>Linked alert unavailable</h4>
-        <p className="muted" style={{ fontSize: '0.82rem', marginBottom: '0.5rem' }}>
+      <div className="emptyStatePanel sharedEmptyStateBlocker incidentTabBlocker">
+        <h4 className="incidentTabBlockerTitle">Linked alert unavailable</h4>
+        <p className="muted incidentTabBlockerBody">
           This incident has no linked alert. No alert link will be shown without a valid alert.
         </p>
-        <Link href="/alerts" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>View Alerts</Link>
+        <Link href="/alerts" prefetch={false} className="btn btn-secondary incidentTabAction">View Alerts</Link>
       </div>
     );
   }
-  if (!linkedAlert) return <p className="muted" style={{ fontSize: '0.85rem' }}>Loading linked alert…</p>;
+  if (!linkedAlert) return <p className="muted incidentTabEmpty">Loading linked alert…</p>;
   const sev = severityPill(linkedAlert.severity);
   const alertStatus = linkedAlert.status ?? 'unknown';
   return (
     <TableShell headers={ALERTS_TAB_HEADERS} compact>
       <tr>
-        <td style={{ fontFamily: 'monospace', fontSize: '0.72rem', maxWidth: '90px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        <td className="incidentsCellId incidentsCellId-narrow" title={linkedAlert.id}>
           {linkedAlert.id}
         </td>
         <td><StatusPill label={sev.label} variant={sev.variant} /></td>
-        <td style={{ fontSize: '0.8rem', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <td className="incidentsCellTitle incidentsCellTitle-narrow" title={linkedAlert.title ?? undefined}>
           {linkedAlert.title ?? '-'}
         </td>
-        <td style={{ fontSize: '0.78rem' }}>{linkedAlert.payload?.detection_type ?? linkedAlert.detector_kind ?? '-'}</td>
-        <td style={{ fontSize: '0.78rem' }}>{linkedAlertDetectedBy(linkedAlert)}</td>
-        <td style={{ fontSize: '0.78rem' }}>{linkedAlert.payload?.confidence ?? '-'}</td>
+        <td className="incidentTabCell">{linkedAlert.payload?.detection_type ?? linkedAlert.detector_kind ?? '-'}</td>
+        <td className="incidentTabCell">{linkedAlertDetectedBy(linkedAlert)}</td>
+        <td className="incidentTabCell">{linkedAlert.payload?.confidence ?? '-'}</td>
         <td><StatusPill label={alertStatus} variant="neutral" /></td>
         <td>
           {/* Screen 6 has no per-alert route, so this opens the Alerts list rather
               than pretending to deep-link to one alert. The label says where it
               actually goes — the same destination the Case File's Linked Alert uses. */}
-          <Link href="/alerts" prefetch={false} className="btn btn-secondary"
-            style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
+          <Link href="/alerts" prefetch={false} className="btn btn-secondary incidentsRowAction">
             View in Alerts
           </Link>
         </td>
@@ -1189,9 +1184,9 @@ const EVIDENCE_HEADERS = ['Evidence ID', 'Type', 'Source', 'Created', 'In Packag
 function EvidenceTab({ evidence, workspaceEvidenceSource }: { evidence: EvidenceRow[]; workspaceEvidenceSource: string }) {
   if (evidence.length === 0) {
     return (
-      <div>
-        <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>No evidence collected for this incident yet.</p>
-        <Link href="/evidence" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>View Evidence</Link>
+      <div className="incidentTabEmptyBlock">
+        <p className="muted incidentTabEmpty">No evidence collected for this incident yet.</p>
+        <Link href="/evidence" prefetch={false} className="btn btn-secondary incidentTabAction">View Evidence</Link>
       </div>
     );
   }
@@ -1204,13 +1199,13 @@ function EvidenceTab({ evidence, workspaceEvidenceSource }: { evidence: Evidence
         const srcVariant: PillVariant = isSimulator ? 'info' : rawSrc === 'live' || rawSrc === 'live_provider' ? 'success' : 'neutral';
         return (
           <tr key={ev.id ?? i}>
-            <td style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{ev.id ?? `EV-${i + 1}`}</td>
-            <td style={{ fontSize: '0.78rem' }}>{ev.type ?? 'blockchain'}</td>
+            <td className="incidentsCellMono">{ev.id ?? `EV-${i + 1}`}</td>
+            <td className="incidentTabCell">{ev.type ?? 'blockchain'}</td>
             <td><StatusPill label={srcLabel} variant={srcVariant} /></td>
-            <td style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>{fmt(ev.created_at)}</td>
+            <td className="incidentsCellTime">{fmt(ev.created_at)}</td>
             <td><StatusPill label={ev.included_in_package ? 'Yes' : 'No'} variant={ev.included_in_package ? 'success' : 'neutral'} /></td>
             <td>
-              <Link href="/evidence" prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
+              <Link href="/evidence" prefetch={false} className="btn btn-secondary incidentsRowAction">
                 Export Evidence
               </Link>
             </td>
@@ -1233,15 +1228,14 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
 }) {
   if (actions.length === 0) {
     return (
-      <div>
-        <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>No response action recommended yet.</p>
+      <div className="incidentTabEmptyBlock">
+        <p className="muted incidentTabEmpty">No response action recommended yet.</p>
         {recommendError && (
-          <p style={{ fontSize: '0.82rem', color: 'var(--danger-fg)', marginBottom: '0.5rem' }}>{recommendError}</p>
+          <p className="incidentTabError">{recommendError}</p>
         )}
         <button
           type="button"
-          className="btn btn-secondary"
-          style={{ fontSize: '0.78rem' }}
+          className="btn btn-secondary incidentTabAction"
           onClick={onRecommend}
           disabled={recommending}
         >
@@ -1265,17 +1259,8 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
   ).length;
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '0.75rem',
-          marginBottom: '0.75rem',
-        }}
-      >
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }} aria-label="Response summary">
+      <div className="incidentResponseSummary">
+        <div className="incidentResponseCounts" aria-label="Response summary">
           <StatusPill label={`Recommended ${recommendedN}`} variant="info" />
           <StatusPill label={`Awaiting approval ${awaitingApprovalN}`} variant={awaitingApprovalN > 0 ? 'warning' : 'neutral'} />
           <StatusPill label={`Executed ${executedN}`} variant={executedN > 0 ? 'success' : 'neutral'} />
@@ -1284,8 +1269,7 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
         <Link
           href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`}
           prefetch={false}
-          className="btn btn-primary"
-          style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+          className="btn btn-primary incidentTabAction"
         >
           Open in Response Actions
         </Link>
@@ -1293,7 +1277,7 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
     <TableShell headers={RESPONSE_HEADERS} compact>
       {actions.map((action, i) => (
         <tr key={action.id ?? i}>
-          <td style={{ fontSize: '0.8rem', maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={action.display_title ?? action.action_type ?? ''}>
+          <td className="incidentsCellTitle incidentsCellTitle-narrow" title={action.display_title ?? action.action_type ?? ''}>
             {/* Canonical display_title — never the raw snake_case action_type key. */}
             {action.display_title ?? action.action_type ?? '-'}
           </td>
@@ -1301,9 +1285,9 @@ function ResponseActionsTab({ actions, incidentId, onRecommend, recommending, re
           <td><StatusPill label={action.lifecycle_label ?? action.status ?? 'Recommended'}
             variant={action.lifecycle_state === 'executed' ? 'success' : action.lifecycle_state === 'execution_failed' ? 'danger' : action.lifecycle_state === 'awaiting_approval' ? 'warning' : 'neutral'} /></td>
           <td><StatusPill label={action.approval_status === 'pending' ? 'Yes' : action.approval_status === 'approved' ? 'Approved' : 'No'} variant={action.approval_status === 'pending' ? 'warning' : 'neutral'} /></td>
-          <td style={{ fontSize: '0.75rem' }}>{action.provenance?.primary_source_label ?? action.evidence_source ?? '-'}</td>
+          <td className="incidentTabCell">{action.provenance?.primary_source_label ?? action.evidence_source ?? '-'}</td>
           <td>
-            <Link href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.15rem 0.4rem' }}>
+            <Link href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`} prefetch={false} className="btn btn-secondary incidentsRowAction">
               View Response
             </Link>
           </td>

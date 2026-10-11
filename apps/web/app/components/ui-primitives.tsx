@@ -42,12 +42,15 @@ export function StatusPill({ label, variant = 'default' }: { label: string; vari
   return <span className={pillClass(variant)}>{label}</span>;
 }
 
+// Severity keeps its own scale: low is informational blue, so a low-severity
+// finding never wears the green that means healthy. Only a resolved item is
+// green.
 export function statusVariantFromSeverity(severity: string): PillVariant {
   switch (severity.toLowerCase()) {
     case 'critical': case 'high':   return 'danger';
     case 'medium':                   return 'warning';
-    case 'low':   case 'resolved':  return 'success';
-    case 'info':                     return 'info';
+    case 'low':   case 'info':      return 'info';
+    case 'resolved':                 return 'success';
     default:                         return 'neutral';
   }
 }

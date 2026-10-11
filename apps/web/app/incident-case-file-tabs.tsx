@@ -92,8 +92,8 @@ export default function IncidentCaseFileTabs({ incidentId }: { incidentId: strin
 function CaseFileFallback() {
   return (
     <section className="featureSection" aria-label="Incident record">
-      <div className="dataCard sharedSurfaceCard" style={{ padding: '1.15rem' }}>
-        <p className="muted" style={{ fontSize: '0.85rem' }}>Loading incident record…</p>
+      <div className="dataCard sharedSurfaceCard incidentRecordCard">
+        <p className="muted incidentRecordLoading">Loading incident record…</p>
       </div>
     </section>
   );
@@ -272,15 +272,17 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
 
   return (
     <section className="featureSection" aria-label="Incident record">
-      <div className="dataCard sharedSurfaceCard" style={{ padding: '1.15rem' }}>
-        <p className="sectionEyebrow" style={{ margin: 0 }}>Full investigation</p>
-        <h3 style={{ margin: '0.15rem 0 0.9rem', fontSize: '1rem' }}>Case record, timeline, alerts, evidence, response actions &amp; AI investigation</h3>
+      <div className="dataCard sharedSurfaceCard incidentRecordCard">
+        <div className="incidentRecordHead">
+          <p className="sectionEyebrow incidentRecordEyebrow">Full investigation</p>
+          <h3 className="incidentRecordTitle">Case record, timeline, alerts, evidence, response actions &amp; AI investigation</h3>
+        </div>
         <TabStrip
           tabs={CASE_FILE_TABS.map((t) => ({ key: t.key, label: t.label }))}
           active={activeTab}
           onChange={(tab) => setActiveTab(tab as CaseFileTabKey)}
         />
-        <div style={{ marginTop: '0.9rem' }}>
+        <div className="incidentRecordBody">
           {activeTab === 'overview' && (
             <IncidentCaseOverview
               summary={incidentEvidence.data?.case_summary ?? null}
@@ -292,7 +294,7 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
             />
           )}
           {activeTab === 'timeline' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div className="incidentRecordStack">
               <IncidentForensicTimeline
                 events={forensicTimeline?.events ?? []}
                 load={timelineLoad}
@@ -311,7 +313,7 @@ function CaseFileTabsInner({ incidentId }: { incidentId: string }) {
             />
           )}
           {activeTab === 'evidence' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div className="incidentRecordStack">
               <IncidentEvidenceTab
                 data={incidentEvidence.data}
                 load={incidentEvidence.load}

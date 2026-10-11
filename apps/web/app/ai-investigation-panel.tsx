@@ -209,16 +209,16 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
   const sev = result?.severity_assessment;
 
   return (
-    <section className="card" style={{ marginTop: '1.5rem' }} aria-label="AI Investigation">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div>
-          <p className="eyebrow">AI Investigation</p>
-          <h2 style={{ margin: 0 }}>Evidence-grounded AI incident investigation</h2>
+    <section className="card aiInvestigationPanel" aria-label="AI Investigation">
+      <div className="aiPanelHead">
+        <div className="aiPanelHeading">
+          <p className="eyebrow aiPanelEyebrow">AI Investigation</p>
+          <h2 className="aiPanelTitle">Evidence-grounded AI incident investigation</h2>
         </div>
-        <span className="pill" data-status={state?.status}>{statusLabel}</span>
+        {statusLabel ? <span className="pill aiStatusPill" data-status={state?.status}>{statusLabel}</span> : null}
       </div>
 
-      <p className="lede" style={{ marginTop: '0.5rem' }}>
+      <p className="lede aiPanelNotice">
         <strong>AI-generated analysis — verify before action.</strong> Recommendations are policy-controlled and
         require human approval. No on-chain action is executed automatically.
       </p>
@@ -244,11 +244,11 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
         </div>
       </dl>
 
-      {loading && <p>Loading AI investigation…</p>}
+      {loading && <p className="aiPanelState" aria-busy="true">Loading AI investigation…</p>}
       {error && <p role="alert" className="errorText">{error}</p>}
 
       {!loading && state?.status === 'disabled' && (
-        <p>AI triage is disabled for this deployment. An administrator can enable it via configuration.</p>
+        <p className="aiPanelState">AI triage is disabled for this deployment. An administrator can enable it via configuration.</p>
       )}
 
       {!loading && state?.status === 'unavailable' && (
@@ -258,17 +258,17 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
       )}
 
       {!loading && state && (state.status === 'not_requested') && (
-        <button type="button" className="primaryButton" onClick={startAnalysis} disabled={busy}>
+        <button type="button" className="primaryButton btn btn-primary aiPanelAction" onClick={startAnalysis} disabled={busy}>
           {busy ? 'Starting…' : 'Start AI Investigation'}
         </button>
       )}
 
       {!loading && state && ACTIVE_STATES.has(state.status) && (
-        <p aria-live="polite">The AI agent is investigating this incident from the immutable evidence snapshot. This updates automatically.</p>
+        <p aria-live="polite" className="aiPanelState aiPanelState-active">The AI agent is investigating this incident from the immutable evidence snapshot. This updates automatically.</p>
       )}
 
       {!loading && state && ['failed', 'validation_failed', 'budget_blocked'].includes(state.status) && (
-        <div>
+        <div className="aiPanelFailure">
           <p role="alert" className="errorText">
             {state.status === 'budget_blocked'
               ? 'AI triage was blocked by a budget limit and did not run.'
@@ -277,7 +277,7 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
                 : 'AI triage failed.'}
             {state.error_code ? ` (${state.error_code})` : ''}
           </p>
-          <button type="button" className="primaryButton" onClick={startAnalysis} disabled={busy}>Retry analysis</button>
+          <button type="button" className="primaryButton btn btn-primary aiPanelAction" onClick={startAnalysis} disabled={busy}>Retry analysis</button>
         </div>
       )}
 
@@ -335,11 +335,11 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
                   <div className="recControls">
                     {r.review_state === 'pending_review' ? (
                       <>
-                        <button type="button" onClick={() => review(r.recommendation_id, 'approve')} disabled={busy}>Approve</button>
-                        <button type="button" onClick={() => review(r.recommendation_id, 'reject')} disabled={busy}>Reject</button>
+                        <button type="button" className="btn btn-secondary aiReviewButton" onClick={() => review(r.recommendation_id, 'approve')} disabled={busy}>Approve</button>
+                        <button type="button" className="btn btn-secondary aiReviewButton" onClick={() => review(r.recommendation_id, 'reject')} disabled={busy}>Reject</button>
                       </>
                     ) : (
-                      <span className="pill">{r.review_state}</span>
+                      <span className="pill aiReviewState">{r.review_state}</span>
                     )}
                   </div>
                 </li>
@@ -358,7 +358,7 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
             <p>
               <strong>Provider:</strong> {formatProviderLabel(state?.provider)} · <strong>Model:</strong> {formatModelLabel(state?.simulated, state?.model)}
               {state?.simulated && (
-                <span className="pill" style={{ marginLeft: '0.4rem' }} title="Deterministic offline mock — no live model was called.">
+                <span className="pill aiSimulatedPill" title="Deterministic offline mock — no live model was called.">
                   Simulated (mock)
                 </span>
               )}
@@ -376,7 +376,7 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
             )}
           </div>
 
-          <button type="button" className="secondaryButton" onClick={openRegenerate} disabled={busy}>Regenerate (requires reason)</button>
+          <button type="button" className="secondaryButton btn btn-secondary aiPanelAction" onClick={openRegenerate} disabled={busy}>Regenerate (requires reason)</button>
         </div>
       )}
 
@@ -385,19 +385,19 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
           role="dialog"
           aria-modal="true"
           aria-label="Regenerate AI analysis"
-          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}
+          className="aiRegenScrim"
           onClick={closeRegenerate}
         >
           <div
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1.5rem', maxWidth: '520px', width: '100%' }}
+            className="aiRegenDialog"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="eyebrow">Regenerate analysis</p>
-            <h3 style={{ margin: '0.25rem 0 0.75rem' }}>Regenerate AI investigation</h3>
-            <p style={{ fontSize: '0.9rem', marginBottom: '0.75rem' }}>
+            <p className="eyebrow aiPanelEyebrow">Regenerate analysis</p>
+            <h3 className="aiRegenTitle">Regenerate AI investigation</h3>
+            <p className="aiRegenBody">
               Regeneration creates a new analysis version and preserves the previous result. A reason is required and recorded in the audit log.
             </p>
-            <label htmlFor="regen-reason" style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem' }}>Reason<span aria-hidden="true"> *</span></label>
+            <label htmlFor="regen-reason" className="aiRegenLabel">Reason<span aria-hidden="true"> *</span></label>
             <textarea
               id="regen-reason"
               value={regenReason}
@@ -407,12 +407,12 @@ export default function AiInvestigationPanel({ incidentId }: { incidentId: strin
               aria-required="true"
               aria-invalid={regenError ? true : undefined}
               placeholder="Why is this analysis being regenerated?"
-              style={{ width: '100%', boxSizing: 'border-box', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--bg-inset)', color: 'inherit' }}
+              className="aiRegenInput"
             />
-            {regenError && <p role="alert" className="errorText" style={{ marginTop: '0.5rem' }}>{regenError}</p>}
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
-              <button type="button" className="secondaryButton" onClick={closeRegenerate} disabled={busy}>Cancel</button>
-              <button type="button" className="primaryButton" onClick={submitRegenerate} disabled={busy}>{busy ? 'Regenerating…' : 'Regenerate'}</button>
+            {regenError && <p role="alert" className="errorText aiRegenError">{regenError}</p>}
+            <div className="aiRegenActions">
+              <button type="button" className="secondaryButton btn btn-secondary" onClick={closeRegenerate} disabled={busy}>Cancel</button>
+              <button type="button" className="primaryButton btn btn-primary" onClick={submitRegenerate} disabled={busy}>{busy ? 'Regenerating…' : 'Regenerate'}</button>
             </div>
           </div>
         </div>

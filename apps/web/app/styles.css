@@ -307,7 +307,7 @@
      dialogs, tooltips) so overlay chrome follows the active theme. */
   --popover:     var(--bg-surface);
   --popover-fg:  var(--text-primary);
-  --ring:        var(--border-hover);
+  --ring:        var(--accent-blue);
   --on-accent:   #ffffff;
 
   /* Legacy alias names still referenced by individual screens. Each is an
@@ -12228,7 +12228,7 @@ body {
    accessible name; a tooltip shows the label on hover and focus. */
 @media (min-width: 1101px) {
   .appShellFrame[data-sidebar="collapsed"] {
-    grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+    grid-template-columns: var(--sidebar-w-collapsed, 72px) minmax(0, 1fr);
   }
 
   .appShellFrame[data-sidebar="collapsed"] .sidebarCollapseToggle svg {
@@ -12430,7 +12430,7 @@ body {
 /* ── Mobile: tablet rail, phone drawer ───────────────────────────── */
 @media (min-width: 768px) and (max-width: 1100px) {
   .appShellFrame {
-    grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+    grid-template-columns: var(--sidebar-w-collapsed, 72px) minmax(0, 1fr);
   }
 
   .appSidebar {
@@ -12867,6 +12867,16 @@ th {
 
 tbody tr {
   transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+/* Selected rows: a neutral fill plus the accent rail. The teal tint used
+   before stacked under a red severity pill in Dark measured 4.36:1 — below
+   AA for the one row an analyst is reading. The rail still carries the
+   selection, and the fill keeps it visible in greyscale. */
+tbody tr[aria-selected="true"],
+tbody tr[data-selected="true"],
+tbody tr.isSelected {
+  background: var(--bg-subtle);
 }
 
 /* ── Status pills ─────────────────────────────────────────────────── */
@@ -14661,3 +14671,2224 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   }
 }
 /* ═══ Screen layer: alerts — end ═══ */
+
+/* ═══ Screen layer: incidents — begin ═══ */
+/* ═════════════════════════════════════════════════════════════════════
+   INCIDENTS — queue, Case File, full investigation, lifecycle timeline
+   ─────────────────────────────────────────────────────────────────────
+   Appended after the Decoda brand layer. Scoped to Screen 7's own classes.
+   Tokens only. Severity hues keep their meaning; teal is interaction only.
+
+   The Case File (.caseFile*, .incidentsQueue*) and the case summary
+   (.incidentCase*) carry NO gradients, shadows, animation or filters —
+   incidents-screen7-case-summary / -case-file-refinement pin that. The
+   lifecycle timeline, the forensic hero and the AI panel are outside that
+   contract and get restrained elevation and a one-shot entrance.
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ── Shared notices inside Screen 7 ──────────────────────────────────
+   `statusLine-warning` had no rule anywhere, so a "Partial history" or a
+   failed re-run rendered as plain body text. Inside these surfaces it now
+   reads as the warning it is. */
+:is(.incidentForensicTimeline, .incidentEvidenceTab, .forensicInvestigator, .incidentRecordCard) .statusLine-warning {
+  color: var(--warning-fg);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+/* ═════════════ Lifecycle timeline — the investigation rail ═════════════
+   One continuous rail, a typed marker per recorded event, the calendar day
+   stated on the rail whenever it changes, and a tabular monospace timestamp
+   in its own column so a run of events reads like a log. Only events the
+   backend recorded are drawn; nothing here fills a gap. */
+.incidentForensicTimeline {
+  --tl-time: 6.4rem;
+  --tl-rail: 1.75rem;
+  --tl-gap: 0.75rem;
+  --tl-item-gap: 0.7rem;
+  /* Centre of the rail column, from the left edge of each row. */
+  --tl-x: calc(var(--tl-time) + var(--tl-gap) + (var(--tl-rail) / 2));
+  min-width: 0;
+}
+
+.incidentTimelineState {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentTimelineHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.6rem 1.25rem;
+  margin: 0 0 0.9rem;
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.incidentTimelineHeading {
+  min-width: 0;
+}
+
+.incidentTimelineEyebrow {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.incidentTimelineCount {
+  margin: 0.15rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Key for the marker types actually drawn on this rail. */
+.incidentTimelineLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.incidentTimelineLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.incidentTimelineLegendMark {
+  display: inline-grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
+  border: 1px solid var(--incident-tl-border, var(--border));
+  background: var(--incident-tl-surface, transparent);
+  color: var(--incident-tl-accent, var(--text-muted));
+}
+
+.incidentTimelineLegendMark svg {
+  width: 10px;
+  height: 10px;
+}
+
+.incidentTimelineNotice {
+  margin: 0 0 0.75rem;
+}
+
+.incidentTimelineUndated {
+  margin: 0 0 0.85rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+/* The list itself: the old 1px border-left rail and its padding give way to
+   per-row rail segments that join marker to marker. */
+.incidentForensicTimelineList {
+  position: relative;
+  padding: 0;
+  border-left: 0;
+  gap: var(--tl-item-gap);
+}
+
+.incidentForensicTimelineItem {
+  display: block;
+  position: relative;
+}
+
+/* Rail segment: from this row's top to the next row's top, so the line runs
+   unbroken through every marker and stops at the last one. */
+.incidentForensicTimelineItem::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--tl-x) - 0.5px);
+  top: 0;
+  bottom: calc(-1 * var(--tl-item-gap));
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.incidentForensicTimelineItem:first-child::before {
+  top: 1rem;
+}
+
+.incidentForensicTimelineItem:last-child::before {
+  bottom: auto;
+  height: 1.05rem;
+}
+
+.incidentForensicTimelineItem:last-child:has(> .incidentTimelineDay)::before {
+  height: 3.1rem;
+}
+
+.incidentForensicTimelineItem:only-child::before {
+  display: none;
+}
+
+/* Day divider on the rail: the date in the time column, a small diamond node
+   on the rail, a hairline across the event column. */
+.incidentTimelineDay {
+  display: grid;
+  grid-template-columns: var(--tl-time) var(--tl-rail) minmax(0, 1fr);
+  column-gap: var(--tl-gap);
+  align-items: center;
+  margin: 0.15rem 0 0.6rem;
+  font-size: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  color: inherit;
+}
+
+.incidentTimelineDay::before {
+  content: '';
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  position: relative;
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: var(--bg-card);
+  border: 1.5px solid var(--border-strong);
+  box-shadow: 0 0 0 3px var(--bg-card);
+}
+
+.incidentTimelineDay::after {
+  content: '';
+  grid-column: 3;
+  grid-row: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.incidentTimelineDayLabel {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* One event row: time | marker | event card. */
+.incidentTimelineEntry {
+  display: grid;
+  grid-template-columns: var(--tl-time) var(--tl-rail) minmax(0, 1fr);
+  grid-template-areas: "time rail card";
+  column-gap: var(--tl-gap);
+  align-items: start;
+  min-width: 0;
+}
+
+.incidentTimelineTime {
+  grid-area: time;
+  justify-self: end;
+  padding-top: 0.62rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.3;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Typed marker: the domain's own tokens (set per row from the presentation
+   module), a halo in the card colour so the rail stops cleanly at it, and a
+   tint layered over a solid base so the rail never shows through. */
+.incidentForensicTimelineMarker {
+  grid-area: rail;
+  justify-self: center;
+  position: relative;
+  left: auto;
+  top: auto;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.3rem;
+  border-radius: 50%;
+  border: 1px solid var(--incident-tl-border, var(--border));
+  background: var(--bg-card);
+  color: var(--incident-tl-accent, var(--text-muted));
+  box-shadow: 0 0 0 3px var(--bg-card), inset 0 0 0 1.5rem var(--incident-tl-surface, transparent);
+}
+
+.incidentForensicTimelineMarker svg {
+  display: block;
+}
+
+.incidentTimelineCard {
+  grid-area: card;
+  min-width: 0;
+  padding: 0.55rem 0.8rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.incidentTimelineCard:hover {
+  border-color: var(--border-hover);
+}
+
+/* A recorded human decision is the one event an auditor looks for first. */
+.incidentForensicTimelineItem[data-actor="user"] .incidentTimelineCard {
+  border-left: 2px solid var(--incident-tl-border, var(--border-strong));
+}
+
+.incidentTimelineCardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+}
+
+.incidentTimelineTitle {
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.incidentTimelineDomainTag {
+  color: var(--incident-tl-accent, var(--text-muted));
+  border-color: var(--incident-tl-border, var(--border));
+  background: var(--incident-tl-surface, transparent);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.incidentTimelineDescription {
+  margin: 0.2rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.incidentTimelineMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.incidentTimelineActor {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.incidentTimelineEntity {
+  padding: 0 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* One-shot entrance when the Timeline tab mounts. The timeline does not poll,
+   so this never replays; the cascade is capped at 240ms. */
+:where(.incidentForensicTimelineItem) {
+  animation: dcFadeUp var(--dur-slow) var(--ease-out) backwards;
+}
+:where(.incidentForensicTimelineItem):nth-child(2) { animation-delay: 40ms; }
+:where(.incidentForensicTimelineItem):nth-child(3) { animation-delay: 80ms; }
+:where(.incidentForensicTimelineItem):nth-child(4) { animation-delay: 120ms; }
+:where(.incidentForensicTimelineItem):nth-child(5) { animation-delay: 160ms; }
+:where(.incidentForensicTimelineItem):nth-child(6) { animation-delay: 200ms; }
+:where(.incidentForensicTimelineItem):nth-child(n + 7) { animation-delay: 240ms; }
+
+/* Phone: the time moves above its card, the rail hugs the left edge. */
+@media (max-width: 640px) {
+  .incidentForensicTimeline {
+    --tl-rail: 1.5rem;
+    --tl-gap: 0.6rem;
+    --tl-x: calc(var(--tl-rail) / 2);
+  }
+
+  .incidentTimelineEntry {
+    grid-template-columns: var(--tl-rail) minmax(0, 1fr);
+    grid-template-areas:
+      "rail time"
+      "rail card";
+    row-gap: 0.2rem;
+  }
+
+  .incidentTimelineTime {
+    justify-self: start;
+    padding-top: 0.32rem;
+  }
+
+  .incidentForensicTimelineMarker {
+    width: 1.4rem;
+    height: 1.4rem;
+    margin-top: 0.1rem;
+  }
+
+  .incidentTimelineDay {
+    grid-template-columns: var(--tl-rail) auto minmax(0, 1fr);
+  }
+
+  .incidentTimelineDay::before { grid-column: 1; }
+  .incidentTimelineDayLabel { grid-column: 2; justify-self: start; }
+  .incidentTimelineDay::after { grid-column: 3; }
+
+  .incidentForensicTimelineItem:first-child::before { top: 0.8rem; }
+  .incidentForensicTimelineItem:last-child::before { height: 0.8rem; }
+  .incidentForensicTimelineItem:last-child:has(> .incidentTimelineDay)::before { height: 2.9rem; }
+}
+
+/* ═════════════ Full investigation · case record container ═════════════ */
+.incidentRecordCard {
+  padding: 1.15rem 1.25rem 1.25rem;
+  min-width: 0;
+}
+
+.incidentRecordHead {
+  margin: 0 0 0.9rem;
+}
+
+.incidentRecordEyebrow {
+  margin: 0;
+}
+
+.incidentRecordTitle {
+  margin: 0.2rem 0 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.incidentRecordLoading {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentRecordBody {
+  margin-top: 1rem;
+  min-width: 0;
+  /* The tab bodies hold wide tables that scroll inside their own wrapper. Without
+     this, a table's min-content width propagated up through the page grid and
+     pushed the whole page wider than a phone viewport. */
+  contain: inline-size;
+}
+
+.incidentRecordStack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  min-width: 0;
+}
+
+/* ═════════════ Overview · deterministic case summary ═════════════
+   Pinned flat: no gradients, shadows, animation or filters (Screen 7 spec).
+   Hierarchy comes from type, hairlines and a solid card surface only. */
+.incidentCaseState {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentCaseColumnTitle {
+  margin: 0 0 0.15rem;
+  color: var(--text-secondary);
+}
+
+.incidentCaseSection {
+  gap: 0.4rem;
+  padding: 0.75rem 0.9rem 0.8rem;
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.incidentCaseSectionHead {
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.incidentCaseSectionTitle {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.incidentCaseSectionBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* One labelled fact per line, separated by a hairline so a long record still
+   scans as rows. */
+.incidentCaseSectionBody > .incidentCaseLine {
+  padding: 0.3rem 0;
+}
+
+.incidentCaseSectionBody > .incidentCaseLine + .incidentCaseLine {
+  border-top: 1px solid var(--overlay-06);
+}
+
+.incidentCaseLineLabel {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.incidentCaseLineValue {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.incidentCaseNote {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.incidentCaseNote-after {
+  margin-top: 0.35rem;
+}
+
+.incidentCaseCaption {
+  margin: 0.4rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.incidentCaseReconciliation {
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.incidentCaseReconciliationMeta {
+  font-size: 0.75rem;
+}
+
+.incidentReasonCodeList {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.incidentCaseQuorumList {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.incidentReasonCode,
+.incidentMonoValue,
+.caseFileMonoValue,
+.caseFileMetaValue .incidentMonoValue,
+.caseFileIntegrityCode {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+.incidentCaseAction {
+  align-self: flex-start;
+  margin-top: 0.55rem;
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75rem;
+}
+
+.incidentCaseLink {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+.incidentCaseLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.incidentCaseLink:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* ═════════════ Workflow tab · canonical stages ═════════════ */
+.incidentWorkflowTab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (min-width: 1180px) {
+  .incidentWorkflowTab {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.incidentWorkflowSection {
+  min-width: 0;
+  padding: 0.85rem 1rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.incidentWorkflowHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.incidentWorkflowEyebrow {
+  margin: 0;
+}
+
+.incidentWorkflowCount {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.incidentWorkflowState {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentWorkflowCaption {
+  margin: 0.65rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+/* Stepper: one marker per backend stage, joined by a rail. The marker restates
+   the recorded state; "current" is an extra pill, never a recolour. */
+.incidentWorkflowStages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.incidentWorkflowStage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.38rem 0;
+  min-width: 0;
+}
+
+.incidentWorkflowStage + .incidentWorkflowStage::before {
+  content: '';
+  position: absolute;
+  left: calc(0.75rem - 0.5px);
+  top: -0.38rem;
+  height: 0.76rem;
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.incidentWorkflowStageMarker {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.incidentWorkflowStage[data-state="completed"] .incidentWorkflowStageMarker {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.incidentWorkflowStage[data-state="failed"] .incidentWorkflowStageMarker {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.incidentWorkflowStage:is([data-state="in_progress"], [data-state="queued"]) .incidentWorkflowStageMarker {
+  border-color: var(--info-bdr);
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.incidentWorkflowStageLabel {
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.incidentWorkflowStage[data-state="completed"] .incidentWorkflowStageLabel,
+.incidentWorkflowStage[data-current="true"] .incidentWorkflowStageLabel {
+  color: var(--text-primary);
+}
+
+.incidentWorkflowStage[data-current="true"] .incidentWorkflowStageLabel {
+  font-weight: 600;
+}
+
+.incidentWorkflowStageState {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.incidentWorkflowCoverage {
+  display: flex;
+  flex-direction: column;
+}
+
+.incidentWorkflowCoverage > .incidentCaseLine {
+  padding: 0.32rem 0;
+}
+
+.incidentWorkflowCoverage > .incidentCaseLine + .incidentCaseLine {
+  border-top: 1px solid var(--overlay-06);
+}
+
+/* ═════════════ Evidence tab · forensic directory ═════════════ */
+.incidentEvidenceTab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.incidentEvidenceState {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentEvidenceError {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.incidentEvidenceNotice {
+  margin: 0;
+}
+
+.incidentEvidenceEmpty {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentEvidenceCaption {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.incidentEvidenceAction {
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75rem;
+}
+
+/* Domain filter cards: the domain's accent as a left bar and as the figure;
+   the pressed card takes the domain tint over a solid base. */
+.incidentEvidenceDomains {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.6rem;
+}
+
+.incidentEvidenceDomainCard {
+  position: relative;
+  gap: 0.15rem;
+  padding: 0.65rem 0.8rem 0.65rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.incidentEvidenceDomainCard::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 0.6rem;
+  bottom: 0.6rem;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--incident-domain-accent, var(--border-strong));
+}
+
+.incidentEvidenceDomainCard:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+
+.incidentEvidenceDomainCard[aria-pressed="true"] {
+  border-color: var(--incident-domain-border, var(--border-accent));
+  background: var(--bg-card);
+  box-shadow: inset 0 0 0 100px var(--incident-domain-surface, transparent);
+}
+
+.incidentEvidenceDomainLabel {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.incidentEvidenceDomainCount {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--incident-domain-accent, var(--text-primary));
+}
+
+.incidentEvidenceDomainUnit {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.incidentEvidenceSnapshot {
+  gap: 0.6rem 1rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.incidentEvidenceSnapshotGroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.incidentEvidenceDigest,
+.incidentEvidencePackageNo {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.incidentEvidenceMeta {
+  font-size: 0.75rem;
+}
+
+.incidentPolicyForensics {
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+
+.incidentPolicyEyebrow {
+  margin: 0 0 0.5rem;
+}
+
+.incidentPolicyStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.incidentPolicyHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.incidentPolicyKey {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.incidentPolicyMeta {
+  font-size: 0.75rem;
+}
+
+.incidentPolicyCodes {
+  margin-top: 0.35rem;
+}
+
+.incidentPolicyApprovals {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+}
+
+/* Directory cells. */
+.incidentArtifactName,
+.incidentArtifactDigest,
+.incidentArtifactTimeValue {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+.incidentArtifactName { font-size: 0.75rem; color: var(--text-primary); }
+.incidentArtifactDigest { font-size: 0.72rem; color: var(--text-secondary); }
+.incidentArtifactType { font-size: 0.78rem; }
+.incidentArtifactSource { font-size: 0.78rem; color: var(--text-secondary); }
+.incidentArtifactMuted { font-size: 0.75rem; }
+.incidentArtifactTime { font-size: 0.75rem; white-space: nowrap; }
+
+.incidentArtifactDay {
+  display: block;
+  font-size: 0.6875rem;
+}
+
+.incidentArtifactInline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.incidentArtifactDomain {
+  color: var(--incident-domain-accent, var(--text-muted));
+  border-color: var(--incident-domain-border, var(--border));
+  font-weight: 600;
+}
+
+.incidentArtifactSealMark {
+  color: var(--success-fg);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+/* ═════════════ Incident queue ═════════════
+   Pinned flat with the Case File (no gradients, shadows, animation, filters).
+   A selected row uses the shared `tbody tr[data-selected="true"]` treatment. */
+.incidentsQueueCounters {
+  gap: 0.85rem;
+  margin-bottom: 1.1rem;
+}
+
+/* The filter bar reads as one toolbar: search grows, filters stay compact,
+   the creation control sits at the end. */
+.incidentsFilterBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+.incidentsSearchInput {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.incidentsAssigneeInput {
+  flex: 0 1 180px;
+  width: 180px;
+  min-width: 140px;
+}
+
+.incidentsCreateButton {
+  margin-left: auto;
+}
+
+.incidentsCreateError {
+  margin: 0 0 0.85rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--danger-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 0.82rem;
+}
+
+.incidentsMessage {
+  margin-top: 0.5rem;
+}
+
+.incidentsQueueRow {
+  cursor: pointer;
+}
+
+/* The shared selected-row tint (accent at 14% in Dark) stacked under a red
+   severity pill took "Critical" to 4.36:1. The teal rail from the shared rule
+   still marks the selection; the tint here is the neutral subtle surface. */
+.incidentsQueueRow[data-selected="true"] {
+  background: var(--bg-subtle);
+}
+
+.incidentsCellId,
+.incidentsCellMono {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.incidentsCellId {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.incidentsCellId-narrow {
+  max-width: 90px;
+  font-size: 0.72rem;
+}
+
+.incidentsCellTitle {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+  color: var(--text-primary);
+}
+
+.incidentsCellTitle-narrow {
+  max-width: 130px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.incidentsCellAsset {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* One line per row: a wrapped "Awaiting Response" pill doubled the row height. */
+.incidentsQueueRow .sharedStatusPill {
+  white-space: nowrap;
+}
+
+.incidentsCellTime {
+  font-size: 0.78rem;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.incidentsRowAction {
+  min-height: 0;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.73rem;
+}
+
+@media (max-width: 640px) {
+  .incidentsAssigneeInput,
+  .incidentsSearchInput {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .incidentsCreateButton {
+    margin-left: 0;
+    flex: 1 1 100%;
+  }
+}
+
+/* ═════════════ Case File (compact preview beside the queue) ═════════════ */
+.caseFileHeader {
+  gap: 0.6rem;
+  background: var(--bg-subtle);
+}
+
+.caseFileHeaderRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.caseFileTitle {
+  font-size: 0.9375rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.caseFileMetaLabel {
+  margin-bottom: 0.1rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.caseFileLink {
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+.caseFileLink:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.caseFileLink:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.caseFileFallback {
+  font-size: 0.78rem;
+}
+
+/* Integrity summary: one bordered list with hairline dividers, rather than six
+   separate boxes — six answers scanned down one edge. */
+.caseFileIntegrity {
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.caseFileIntegrityRow {
+  padding: 0.5rem 0.7rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.caseFileIntegrityRow + .caseFileIntegrityRow {
+  border-top: 1px solid var(--border);
+}
+
+.caseFileSectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.caseFileStateLine {
+  margin: 0;
+}
+
+.caseFileSmallAction {
+  align-self: flex-start;
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.caseFileRecommend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.caseFileError {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--danger-fg);
+}
+
+.caseFileProgressTrack {
+  background: var(--overlay-06);
+}
+
+/* ═════════════ Full-investigation tab bodies (shared with the queue) ═════════════ */
+.incidentTabEmpty {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.incidentTabEmptyBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.incidentTabAction {
+  min-height: var(--control-h-sm);
+  padding: 0.25rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.incidentTabError {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--danger-fg);
+}
+
+.incidentTabBlocker {
+  padding: 0.9rem 1rem;
+}
+
+.incidentTabBlockerTitle {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.incidentTabBlockerBody {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+}
+
+.incidentTabCell {
+  font-size: 0.78rem;
+}
+
+.incidentTabCell-secondary { color: var(--text-secondary); }
+.incidentTabCell-muted { color: var(--text-muted); }
+
+.incidentResponseSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.incidentResponseCounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* ═════════════ Full investigation · page header ═════════════ */
+.incidentBackLink {
+  display: inline-flex;
+  margin-top: 0.85rem;
+}
+
+/* ═════════════ Digital Forensics Investigator (hero) ═════════════ */
+.forensicInvestigator {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+/* The non-execution disclaimer: a quiet, bordered statement — always present,
+   never styled as a status. */
+.forensicDisclaimer {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.forensicDisclaimer strong {
+  color: var(--text-primary);
+}
+
+.forensicInlineNotice {
+  margin: 0;
+}
+
+.forensicInlineNotice-spaced {
+  margin: 0 0 0.6rem;
+}
+
+.forensicOutcome {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+}
+
+/* Skeleton heights (server-rendered, so no inline styles). The shimmer is the
+   shared .skelBlock loading indicator. */
+.forensicSkeletonStack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.forensicSkeleton {
+  border-radius: var(--radius-lg);
+  background-color: var(--overlay-04);
+}
+
+.forensicSkeleton-header { height: 90px; }
+.forensicSkeleton-card { height: 220px; }
+.forensicSkeleton-table { height: 200px; }
+.forensicSkeleton-agent { height: 420px; }
+
+.forensicSkeletonLabel {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.forensicUnavailable {
+  padding: 1rem 1.15rem;
+}
+
+.forensicUnavailableTitle {
+  margin: 0.25rem 0;
+}
+
+.forensicUnavailableBody {
+  font-size: 0.85rem;
+}
+
+/* Incident header — the case identity. A top rule carries the severity only
+   when severity is critical/high (red) or medium (amber); every other value
+   keeps a neutral rule, so nothing reads as an all-clear. */
+.forensicHeaderCard {
+  position: relative;
+  padding: 1.25rem 1.4rem 1.3rem;
+  overflow: hidden;
+}
+
+.forensicHeaderCard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--border-strong);
+}
+
+.forensicHeaderCard[data-tone="danger"]::before { background: var(--danger-fg); }
+.forensicHeaderCard[data-tone="warning"]::before { background: var(--warning-fg); }
+
+.forensicHeaderTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.forensicHeaderIdentity {
+  min-width: 0;
+}
+
+.forensicHeaderBadges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.forensicReference {
+  padding: 0.12rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text-primary);
+}
+
+.forensicHeaderTitle {
+  margin: 0.55rem 0 0;
+  font-size: 1.2rem;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+
+.forensicHeaderPrimary {
+  margin-top: 1.15rem;
+}
+
+.forensicHeaderProvenance,
+.forensicHeaderTertiary {
+  border-top-color: var(--border);
+}
+
+/* Tertiary metadata stays quieter through type, not opacity — opacity dimmed
+   muted labels below AA. */
+.forensicHeaderTertiary {
+  opacity: 1;
+}
+
+.forensicField {
+  min-width: 0;
+}
+
+.forensicFieldLabel {
+  margin: 0 0 0.2rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.forensicFieldValue {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.forensicHeaderTertiary .forensicFieldValue {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.forensicInline {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+/* Copyable identifier: a real button (it copies), so it gets the button
+   affordances — hover, focus ring — on a mono chip. */
+.forensicCopyId {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.12rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.forensicCopyId:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.forensicCopyId:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.forensicCopyId[data-copied="true"] {
+  border-color: var(--border-accent);
+  color: var(--text-accent);
+}
+
+/* Evidence reference: an identifier, not a control — neutral mono chip. */
+.forensicRefChip {
+  display: inline-block;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  padding: 0.08rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-subtle);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.forensicRefList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+/* The originating rule is governance provenance — violet, never a status. */
+.forensicRuleChip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--violet-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--violet-bg);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--violet-fg);
+}
+
+.forensicMetaText {
+  font-size: 0.78rem;
+}
+
+/* Card shell shared by the three investigation cards. */
+.forensicCard {
+  padding: 1.1rem 1.2rem 1.2rem;
+  min-width: 0;
+}
+
+.forensicCardHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 0.9rem;
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.forensicCardHeading {
+  min-width: 0;
+}
+
+.forensicCardEyebrow {
+  margin: 0;
+}
+
+.forensicCardTitle {
+  margin: 0.15rem 0 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.forensicCardMeta {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.forensicCardAction {
+  min-height: var(--control-h-sm);
+  padding: 0.25rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.forensicEmptyText {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.forensicEmptyText-sm {
+  font-size: 0.82rem;
+}
+
+.forensicCaption {
+  margin: 0.3rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.forensicCaption-flush {
+  margin: 0;
+}
+
+.forensicCaption-spaced {
+  margin-top: 0.65rem;
+}
+
+/* Investigation status: label-over-value pairs on a two-column grid. */
+.forensicStatusGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.forensicStatusBlock {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.forensicMetricRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+}
+
+.forensicDetails {
+  margin-top: 0.85rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.forensicDetailsSummary {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.forensicDetailsSummary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.forensicDetailsBody {
+  margin: 0.45rem 0 0.3rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.forensicDetailsList {
+  margin: 0 0 0.35rem;
+  padding-left: 1rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+/* Corroborated evidence table cells. */
+.forensicCell {
+  font-size: 0.82rem;
+}
+
+.forensicCell-strong {
+  color: var(--text-primary);
+  font-weight: 550;
+}
+
+.forensicCell-time {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.forensicTxCell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.forensicCellMeta {
+  font-size: 0.75rem;
+}
+
+.forensicTableFoot {
+  margin: 0.55rem 0 0;
+  font-size: 0.78rem;
+}
+
+/* Investigation workflow stepper (hero card). */
+.forensicCurrentStage {
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+}
+
+.forensicStages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.forensicStage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0;
+  font-size: 0.83rem;
+}
+
+.forensicStage + .forensicStage::before {
+  content: '';
+  position: absolute;
+  left: calc(0.7rem - 0.5px);
+  top: -0.3rem;
+  height: 0.6rem;
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.forensicStageMarker {
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.forensicStage[data-tone="done"] .forensicStageMarker {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.forensicStage[data-tone="failed"] .forensicStageMarker {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.forensicStage[data-tone="active"] .forensicStageMarker {
+  border-color: var(--info-bdr);
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.forensicStageLabel {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.forensicStage[data-tone="done"] .forensicStageLabel,
+.forensicStage[data-tone="active"] .forensicStageLabel {
+  color: var(--text-primary);
+}
+
+/* Agent panel: findings keep their four labels (verified fact / rule match /
+   AI interpretation / hypothesis); a left rule in the SAME tone as that label's
+   pill makes the kind legible down the list. */
+.forensicAgentNote {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.forensicListTitle {
+  margin: 0 0 0.3rem;
+}
+
+.forensicListTitle-spaced {
+  margin-top: 0.9rem;
+}
+
+.forensicFindingList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.forensicFinding {
+  padding: 0.55rem 0.7rem 0.6rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+.forensicFinding[data-kind="verified_fact"] { border-left-color: var(--success-bdr); }
+.forensicFinding[data-kind="rule_match"] { border-left-color: var(--info-bdr); }
+.forensicFinding[data-kind="ai_interpretation"],
+.forensicFinding[data-kind="evidence_gap"] { border-left-color: var(--warning-bdr); }
+
+.forensicFindingHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.forensicFindingTitle {
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.forensicRuleId {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.forensicFindingBody {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.forensicFindingMeta {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+}
+
+.forensicGaps {
+  margin-top: 0.9rem;
+}
+
+.forensicGapList {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.forensicNextStep {
+  margin: 0.9rem 0 0.75rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.forensicNextStepTitle {
+  margin: 0;
+}
+
+.forensicNextStepBody {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.forensicActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .forensicHeaderCard { padding: 1.1rem 1rem; }
+  .forensicStatusGrid { grid-template-columns: minmax(0, 1fr); }
+  .forensicCard { padding: 1rem; }
+}
+
+/* ═════════════ AI Investigation tab ═════════════ */
+.aiInvestigationPanel {
+  padding: 1.1rem 1.2rem 1.25rem;
+  min-width: 0;
+}
+
+.aiPanelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.aiPanelHeading {
+  min-width: 0;
+}
+
+.aiPanelEyebrow {
+  margin: 0;
+}
+
+.aiPanelTitle {
+  margin: 0.2rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+/* Job status pill, in the same tones the forensic hero uses for the AI job:
+   running/queued informational, completed success, warnings/blocked amber,
+   failures red, everything idle or absent neutral. Never teal. */
+.aiInvestigationPanel .aiStatusPill {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--neutral-bdr);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.aiInvestigationPanel .aiStatusPill:is([data-status="queued"], [data-status="running"]) {
+  border-color: var(--info-bdr);
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.aiInvestigationPanel .aiStatusPill[data-status="completed"] {
+  border-color: var(--success-bdr);
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.aiInvestigationPanel .aiStatusPill:is([data-status="completed_with_warnings"], [data-status="budget_blocked"]) {
+  border-color: var(--warning-bdr);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.aiInvestigationPanel .aiStatusPill:is([data-status="failed"], [data-status="validation_failed"]) {
+  border-color: var(--danger-bdr);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* "AI-generated — verify before action": a standing caution, amber. */
+.aiPanelNotice {
+  max-width: none;
+  margin: 0.85rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.aiPanelNotice strong {
+  color: var(--warning-fg);
+}
+
+.aiInvestigationPanel .aiAuthorityNotice {
+  margin-top: 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.aiPanelState {
+  margin: 0.85rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.aiPanelFailure {
+  margin-top: 0.85rem;
+}
+
+.aiPanelFailure .errorText {
+  margin: 0 0 0.6rem;
+}
+
+.aiPanelAction {
+  margin-top: 0.85rem;
+}
+
+.aiPanelFailure .aiPanelAction {
+  margin-top: 0;
+}
+
+/* The AI result body. A left rule in the AI-interpretation tone separates
+   generated text from the deterministic record everywhere else on the page. */
+.aiInvestigationPanel .aiResult {
+  margin-top: 1rem;
+  padding-left: 0.95rem;
+  border-left: 2px solid var(--warning-bdr);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.aiInvestigationPanel .aiResult h3 {
+  margin: 1.1rem 0 0.3rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.aiInvestigationPanel .aiResult h3:first-of-type {
+  margin-top: 0.4rem;
+}
+
+.aiInvestigationPanel .aiResult > p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.aiInvestigationPanel .aiResult ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.aiInvestigationPanel .aiResult li + li {
+  margin-top: 0.2rem;
+}
+
+.aiInvestigationPanel .aiResult code {
+  padding: 0 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-subtle);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.aiInvestigationPanel .refs {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.aiInvestigationPanel .warnList {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--warning-bdr);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.aiInvestigationPanel .recList {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.aiInvestigationPanel .recList > li {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+.aiInvestigationPanel .recList strong {
+  color: var(--text-primary);
+}
+
+.aiInvestigationPanel .recControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.aiReviewButton {
+  min-height: var(--control-h-sm);
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+}
+
+.aiInvestigationPanel .aiReviewState {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--neutral-bdr);
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  font-size: 0.7rem;
+}
+
+/* A synthetic run is labelled conspicuously — it can never pass as a live
+   model's output. */
+.aiInvestigationPanel .aiSimulatedPill {
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--warning-bdr);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 0.68rem;
+}
+
+.aiInvestigationPanel .aiMeta {
+  margin: 1rem 0 0.9rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.aiInvestigationPanel .aiMeta p {
+  margin: 0;
+}
+
+.aiInvestigationPanel .aiMeta strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Regeneration dialog. */
+.aiRegenScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--scrim);
+  animation: dcFadeIn var(--dur-base) var(--ease-out) backwards;
+}
+
+.aiRegenDialog {
+  width: 100%;
+  max-width: 520px;
+  padding: 1.4rem 1.5rem 1.3rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+  animation: dcModalIn var(--dur-slow) var(--ease-out) backwards;
+}
+
+.aiRegenTitle {
+  margin: 0.25rem 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+.aiRegenBody {
+  margin: 0 0 0.85rem;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.aiRegenLabel {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.aiRegenInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  resize: vertical;
+}
+
+.aiRegenInput:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-color: var(--border-accent);
+}
+
+.aiRegenInput[aria-invalid="true"] {
+  border-color: var(--danger-bdr);
+}
+
+.aiRegenError {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+}
+
+.aiRegenActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* ═════════════ Key corroborating evidence table ═════════════
+   The fixed-layout columns were sized so tightly that the base rule's
+   `overflow-wrap: anywhere` split single words mid-word ("Corrobo|rated",
+   "Telem|etry"). The short columns get room for their longest word; long
+   identifiers (source ids, hashes) still wrap anywhere. Title absorbs the
+   difference, and the table keeps its fixed layout and scroll floor. */
+.forensicEvidenceTable th,
+.forensicEvidenceTable td {
+  padding-inline: 0.6rem;
+}
+
+.forensicEvidenceTable thead th:nth-child(1) { width: 5.75rem; }
+.forensicEvidenceTable thead th:nth-child(6) { width: 7.25rem; }
+
+.forensicEvidenceTable tbody td:nth-child(1),
+.forensicEvidenceTable tbody td:nth-child(5),
+.forensicEvidenceTable tbody td:nth-child(6) .sharedStatusPill {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.forensicEvidenceTable tbody td .sharedStatusPill {
+  padding: 0.14rem 0.45rem;
+  font-size: 0.7rem;
+  letter-spacing: 0;
+}
+/* ═══ Screen layer: incidents — end ═══ */

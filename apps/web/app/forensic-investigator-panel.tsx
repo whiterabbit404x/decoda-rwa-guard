@@ -106,12 +106,8 @@ function CopyableId({ value, label }: { value?: string | null; label: string }) 
       onClick={copy}
       title={raw}
       aria-label={`Copy ${label} ${raw}`}
-      style={{
-        fontFamily: 'monospace', fontSize: '0.78rem', background: 'var(--border)',
-        border: '1px solid var(--border)', borderRadius: '6px', padding: '0.15rem 0.45rem',
-        color: 'var(--text-secondary)', cursor: 'pointer', maxWidth: '100%', overflow: 'hidden',
-        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}
+      className="forensicCopyId"
+      data-copied={copied ? 'true' : undefined}
     >
       {copied ? 'Copied ✓' : truncateMiddle(raw)}
     </button>
@@ -121,15 +117,7 @@ function CopyableId({ value, label }: { value?: string | null; label: string }) 
 /* ── Evidence reference chip ────────────────────────────────────── */
 function RefChip({ refValue }: { refValue: string }) {
   return (
-    <span
-      title={refValue}
-      style={{
-        fontFamily: 'monospace', fontSize: '0.74rem', background: 'rgba(59,130,246,0.12)',
-        border: '1px solid rgba(59,130,246,0.25)', borderRadius: '5px', padding: '0.1rem 0.4rem',
-        color: 'var(--text-accent)', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap', display: 'inline-block', verticalAlign: 'middle',
-      }}
-    >
+    <span title={refValue} className="forensicRefChip">
       {refKindLabel(refValue)}: {truncateMiddle(refValue.split(':').slice(1).join(':'), 6, 6)}
     </span>
   );
@@ -137,10 +125,10 @@ function RefChip({ refValue }: { refValue: string }) {
 
 function RefList({ refs }: { refs?: string[] }) {
   if (!refs || refs.length === 0) {
-    return <span className="muted" style={{ fontSize: '0.78rem' }}>No linked evidence</span>;
+    return <span className="muted forensicMetaText">No linked evidence</span>;
   }
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginTop: '0.25rem' }}>
+    <div className="forensicRefList">
       {refs.map((r) => <RefChip key={r} refValue={r} />)}
     </div>
   );
@@ -151,12 +139,11 @@ function Card({ title, eyebrow, action, children, ariaLabel }: {
   title: string; eyebrow?: string; action?: ReactNode; children: ReactNode; ariaLabel?: string;
 }) {
   return (
-    <section className="dataCard sharedSurfaceCard" aria-label={ariaLabel ?? title}
-      style={{ padding: '1.15rem', minWidth: 0 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.9rem' }}>
-        <div style={{ minWidth: 0 }}>
-          {eyebrow ? <p className="sectionEyebrow" style={{ margin: 0 }}>{eyebrow}</p> : null}
-          <h3 style={{ margin: '0.15rem 0 0', fontSize: '1rem' }}>{title}</h3>
+    <section className="dataCard sharedSurfaceCard forensicCard" aria-label={ariaLabel ?? title}>
+      <div className="forensicCardHead">
+        <div className="forensicCardHeading">
+          {eyebrow ? <p className="sectionEyebrow forensicCardEyebrow">{eyebrow}</p> : null}
+          <h3 className="forensicCardTitle">{title}</h3>
         </div>
         {action}
       </div>
@@ -282,10 +269,10 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
   }
   if (data && (data.status === 'unavailable' || data.schema_ready === false)) {
     return (
-      <div className="dataCard sharedSurfaceCard" role="alert" style={{ padding: '1rem' }}>
-        <p className="sectionEyebrow" style={{ margin: 0 }}>Digital Forensics Investigator</p>
-        <h3 style={{ margin: '0.25rem 0' }}>Forensic investigation unavailable</h3>
-        <p className="muted" style={{ fontSize: '0.85rem' }}>
+      <div className="dataCard sharedSurfaceCard forensicUnavailable" role="alert">
+        <p className="sectionEyebrow forensicCardEyebrow">Digital Forensics Investigator</p>
+        <h3 className="forensicUnavailableTitle">Forensic investigation unavailable</h3>
+        <p className="muted forensicUnavailableBody">
           {data.message ?? 'The forensic investigation layer is not available for this deployment yet.'}
         </p>
         <button type="button" className="btn btn-secondary" onClick={() => void load()}>Retry</button>
@@ -297,9 +284,9 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
   const analysis = data.analysis;
 
   return (
-    <div className="forensicInvestigator" aria-label="Digital Forensics Investigator" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="forensicInvestigator" aria-label="Digital Forensics Investigator">
       {/* Mandatory generated-content + non-execution disclaimer. */}
-      <p className="statusLine" style={{ margin: 0, fontSize: '0.82rem' }}>
+      <p className="statusLine forensicDisclaimer">
         <strong>Evidence-grounded forensic analysis.</strong> Deterministic facts are derived from an immutable
         evidence snapshot; the AI narrative is labelled and verify-before-action. No fund-moving, contract-changing,
         pause, or key-rotation action is executed here — response steps are recommendations routed to approval.
@@ -307,7 +294,7 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
 
       <HeaderCard investigation={data} />
 
-      {error ? <p role="alert" className="statusLine statusLine-warning" style={{ margin: 0 }}>{error}</p> : null}
+      {error ? <p role="alert" className="statusLine statusLine-warning forensicInlineNotice">{error}</p> : null}
 
       {/* Readable two-column investigation layout (see styles.css · Screen 7).
           Standard desktop (1280–1439px): the main investigation content sits at
@@ -339,20 +326,22 @@ export default function ForensicInvestigatorPanel({ incidentId }: { incidentId: 
 
 /* ── Loading skeleton ───────────────────────────────────────────── */
 function LoadingSkeleton() {
-  const block = (h: string): ReactNode => (
-    <div style={{ background: 'var(--overlay-06)', borderRadius: '10px', height: h, animation: 'none' }} aria-hidden="true" />
+  // Heights are classes, not inline styles: this skeleton is server-rendered on
+  // first paint, where the CSP blocks inline style attributes.
+  const block = (size: 'header' | 'card' | 'table' | 'agent'): ReactNode => (
+    <div className={`skelBlock forensicSkeleton forensicSkeleton-${size}`} aria-hidden="true" />
   );
   return (
-    <div aria-busy="true" aria-label="Loading investigation" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      {block('90px')}
+    <div aria-busy="true" aria-label="Loading investigation" className="forensicSkeletonStack">
+      {block('header')}
       <div className="forensicLayout">
         <div className="forensicMain">
-          <div className="forensicMainTop">{block('220px')}{block('220px')}</div>
-          {block('200px')}
+          <div className="forensicMainTop">{block('card')}{block('card')}</div>
+          {block('table')}
         </div>
-        {block('420px')}
+        {block('agent')}
       </div>
-      <p className="muted" style={{ fontSize: '0.85rem' }}>Loading forensic investigation…</p>
+      <p className="muted forensicSkeletonLabel">Loading forensic investigation…</p>
     </div>
   );
 }
@@ -360,9 +349,9 @@ function LoadingSkeleton() {
 /* ── Incident header ────────────────────────────────────────────── */
 function HeaderField({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div style={{ minWidth: 0 }}>
-      <p className="tableMeta" style={{ margin: '0 0 0.15rem', fontSize: '0.75rem' }}>{label}</p>
-      <div style={{ fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+    <div className="forensicField">
+      <p className="tableMeta forensicFieldLabel">{label}</p>
+      <div className="forensicFieldValue">{value}</div>
     </div>
   );
 }
@@ -405,21 +394,21 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
   // Detection record and originating rule are separate facts, resolved once.
   const provenance = detectionProvenance(investigation);
   return (
-    <section className="dataCard sharedSurfaceCard" aria-label="Incident header"
-      style={{ padding: '1.25rem', background: 'rgba(59,130,246,0.06)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.9rem' }}>{reference}</span>
+    <section className="dataCard sharedSurfaceCard forensicHeaderCard" aria-label="Incident header"
+      data-tone={severityVariant(incident.severity)}>
+      <div className="forensicHeaderTop">
+        <div className="forensicHeaderIdentity">
+          <div className="forensicHeaderBadges">
+            <span className="forensicReference">{reference}</span>
             <StatusPill label={(incident.severity ?? 'unknown').toString()} variant={severityVariant(incident.severity)} />
             <StatusPill label={(incident.status ?? 'unknown').toString()} variant="info" />
           </div>
-          <h2 style={{ margin: '0.45rem 0 0', fontSize: '1.1rem' }}>{incident.title ?? 'Untitled incident'}</h2>
+          <h2 className="forensicHeaderTitle">{incident.title ?? 'Untitled incident'}</h2>
         </div>
       </div>
       {/* SECONDARY — what this case is about. The four facts an operator needs
           before any number means anything. */}
-      <div className="forensicHeaderGrid" style={{ marginTop: '1.1rem' }}>
+      <div className="forensicHeaderGrid forensicHeaderPrimary">
         {/* The registered ASSET this incident concerns, resolved by the backend from
             the canonical detection/target link. A raw target UUID is a routing key,
             not an asset name, so it is only shown when no asset resolved. */}
@@ -442,7 +431,7 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
             rule below is a separate fact and can never promote this to "linked". */}
         <HeaderField label="Detection record" value={
           provenance.detectionLinked
-            ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+            ? <span className="forensicInline">
                 <span>{incident.detection_type ? detectionTypeLabel(incident.detection_type) : 'Linked'}</span>
                 <CopyableId value={provenance.detectionId} label="detection" />
               </span>
@@ -473,12 +462,7 @@ function HeaderCard({ investigation }: { investigation: ForensicInvestigation })
           provenance.originatingRule
             ? <span
                 title={provenance.originatingRule.reference}
-                style={{
-                  display: 'inline-block', fontSize: '0.78rem', padding: '0.1rem 0.45rem',
-                  background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.25)',
-                  borderRadius: '5px', color: 'var(--text-accent)', maxWidth: '100%',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}
+                className="forensicRuleChip"
               >
                 {provenance.originatingRule.name}
               </span>
@@ -559,7 +543,7 @@ function InvestigationStatusCard({ investigation }: { investigation: ForensicInv
   return (
     <Card eyebrow="Investigation" title="Investigation Status" ariaLabel="Investigation status"
       action={<StatusPill label={investigationLifecycleLabel(lifecycle)} variant={investigationLifecycleVariant(lifecycle)} />}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
+      <div className="forensicStatusGrid">
         {/* Lifecycle progress and the current stage, from the stage model alone. */}
         <HeaderField label="Workflow" value={
           progress
@@ -595,23 +579,23 @@ function InvestigationStatusCard({ investigation }: { investigation: ForensicInv
           different question from which forensic domains were collected, and it
           verifies nothing. 8 of 8 here is entirely compatible with "Operational:
           not collected", because operational state is not one of the eight. */}
-      <div style={{ marginTop: '0.75rem' }}>
+      <div className="forensicStatusBlock">
         <HeaderField label="Snapshot evidence dimensions" value={
           dimensions
             ? <span>{dimensions.present} of {dimensions.expected} present</span>
             : <span className="muted">Not recorded</span>
         } />
-        <p className="tableMeta" style={{ margin: '0.25rem 0 0', fontSize: '0.7rem' }}>
+        <p className="tableMeta forensicCaption">
           {SNAPSHOT_DIMENSION_CAPTION}
         </p>
         {dimensions && dimensions.missing.length > 0 ? (
-          <p className="tableMeta" style={{ margin: '0.25rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta forensicCaption">
             Missing: {dimensions.missing.join(', ')}.
           </p>
         ) : null}
       </div>
 
-      <div style={{ display: 'flex', gap: '1rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+      <div className="forensicMetricRow">
         <MetricTile label="Linked alerts" value={linked.alerts ?? 0} />
         <MetricTile label="Verified facts" value={facts.length} />
         {/* Corroborated SNAPSHOT records — the alert, the rule and the correlated
@@ -622,16 +606,16 @@ function InvestigationStatusCard({ investigation }: { investigation: ForensicInv
 
       {/* Why the confidence is what it is, from the backend's OWN recorded
           factors. The browser never scores or re-bands anything. */}
-      <details style={{ marginTop: '0.75rem' }}>
-        <summary style={{ fontSize: '0.78rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+      <details className="forensicDetails">
+        <summary className="forensicDetailsSummary">
           Why this confidence
         </summary>
-        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0.4rem 0 0.3rem' }}>
+        <p className="forensicDetailsBody">
           {analysis?.confidence_explanation
             ?? 'No confidence explanation was recorded for this analysis.'}
         </p>
         {(analysis?.confidence_factors ?? []).length > 0 ? (
-          <ul style={{ margin: '0 0 0.3rem', paddingLeft: '1rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <ul className="forensicDetailsList">
             {(analysis?.confidence_factors ?? []).map((factor) => (
               <li key={`${factor.factor}-${factor.weight}`}>
                 <strong>{factor.factor}</strong> ({factor.effect === 'decrease' ? '' : '+'}{factor.weight})
@@ -640,12 +624,12 @@ function InvestigationStatusCard({ investigation }: { investigation: ForensicInv
             ))}
           </ul>
         ) : null}
-        <p className="tableMeta" style={{ margin: 0, fontSize: '0.7rem' }}>{confidenceBandCaption()}</p>
+        <p className="tableMeta forensicCaption forensicCaption-flush">{confidenceBandCaption()}</p>
       </details>
 
       {/* An idle or unavailable agent is stated, never left blank: a silent
           absence would read as a clean result. */}
-      <p className="tableMeta" style={{ margin: '0.6rem 0 0', fontSize: '0.7rem' }}>
+      <p className="tableMeta forensicCaption forensicCaption-spaced">
         {aiInvestigatorDetail(aiState)}
       </p>
     </Card>
@@ -666,40 +650,40 @@ function EvidenceCorroboratedCard({ investigation }: { investigation: ForensicIn
   const isDegraded = investigation.status === 'degraded';
   return (
     <Card eyebrow="Evidence" title="Key corroborating evidence" ariaLabel="Key corroborating evidence"
-      action={<Link href={`/incidents/${encodeURIComponent(investigation.incident?.incident_id ?? '')}?tab=evidence`} prefetch={false} className="btn btn-secondary" style={{ fontSize: '0.78rem' }}>Open evidence directory</Link>}>
+      action={<Link href={`/incidents/${encodeURIComponent(investigation.incident?.incident_id ?? '')}?tab=evidence`} prefetch={false} className="btn btn-secondary forensicCardAction">Open evidence directory</Link>}>
       {rows.length === 0 ? (
         isDegraded ? (
-          <p className="muted" style={{ fontSize: '0.85rem' }}>
+          <p className="muted forensicEmptyText">
             No corroborating evidence has been resolved yet. The investigation is degraded until evidence arrives —
             this is shown as a gap, never as “safe”.
           </p>
         ) : (
-          <p className="muted" style={{ fontSize: '0.85rem' }}>Waiting for linked evidence to be collected for this incident.</p>
+          <p className="muted forensicEmptyText">Waiting for linked evidence to be collected for this incident.</p>
         )
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <TableShell headers={EVIDENCE_HEADERS} compact className="forensicEvidenceTable">
             {rows.map((ev: ForensicEvidenceRow, i: number) => (
               <tr key={ev.reference ?? i}>
-                <td style={{ fontSize: '0.82rem' }}>{ev.type ?? 'Evidence'}</td>
-                <td style={{ fontSize: '0.82rem' }} title={ev.title ?? ''}>{ev.title ?? '—'}</td>
+                <td className="forensicCell">{ev.type ?? 'Evidence'}</td>
+                <td className="forensicCell forensicCell-strong" title={ev.title ?? ''}>{ev.title ?? '—'}</td>
                 <td>{ev.kind === 'telemetry'
                   ? <StatusPill label={evidenceSourceLabel(ev.evidence_source)} variant={evidenceSourceVariant(ev.evidence_source)} />
-                  : <span style={{ fontSize: '0.82rem' }}>{ev.source ?? '—'}</span>}</td>
+                  : <span className="forensicCell">{ev.source ?? '—'}</span>}</td>
                 <td>{ev.tx_hash
-                  ? <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  ? <div className="forensicTxCell">
                       <CopyableId value={String(ev.tx_hash)} label="transaction hash" />
-                      {ev.block_number != null ? <span className="muted" style={{ fontSize: '0.75rem' }}>Block {String(ev.block_number)}{ev.chain_id != null ? ` · chain ${String(ev.chain_id)}` : ''}</span> : null}
+                      {ev.block_number != null ? <span className="muted forensicCellMeta">Block {String(ev.block_number)}{ev.chain_id != null ? ` · chain ${String(ev.chain_id)}` : ''}</span> : null}
                     </div>
-                  : <span className="muted" style={{ fontSize: '0.8rem' }}>—</span>}</td>
-                <td style={{ fontSize: '0.8rem' }}>{ev.observed_at ? fmtRelative(ev.observed_at) : '—'}</td>
+                  : <span className="muted forensicCellMeta">—</span>}</td>
+                <td className="forensicCell forensicCell-time">{ev.observed_at ? fmtRelative(ev.observed_at) : '—'}</td>
                 <td><StatusPill label={corroborationLabel(ev.corroboration)} variant={corroborationVariant(ev.corroboration)} /></td>
               </tr>
             ))}
           </TableShell>
           {/* Both numbers name the SAME collection, so the preview can never be
               read as a subset of the artifact directory's total. */}
-          <p className="muted" style={{ fontSize: '0.78rem', marginTop: '0.5rem' }}>
+          <p className="muted forensicTableFoot">
             {total > rows.length
               ? `Showing ${rows.length} of ${total} corroborated snapshot records.`
               : `${total} corroborated snapshot ${total === 1 ? 'record' : 'records'}.`}
@@ -708,7 +692,7 @@ function EvidenceCorroboratedCard({ investigation }: { investigation: ForensicIn
       )}
       {/* The distinction that stops "3 records" and "13 artifacts" reading as a
           contradiction: they count different things. */}
-      <p className="tableMeta" style={{ margin: '0.4rem 0 0', fontSize: '0.7rem' }}>
+      <p className="tableMeta forensicCaption forensicCaption-spaced">
         These are the immutable snapshot&apos;s corroboration records — the source alert, the originating
         rule and the correlated telemetry. The forensic artifact directory in the Evidence tab is a
         separate, four-domain collection with its own total; neither is a subset of the other.
@@ -725,31 +709,27 @@ function WorkflowCard({ stages }: { stages: WorkflowStage[] }) {
   return (
     <Card eyebrow="Workflow" title="Investigation Workflow" ariaLabel="Investigation workflow"
       action={progress
-        ? <span className="tableMeta" style={{ fontSize: '0.75rem' }}>{progress.completed} of {progress.total} complete</span>
+        ? <span className="tableMeta forensicCardMeta">{progress.completed} of {progress.total} complete</span>
         : null}>
       {progress?.current ? (
-        <p className="tableMeta" style={{ margin: '0 0 0.5rem', fontSize: '0.72rem' }}>
+        <p className="tableMeta forensicCurrentStage">
           Current stage: {progress.current}
         </p>
       ) : null}
       {stages.length === 0 ? (
-        <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages recorded yet.</p>
+        <p className="muted forensicEmptyText">No workflow stages recorded yet.</p>
       ) : (
-        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        <ol className="forensicStages">
           {stages.map((s, i) => {
             const done = s.state === 'completed';
             const active = s.state === 'in_progress' || s.state === 'queued';
             const failed = s.state === 'failed';
+            // The marker's tone restates the recorded state; it adds none.
+            const tone = done ? 'done' : failed ? 'failed' : active ? 'active' : 'pending';
             return (
-              <li key={s.stage} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.83rem' }}>
-                <span aria-hidden="true" style={{
-                  width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 700,
-                  background: done ? 'rgba(34,197,94,0.18)' : failed ? 'rgba(239,68,68,0.18)' : active ? 'rgba(59,130,246,0.18)' : 'var(--border)',
-                  border: `1px solid ${done ? 'rgba(34,197,94,0.5)' : failed ? 'rgba(239,68,68,0.5)' : active ? 'rgba(59,130,246,0.5)' : 'var(--border)'}`,
-                  color: done ? 'var(--success-fg)' : failed ? 'var(--danger-fg)' : 'var(--text-secondary)',
-                }}>{done ? '✓' : failed ? '!' : i + 1}</span>
-                <span style={{ flex: 1, color: done ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{s.label}</span>
+              <li key={s.stage} className="forensicStage" data-tone={tone}>
+                <span aria-hidden="true" className="forensicStageMarker">{done ? '✓' : failed ? '!' : i + 1}</span>
+                <span className="forensicStageLabel">{s.label}</span>
                 <StatusPill label={workflowStateLabel(s.state)} variant={workflowStateVariant(s.state)} />
               </li>
             );
@@ -764,15 +744,15 @@ function WorkflowCard({ stages }: { stages: WorkflowStage[] }) {
 function FindingItem({ finding }: { finding: Finding }) {
   const isGap = finding.finding_type === 'evidence_gap';
   return (
-    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
-        <strong style={{ fontSize: '0.82rem' }}>{finding.title ?? 'Finding'}</strong>
+    <li className="forensicFinding" data-kind={isGap ? 'evidence_gap' : (finding.verification_state ?? 'unknown')}>
+      <div className="forensicFindingHead">
+        <strong className="forensicFindingTitle">{finding.title ?? 'Finding'}</strong>
         <StatusPill
           label={isGap ? 'Evidence gap' : verificationStateLabel(finding.verification_state)}
           variant={isGap ? 'warning' : verificationStateVariant(finding.verification_state)}
         />
       </div>
-      <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.25rem 0' }}>{finding.description}</p>
+      <p className="forensicFindingBody">{finding.description}</p>
       <RefList refs={finding.evidence_refs} />
     </li>
   );
@@ -780,15 +760,15 @@ function FindingItem({ finding }: { finding: Finding }) {
 
 function RuleMatchItem({ match }: { match: RuleMatch }) {
   return (
-    <li style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
-        <strong style={{ fontSize: '0.82rem' }}>
-          <span style={{ fontFamily: 'monospace', fontSize: '0.76rem', color: 'var(--text-muted)' }}>{match.rule_id}</span> {match.rule_name}
+    <li className="forensicFinding" data-kind="rule_match">
+      <div className="forensicFindingHead">
+        <strong className="forensicFindingTitle">
+          <span className="forensicRuleId">{match.rule_id}</span> {match.rule_name}
         </strong>
         <StatusPill label="Potential rule match" variant="info" />
       </div>
-      <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0.25rem 0' }}>{match.match_rationale}</p>
-      <p className="muted" style={{ fontSize: '0.75rem', margin: '0 0 0.1rem' }}>{match.framework} v{match.framework_version}</p>
+      <p className="forensicFindingBody">{match.match_rationale}</p>
+      <p className="muted forensicFindingMeta">{match.framework} v{match.framework_version}</p>
       <RefList refs={match.evidence_refs} />
     </li>
   );
@@ -823,35 +803,35 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
       {/* The card's pill IS the agent's status. Naming the OTHER state beside it is
           what stops the findings below from being read as the agent's output: they
           are deterministic and exist whatever the agent's job status is. */}
-      <p className="tableMeta" style={{ margin: '0 0 0.6rem', fontSize: '0.72rem' }}>
+      <p className="tableMeta forensicAgentNote">
         Deterministic analysis{' '}
         <StatusPill label={analysisStateLabel(analysisState)} variant={analysisStateVariant(analysisState)} />
         {' '}— the findings below are derived from the evidence snapshot, not by the agent.
       </p>
 
       {/* Verified findings — distinct from rule matches / AI interpretation / hypotheses. */}
-      <p className="sectionEyebrow" style={{ marginBottom: '0.25rem' }}>Top verified findings</p>
+      <p className="sectionEyebrow forensicListTitle">Top verified findings</p>
       {facts.length === 0 ? (
-        <p className="muted" style={{ fontSize: '0.82rem' }}>No verified facts derived yet.</p>
+        <p className="muted forensicEmptyText forensicEmptyText-sm">No verified facts derived yet.</p>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul className="forensicFindingList">
           {facts.slice(0, 4).map((f) => <FindingItem key={f.finding_id} finding={f} />)}
         </ul>
       )}
 
-      <p className="sectionEyebrow" style={{ margin: '0.75rem 0 0.25rem' }}>Potential rule matches</p>
+      <p className="sectionEyebrow forensicListTitle forensicListTitle-spaced">Potential rule matches</p>
       {ruleMatches.length === 0 ? (
-        <p className="muted" style={{ fontSize: '0.82rem' }}>No rule matches. Nothing is asserted without a deterministic match.</p>
+        <p className="muted forensicEmptyText forensicEmptyText-sm">No rule matches. Nothing is asserted without a deterministic match.</p>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        <ul className="forensicFindingList">
           {ruleMatches.slice(0, 4).map((m) => <RuleMatchItem key={m.rule_id} match={m} />)}
         </ul>
       )}
 
       {gaps.length > 0 ? (
-        <div style={{ marginTop: '0.6rem' }}>
-          <p className="sectionEyebrow" style={{ marginBottom: '0.25rem' }}>Evidence gaps</p>
-          <ul style={{ margin: 0, paddingLeft: '1rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+        <div className="forensicGaps">
+          <p className="sectionEyebrow forensicListTitle">Evidence gaps</p>
+          <ul className="forensicGapList">
             {gaps.map((g) => <li key={g.finding_id}>{g.description}</li>)}
           </ul>
         </div>
@@ -862,9 +842,9 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
           rendered twice under two different names. */}
 
       {/* Recommended next step — always a recommendation, never executed here. */}
-      <div style={{ padding: '0.65rem', background: 'var(--overlay-04)', borderRadius: '8px', marginBottom: '0.6rem' }}>
-        <p className="sectionEyebrow" style={{ margin: 0 }}>Recommended next step</p>
-        <p style={{ fontSize: '0.82rem', margin: '0.25rem 0 0', color: 'var(--text-secondary)' }}>
+      <div className="forensicNextStep">
+        <p className="sectionEyebrow forensicNextStepTitle">Recommended next step</p>
+        <p className="forensicNextStepBody">
           {investigation.status === 'degraded'
             ? 'Collect additional evidence to close the identified gaps before any response.'
             : ruleMatches.length > 0
@@ -873,12 +853,12 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
         </p>
       </div>
 
-      {reportError ? <p role="alert" className="statusLine statusLine-warning" style={{ margin: '0 0 0.5rem' }}>{reportError}</p> : null}
+      {reportError ? <p role="alert" className="statusLine statusLine-warning forensicInlineNotice forensicInlineNotice-spaced">{reportError}</p> : null}
       {/* What the request produced, stated exactly. Generating a report does not
           complete the Report workflow stage — that stage tracks a persisted report
           record — and saying otherwise would mark a stage complete that is not. */}
       {reportOutcome ? (
-        <p className="statusLine" style={{ margin: '0 0 0.5rem', fontSize: '0.82rem' }} aria-live="polite">
+        <p className="statusLine forensicOutcome" aria-live="polite">
           Forensic report generated from the current evidence snapshot
           {reportOutcome.aiSection ? ', including the AI narrative section.' : '. No AI narrative section was available, so the report is deterministic only.'}
           {reportState(ai) === 'not_generated'
@@ -887,7 +867,7 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
         </p>
       ) : null}
 
-      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+      <div className="forensicActions">
         <button type="button" className="btn btn-primary" onClick={onGenerateReport} disabled={reporting}
           aria-busy={reporting}>
           {reporting ? 'Generating report…' : 'Generate Report'}
@@ -897,7 +877,7 @@ function InvestigatorAgentPanel({ investigation, onRerun, onGenerateReport, busy
         </button>
         {showHandoff ? (
           <Link href={`/response-actions?incident_id=${encodeURIComponent(incidentId)}`} prefetch={false}
-            className="btn btn-secondary" style={{ fontSize: '0.8rem' }}>
+            className="btn btn-secondary">
             View response recommendations
           </Link>
         ) : null}

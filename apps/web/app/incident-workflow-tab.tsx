@@ -104,12 +104,12 @@ export default function IncidentWorkflowTab({ incidentId, summary, summaryLoad, 
   });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <section aria-label="Investigation stages">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.5rem' }}>
-          <p className="sectionEyebrow" style={{ margin: 0 }}>Investigation stages</p>
+    <div className="incidentWorkflowTab">
+      <section aria-label="Investigation stages" className="incidentWorkflowSection">
+        <div className="incidentWorkflowHead">
+          <p className="sectionEyebrow incidentWorkflowEyebrow">Investigation stages</p>
           {progress ? (
-            <span className="tableMeta" style={{ fontSize: '0.75rem' }}>
+            <span className="tableMeta incidentWorkflowCount">
               {progress.completed} of {progress.total} stages complete
             </span>
           ) : null}
@@ -121,7 +121,7 @@ export default function IncidentWorkflowTab({ incidentId, summary, summaryLoad, 
           currentStage={currentStage?.stage ?? null}
         />
         {load === 'ready' ? (
-          <p className="tableMeta" style={{ margin: '0.5rem 0 0', fontSize: '0.7rem' }}>
+          <p className="tableMeta incidentWorkflowCaption">
             Stage states are derived from persisted records by the backend — the alert, the evidence
             snapshot, the triage job, the recommendation rows and the generated report. This view counts
             them; it does not define them.
@@ -129,9 +129,11 @@ export default function IncidentWorkflowTab({ incidentId, summary, summaryLoad, 
         ) : null}
       </section>
 
-      <section aria-label="Investigation coverage">
-        <p className="sectionEyebrow" style={{ margin: '0 0 0.5rem' }}>Investigation coverage</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+      <section aria-label="Investigation coverage" className="incidentWorkflowSection">
+        <div className="incidentWorkflowHead">
+          <p className="sectionEyebrow incidentWorkflowEyebrow">Investigation coverage</p>
+        </div>
+        <div className="incidentWorkflowCoverage">
           {coverage.map((row) => (
             <div key={row.key} className="incidentCaseLine">
               <span className="incidentCaseLineLabel">{row.label}</span>
@@ -141,7 +143,7 @@ export default function IncidentWorkflowTab({ incidentId, summary, summaryLoad, 
             </div>
           ))}
         </div>
-        <p className="tableMeta" style={{ margin: '0.5rem 0 0', fontSize: '0.7rem' }}>
+        <p className="tableMeta incidentWorkflowCaption">
           A domain with no persisted record is reported as missing rather than filled in. No timeline
           event or timestamp is manufactured to complete the flow.
         </p>
@@ -158,41 +160,51 @@ function WorkflowStages({ stages, load, unavailable, currentStage }: {
   currentStage: string | null;
 }) {
   if (load === 'idle' || load === 'loading') {
-    return <p className="muted" style={{ fontSize: '0.85rem' }} aria-busy="true">Loading investigation workflow…</p>;
+    return <p className="muted incidentWorkflowState" aria-busy="true">Loading investigation workflow…</p>;
   }
   if (load === 'unauthorized') {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentWorkflowState" role="alert">
         You do not have permission to view this incident&apos;s workflow in the current workspace.
       </p>
     );
   }
   if (load === 'not_found') {
-    return <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">This incident could not be found in the current workspace.</p>;
+    return <p className="muted incidentWorkflowState" role="alert">This incident could not be found in the current workspace.</p>;
   }
   if (load === 'error') {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }} role="alert">
+      <p className="muted incidentWorkflowState" role="alert">
         Workflow unavailable — the investigation record could not be read. No partial progress is shown as complete.
       </p>
     );
   }
   if (unavailable) {
     return (
-      <p className="muted" style={{ fontSize: '0.85rem' }}>
+      <p className="muted incidentWorkflowState">
         The forensic investigation layer is not enabled for this deployment, so no workflow stages are recorded.
       </p>
     );
   }
   if (stages.length === 0) {
-    return <p className="muted" style={{ fontSize: '0.85rem' }}>No workflow stages have been recorded for this incident.</p>;
+    return <p className="muted incidentWorkflowState">No workflow stages have been recorded for this incident.</p>;
   }
   return (
-    <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-      {stages.map((stage) => (
-        <li key={stage.stage} className="incidentCaseLine">
-          <span className="incidentCaseLineLabel">{stage.label}</span>
-          <span className="incidentCaseLineValue" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+    <ol className="incidentWorkflowStages">
+      {stages.map((stage, index) => (
+        <li
+          key={stage.stage}
+          className="incidentWorkflowStage"
+          data-state={stage.state}
+          data-current={stage.stage === currentStage ? 'true' : undefined}
+        >
+          {/* The marker restates the recorded state (✓ completed, ! failed, else
+              the stage's position in the backend's own list) — never a new one. */}
+          <span aria-hidden="true" className="incidentWorkflowStageMarker">
+            {stage.state === 'completed' ? '✓' : stage.state === 'failed' ? '!' : index + 1}
+          </span>
+          <span className="incidentWorkflowStageLabel">{stage.label}</span>
+          <span className="incidentWorkflowStageState">
             <StatusPill label={workflowStateLabel(stage.state)} variant={workflowStateVariant(stage.state)} />
             {/* "Current" marks where the operator is, beside the state rather than
                 replacing it — an in-progress stage is not a completed one. */}
