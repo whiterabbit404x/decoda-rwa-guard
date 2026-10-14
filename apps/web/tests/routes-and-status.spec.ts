@@ -14,14 +14,18 @@ test('keeps the route split between marketing / and authenticated /dashboard', a
   const dashboardPage = readFileSync(join(appDir, '(product)/dashboard/page.tsx'), 'utf8');
 
   // Marketing `/` composes the public homepage sections and drives conversion
-  // to sign-up; it must not pull in the authenticated dashboard data path.
+  // to the reviewed Pilot request; it must not pull in the authenticated
+  // dashboard data path.
   expect(marketingPage).toContain('HeroSection');
-  expect(marketingPage).toContain('PRICING_PLANS');
+  expect(marketingPage).toContain('PricingSection');
   expect(marketingPage).not.toContain('fetchDashboardPageData');
 
-  // Conversion routes live in the canonical pricing config the homepage reads.
+  // Conversion routes live in the canonical pricing config the homepage reads:
+  // the Pilot request, and Decoda's contact page — never a self-serve sign-up.
   const pricingPlans = readFileSync(join(appDir, 'pricing-plans.ts'), 'utf8');
-  expect(pricingPlans).toContain('/sign-up');
+  expect(pricingPlans).toContain("ctaHref: '/request-pilot'");
+  expect(pricingPlans).toContain('ctaHref: DECODA_SITE.contact');
+  expect(pricingPlans).not.toContain('/sign-up');
   expect(dashboardPage).toContain('DashboardLiveHydrator');
   // The dashboard route must NOT pre-fetch the aggregate payload server-side.
   // It carried no auth headers so it could never return usable data, and the

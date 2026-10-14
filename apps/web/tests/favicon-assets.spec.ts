@@ -47,3 +47,51 @@ test('proxy matcher keeps serving favicon.ico without per-request CSP work', asy
 
   expect(source).toContain('favicon.ico');
 });
+
+// ── The canonical Decoda shield ─────────────────────────────────────────────
+// The tab icon is the company website's own mark (www.decodasecurity.com
+// app/icon.svg), not an approximation: the same path, check and gradient. The
+// header and footer lockups draw the same geometry inline.
+
+const CANONICAL_SHIELD =
+  'M20 3.2 33.4 8.1c.7.26 1.2.94 1.2 1.7v9.3c0 8.1-5.1 15.3-12.9 18.1l-1.1.4c-.4.14-.8.14-1.2 0l-1.1-.4C10.5 34.5 5.4 27.3 5.4 19.2V9.8c0-.76.5-1.44 1.2-1.7L20 3.2Z';
+const CANONICAL_CHECK = 'M14 20.4 18.2 24.6 26.6 15.8';
+
+test('app/icon.svg is the canonical Decoda shield', async () => {
+  const svg = await fs.readFile(path.resolve(process.cwd(), 'app/icon.svg'), 'utf8');
+  expect(svg).toContain(`d="${CANONICAL_SHIELD}"`);
+  expect(svg).toContain(`d="${CANONICAL_CHECK}"`);
+  // Navy body, teal-to-cyan edge, light teal check.
+  expect(svg).toContain('fill="#0b1d38"');
+  expect(svg).toContain('stop-color="#2dd4bf"');
+  expect(svg).toContain('stop-color="#0e7490"');
+  expect(svg).toContain('stroke="#5eead4"');
+});
+
+test('the inline logo draws the same geometry as the tab icon', async () => {
+  const logo = await fs.readFile(path.resolve(process.cwd(), 'app/components/home/decoda-logo.tsx'), 'utf8');
+  expect(logo).toContain(`'${CANONICAL_SHIELD}'`);
+  expect(logo).toContain(`'${CANONICAL_CHECK}'`);
+});
+
+test('the legacy blue shield is gone from the public pages', async () => {
+  // The old approximation: a filled blue 26×28 shield.
+  const legacy = 'M13 1.5L2 6.5V14c0 6.2';
+  for (const file of [
+    'app/page.tsx',
+    'app/request-pilot/page.tsx',
+    'app/request-pilot/request-pilot-view.tsx',
+    'app/components/home/decoda-logo.tsx',
+    'app/components/home/marketing-header.tsx',
+    'app/components/home/marketing-footer.tsx',
+  ]) {
+    const source = await fs.readFile(path.resolve(process.cwd(), file), 'utf8');
+    expect(source, `${file} still draws the legacy shield`).not.toContain(legacy);
+  }
+});
+
+test('favicon.ico also carries a 48x48 icon for high-density tabs', async () => {
+  const buffer = await fs.readFile(path.resolve(process.cwd(), 'app/favicon.ico'));
+  const sizes = readIcoEntries(buffer).map((entry) => `${entry.width}x${entry.height}`);
+  expect(sizes).toEqual(expect.arrayContaining(['16x16', '32x32', '48x48']));
+});
