@@ -26,6 +26,8 @@
   padding: clamp(48px, 7vw, 92px) 0 clamp(56px, 7vw, 88px);
 }
 
+/* The lines drift in as one layer — opacity and transform on the <svg>
+   itself, so the entrance is composited rather than repainted. */
 .heroLines {
   position: absolute;
   inset: 0;
@@ -36,23 +38,17 @@
   stroke: rgba(13, 148, 136, 0.16);
   stroke-width: 1.2;
   pointer-events: none;
+  animation: lines-in 2.2s var(--ease-out) 450ms backwards;
 }
 
 .heroLines path {
   vector-effect: non-scaling-stroke;
-  stroke-dasharray: 2400;
-  stroke-dashoffset: 0;
-  animation: line-draw 2.6s var(--ease-out) 500ms backwards;
 }
 
-.heroLines path:last-child {
-  animation-delay: 750ms;
-}
-
-/* stroke-dashoffset is paint-only: drawing the line never touches layout. */
-@keyframes line-draw {
+@keyframes lines-in {
   from {
-    stroke-dashoffset: 2400;
+    opacity: 0;
+    transform: translateX(-3%);
   }
 }
 
@@ -1177,8 +1173,11 @@ li[data-kind='unknown'] .validityState {
 .legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 28px;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 28px 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
 }
 
 .controlsLists {

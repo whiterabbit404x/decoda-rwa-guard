@@ -104,7 +104,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       { label: 'Evidence packages', value: 'Up to 10' },
       { label: 'Audit log retention', value: 'Configurable per workspace' },
       { label: 'Production response execution', value: 'Recommend only' },
-      { label: 'Notifications', value: 'Webhook and Slack' },
+      { label: 'Notifications', value: 'Email, webhook and Slack' },
       { label: 'Onboarding and support', value: 'Guided evaluation' },
     ],
   },
@@ -140,7 +140,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       // automatic_execution is False on every plan (entitlements.py); a tenant
       // without it cannot execute production changes, Scale included.
       { label: 'Production response execution', value: 'Recommend only' },
-      { label: 'Notifications', value: 'Webhook and Slack' },
+      { label: 'Notifications', value: 'Email, webhook and Slack' },
       { label: 'Onboarding and support', value: 'Scoped to agreement' },
     ],
   },

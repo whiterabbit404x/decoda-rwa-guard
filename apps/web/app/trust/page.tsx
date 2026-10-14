@@ -1,12 +1,31 @@
-import Link from 'next/link';
+import type { Metadata, Viewport } from 'next';
+
+import { ROUTES } from '../components/home/home-data';
+import { HomeIcon, type IconName } from '../components/home/home-icons';
+import { PublicShell } from '../components/home/public-shell';
+import { Reveal, RevealGroup } from '../components/home/scroll-reveal';
+import { PageHero, SectionHeading, StatusBadge, TextLink } from '../components/home/site-ui';
+import site from '../components/home/site.module.css';
+import pages from '../components/home/pages.module.css';
+import { publicPageMetadata } from '../public-metadata';
 
 export const dynamic = 'force-dynamic';
+
+export const metadata: Metadata = publicPageMetadata({
+  title: 'Security & Trust',
+  description:
+    'The security and trust posture of Decoda RWA Guard as it stands today: fail-closed status, workspace isolation, '
+    + 'tamper-evident evidence, append-only audit logs — and what is not yet certified.',
+  path: '/trust',
+});
+
+export const viewport: Viewport = { themeColor: '#ffffff', colorScheme: 'light' };
 
 const principles = [
   {
     icon: 'failclosed',
     title: 'Fail-closed by design',
-    body: 'Status labels default to degraded or offline rather than healthy when data is missing or stale. No alert is never silently shown as healthy. No data is never shown as safe.',
+    body: 'Status labels default to degraded or offline rather than healthy when data is missing or stale. Having no alerts is never presented as healthy, and missing data is never presented as safe.',
   },
   {
     icon: 'truthful',
@@ -175,226 +194,171 @@ const disclosureFaqs = [
   },
 ];
 
-function PrincipleIcon({ type }: { type: string }) {
-  if (type === 'failclosed') {
-    return (
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <path d="M11 2L3 5.5V11c0 4.5 3.5 8 8 8.5 4.5-.5 8-4 8-8.5V5.5L11 2z" stroke="currentColor" strokeWidth="1.5" fill="none" />
-        <path d="M8 11l2 2 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (type === 'truthful') {
-    return (
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <circle cx="11" cy="11" r="9" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M11 6v5l3 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (type === 'isolation') {
-    return (
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <rect x="2" y="2" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
-        <rect x="12" y="2" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
-        <rect x="2" y="12" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
-        <rect x="12" y="12" width="8" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
-      </svg>
-    );
-  }
-  if (type === 'evidence') {
-    return (
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <rect x="4" y="2" width="14" height="18" rx="2" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M7 7h8M7 11h8M7 15h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (type === 'auditlog') {
-    return (
-      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-        <path d="M5 4h12a1 1 0 011 1v13a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M8 9h6M8 13h6M8 17h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        <path d="M8 5V3M14 5V3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-      <path d="M11 2l2 4h5l-4 3 2 5-5-3-5 3 2-5-4-3h5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-    </svg>
-  );
-}
+/** The principle's glyph, from the public site's icon family. */
+const PRINCIPLE_ICONS: Record<string, IconName> = {
+  failclosed: 'shield',
+  truthful: 'clock',
+  isolation: 'layers',
+  evidence: 'evidence',
+  auditlog: 'hash',
+  proofgates: 'checkCircle',
+};
 
-function TrustShield() {
-  return (
-    <svg width="22" height="24" viewBox="0 0 26 28" fill="none" aria-hidden="true">
-      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="var(--accent-blue)" />
-      <path d="M9 14.5l2.5 2.5 5.5-5.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
+const TRUTH_RULES = [
+  'Missing data is never shown as safe.',
+  'Having no alerts is never shown as healthy.',
+  'Simulator or seeded data is never presented as customer evidence.',
+  'Runtime status is derived from canonical backend facts — not frontend assumptions.',
+  'Heartbeat, poll, and telemetry are distinct signals. Heartbeat alone does not claim live monitoring.',
+  'Telemetry is not \u201ccurrent\u201d when it is missing or stale. The UI surfaces this explicitly.',
+  'Live monitoring is not claimed as healthy when reporting systems are at zero.',
+];
 
-export default function TrustPage() {
+const OPERATIONS = [
+  'Core authentication and workspace operations are continuously monitored.',
+  'Live and degraded modes are surfaced intentionally to avoid hidden failures.',
+  'Alerts, incidents, and export records preserve auditability for pilot teams.',
+  'If a customer-impacting issue occurs, Decoda communicates scope, mitigation, and follow-up through the configured workspace support channel.',
+  'Pilot deployments may run with billing disabled. Full operational workflows are preserved regardless of billing state.',
+];
+
+export default async function TrustPage() {
   const securityEmail = 'security@decodasecurity.com';
-  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
 
   return (
-    <>
-      {/* ── Skip to main content ─────────────────────────────── */}
-      <a href="#trust-main" className="skipToContent">Skip to main content</a>
+    <PublicShell>
+      <PageHero
+        eyebrow="Security & Trust"
+        title="Designed to Be Truthful, Fail-Closed, and Auditable by Default."
+        lead="Decoda RWA Guard is an early-access production SaaS. We make honest claims about what we are and what we are not. This page documents the security and trust posture of the platform as it stands today."
+        meta={
+          <>
+            <StatusBadge tone="implemented">Fail-closed by design</StatusBadge>
+            <StatusBadge tone="implemented">Workspace-isolated</StatusBadge>
+            <StatusBadge tone="implemented">Append-only audit trail</StatusBadge>
+            <StatusBadge tone="development">SOC 2 — in roadmap, not yet certified</StatusBadge>
+          </>
+        }
+      />
 
-      {/* ── Sticky nav ───────────────────────────────────────── */}
-      <header className="mktStandaloneNav" role="banner">
-        <div className="mktStandaloneNavInner">
-          <Link href="/" className="mktStandaloneNavLogo" prefetch={false}>
-            <TrustShield />
-            <span className="mktNavLogoText">
-              <span className="mktStandaloneNavBrand">DECODA</span>
-              <span className="mktStandaloneNavProduct">RWA GUARD</span>
-            </span>
-          </Link>
-          <nav className="mktStandaloneNavLinks" aria-label="Site navigation">
-            <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
-            <Link href="/pricing" className="mktStandaloneNavLink" prefetch={false}>Pricing</Link>
-          </nav>
-          <div className="mktStandaloneNavRight">
-            <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-            <Link href="/request-pilot" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
+      <section className={`${pages.band} ${pages.bandFirst}`} aria-labelledby="principles-title">
+        <div className={site.container}>
+          <SectionHeading
+            id="principles-title"
+            eyebrow="Principles"
+            title="Secure-by-Design Principles."
+            lead="Runtime, telemetry and evidence-chain status is derived from canonical backend facts and surfaced fail-closed inside the product — degraded or missing signals are shown as such, never as healthy."
+          />
+          <RevealGroup className={`${pages.trustGrid} ${site.staggerTight}`}>
+            {principles.map((p) => (
+              <article key={p.title} className={pages.trustCard}>
+                <span className={pages.trustIcon} aria-hidden="true">
+                  <HomeIcon name={PRINCIPLE_ICONS[p.icon] ?? 'shield'} size={20} />
+                </span>
+                <h3>{p.title}</h3>
+                <p>{p.body}</p>
+              </article>
+            ))}
+          </RevealGroup>
+        </div>
+      </section>
+
+      <section className={pages.band} aria-labelledby="rules-title">
+        <div className={site.container}>
+          <Reveal variant="scale" className={`${site.surfaceDark} ${pages.rules}`}>
+            <div>
+              <p className={pages.rulesKicker}>Enforced in code</p>
+              <h2 id="rules-title">Truthfulness Rules, Enforced in Code.</h2>
+              <p>
+                These rules are implemented in the product codebase, not just written in a policy document.
+                They govern every status label, every runtime summary, and every evidence export.
+              </p>
+            </div>
+            <ul className={pages.ruleList}>
+              {TRUTH_RULES.map((rule) => (
+                <li key={rule}>
+                  <HomeIcon name="check" size={14} />
+                  {rule}
+                </li>
+              ))}
+            </ul>
+          </Reveal>
+        </div>
+      </section>
+
+      <section className={`${pages.band} ${pages.bandSoft}`} aria-labelledby="data-title">
+        <div className={site.container}>
+          <SectionHeading
+            id="data-title"
+            eyebrow="Data protection"
+            title="Data Protection Overview."
+            lead="The following describes our current data handling posture. This is not a comprehensive security policy — it covers the most important operational facts for pilot and early paid customers."
+          />
+          <RevealGroup as="ul" className={`${pages.checkList} ${site.staggerTight}`}>
+            {dataProtectionItems.map((item) => (
+              <li key={item}>
+                <HomeIcon name="check" size={16} />
+                <span>{item}</span>
+              </li>
+            ))}
+          </RevealGroup>
+        </div>
+      </section>
+
+      <section className={pages.band} aria-labelledby="disclosure-faq-title">
+        <div className={site.container}>
+          <SectionHeading id="disclosure-faq-title" eyebrow="Disclosure" title="Certifications &amp; Disclosure." />
+          <RevealGroup className={`${pages.qaGrid} ${site.staggerTight}`}>
+            {disclosureFaqs.map((item) => (
+              <article key={item.q} className={pages.qa}>
+                <h3>{item.q}</h3>
+                <p>{item.a}</p>
+              </article>
+            ))}
+          </RevealGroup>
+        </div>
+      </section>
+
+      <section className={`${pages.band} ${pages.bandFirst}`} aria-labelledby="responsible-disclosure-title">
+        <div className={site.container}>
+          <Reveal className={pages.disclosure}>
+            <div>
+              <h2 id="responsible-disclosure-title">Responsible disclosure</h2>
+              <p>
+                If you believe you have found a security vulnerability in Decoda RWA Guard, please report it
+                responsibly. We do not have a formal bug bounty programme at this stage, but we take every
+                report seriously and will coordinate disclosure with you.
+              </p>
+            </div>
+            <p className={pages.disclosureContact}>
+              <span>
+                Email: <a href={`mailto:${securityEmail}`}>{securityEmail}</a>
+              </span>
+              <span>Response within 48 hours.</span>
+            </p>
+          </Reveal>
+        </div>
+      </section>
+
+      <section className={`${pages.band} ${pages.bandSoft}`} aria-labelledby="operations-title">
+        <div className={site.container}>
+          <SectionHeading id="operations-title" eyebrow="Operations" title="Operational Expectations." />
+          <RevealGroup as="ul" className={`${pages.checkList} ${site.staggerTight}`}>
+            {OPERATIONS.map((item) => (
+              <li key={item}>
+                <HomeIcon name="check" size={16} />
+                <span>{item}</span>
+              </li>
+            ))}
+          </RevealGroup>
+          <div className={pages.related}>
+            <TextLink href={ROUTES.security}>Security controls</TextLink>
+            <TextLink href={ROUTES.privacy}>Privacy Policy</TextLink>
+            <TextLink href={ROUTES.terms}>Terms of Service</TextLink>
+            <TextLink href={ROUTES.pricing}>Pricing</TextLink>
           </div>
         </div>
-      </header>
-
-    <main id="trust-main" className="trustPage">
-
-      {/* ── Hero ─────────────────────────────────────────────── */}
-      <header className="trustHero">
-        <p className="mktSectionLabel">SECURITY &amp; TRUST</p>
-        <h1 className="trustHeroTitle">
-          Designed to be truthful, fail-closed,<br />and auditable by default.
-        </h1>
-        <p className="trustHeroSubtitle">
-          Decoda RWA Guard is an early-access production SaaS. We make honest claims about what we are and what we are not.
-          This page documents the security and trust posture of the platform as it stands today.
-        </p>
-        <div className="trustHeroBadges">
-          <span className="trustHeroBadge trustHeroBadge--green">Fail-closed by design</span>
-          <span className="trustHeroBadge trustHeroBadge--green">Workspace-isolated</span>
-          <span className="trustHeroBadge trustHeroBadge--green">Append-only audit trail</span>
-          <span className="trustHeroBadge trustHeroBadge--yellow">SOC 2 — in roadmap, not yet certified</span>
-        </div>
-        <p className="trustHeroProofLine">
-          Runtime, telemetry and evidence-chain status is derived from canonical backend facts and surfaced
-          fail-closed inside the product — degraded or missing signals are shown as such, never as healthy.
-        </p>
-      </header>
-
-      {/* ── Principles grid ──────────────────────────────────── */}
-      <section className="trustSection">
-        <h2 className="trustSectionTitle">Secure-by-design principles</h2>
-        <div className="trustPrincipleGrid">
-          {principles.map((p) => (
-            <article key={p.title} className="trustPrincipleCard">
-              <div className={`trustPrincipleIcon trustPrincipleIcon--${p.icon}`}>
-                <PrincipleIcon type={p.icon} />
-              </div>
-              <h3 className="trustPrincipleTitle">{p.title}</h3>
-              <p className="trustPrincipleBody">{p.body}</p>
-            </article>
-          ))}
-        </div>
       </section>
-
-      {/* ── Truthfulness rules callout ────────────────────────── */}
-      <section className="trustSection trustCalloutSection">
-        <div className="trustCallout">
-          <h2 className="trustCalloutTitle">Truthfulness rules — enforced in code</h2>
-          <p className="trustCalloutIntro">
-            These rules are implemented in the product codebase, not just written in a policy document.
-            They govern every status label, every runtime summary, and every evidence export.
-          </p>
-          <ul className="trustRuleList">
-            <li>No data is never shown as safe.</li>
-            <li>No alert is never silently shown as healthy.</li>
-            <li>Simulator or seeded data is never presented as customer evidence.</li>
-            <li>Runtime status is derived from canonical backend facts — not frontend assumptions.</li>
-            <li>Heartbeat, poll, and telemetry are distinct signals. Heartbeat alone does not claim live monitoring.</li>
-            <li>Telemetry is not &ldquo;current&rdquo; when it is missing or stale. The UI surfaces this explicitly.</li>
-            <li>Live monitoring is not claimed as healthy when reporting systems are at zero.</li>
-          </ul>
-        </div>
-      </section>
-
-      {/* ── Data protection ──────────────────────────────────── */}
-      <section className="trustSection">
-        <h2 className="trustSectionTitle">Data protection overview</h2>
-        <p className="trustSectionIntro">
-          The following describes our current data handling posture. This is not a comprehensive security policy —
-          it covers the most important operational facts for pilot and early paid customers.
-        </p>
-        <ul className="trustDataList">
-          {dataProtectionItems.map((item) => (
-            <li key={item} className="trustDataItem">
-              <span className="trustDataCheck" aria-hidden="true">✓</span>
-              <span>{item}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {/* ── Disclosure FAQ ───────────────────────────────────── */}
-      <section className="trustSection">
-        <h2 className="trustSectionTitle">Certifications &amp; disclosure</h2>
-        <div className="trustFaqGrid">
-          {disclosureFaqs.map((item) => (
-            <div key={item.q} className="trustFaqItem">
-              <p className="trustFaqQ">{item.q}</p>
-              <p className="trustFaqA">{item.a}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ── Responsible disclosure ───────────────────────────── */}
-      <section className="trustSection trustDisclosureSection">
-        <div className="trustDisclosureCard">
-          <h2 className="trustDisclosureTitle">Responsible disclosure</h2>
-          <p className="trustDisclosureBody">
-            If you believe you have found a security vulnerability in Decoda RWA Guard, please report it
-            responsibly. We do not have a formal bug bounty programme at this stage, but we take every
-            report seriously and will coordinate disclosure with you.
-          </p>
-          <p className="trustDisclosureContact">
-            Email:{' '}
-            <a href={`mailto:${securityEmail}`} className="trustLink">
-              {securityEmail}
-            </a>
-            {' '}· Response within 48 hours.
-          </p>
-        </div>
-      </section>
-
-      {/* ── Operational expectations ─────────────────────────── */}
-      <section className="trustSection">
-        <h2 className="trustSectionTitle">Operational expectations</h2>
-        <ul className="trustOpsList">
-          <li>Core authentication and workspace operations are continuously monitored.</li>
-          <li>Live and degraded modes are surfaced intentionally to avoid hidden failures.</li>
-          <li>Alerts, incidents, and export records preserve auditability for pilot teams.</li>
-          <li>If a customer-impacting issue occurs, Decoda communicates scope, mitigation, and follow-up through the configured workspace support channel.</li>
-          <li>Pilot deployments may run with billing disabled. Full operational workflows are preserved regardless of billing state.</li>
-        </ul>
-      </section>
-
-      {/* ── Footer links ──────────────────────────────────────── */}
-      <div className="trustFooterLinks">
-        <Link href="/" prefetch={false} className="trustLink">← Home</Link>
-        <Link href="/pricing" prefetch={false} className="trustLink">Pricing</Link>
-        <Link href="/privacy" prefetch={false} className="trustLink">Privacy Policy</Link>
-        <Link href="/terms" prefetch={false} className="trustLink">Terms of Service</Link>
-        <a href={`mailto:${supportEmail}`} className="trustLink">Support</a>
-      </div>
-    </main>
-    </>
+    </PublicShell>
   );
 }

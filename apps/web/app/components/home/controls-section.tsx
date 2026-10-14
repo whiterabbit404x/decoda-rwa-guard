@@ -30,11 +30,12 @@ export function ControlsSection() {
               Every control here is implemented today, and the limits of a pilot are enforced server-side, not
               left to a setting.
             </p>
-            <div className={styles.legend}>
+            <p className={styles.legend}>
               <StatusBadge tone="implemented" size="sm">
                 Implemented
               </StatusBadge>
-            </div>
+              <span>In the product today — not a roadmap item.</span>
+            </p>
           </Reveal>
 
           <div className={styles.controlsLists}>
