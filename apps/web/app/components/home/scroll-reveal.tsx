@@ -1,50 +1,43 @@
 'use client';
 
-import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
+import { createElement, useEffect, useRef, type ReactNode } from 'react';
 
-import styles from './home.module.css';
+import styles from './site.module.css';
 
 /**
- * One-time scroll entrance for the landing page's secondary/tertiary motion.
+ * One-time scroll entrances for the public website.
+ *
+ *   <Reveal>       the block rises (or fades, scales, slides) in as one piece
+ *   <RevealGroup>  the block stays put and its direct children enter in turn
  *
  * Design constraints this satisfies:
- *  • No animation dependency — a single shared IntersectionObserver.
+ *  • No animation dependency — one shared IntersectionObserver for the page.
  *  • No inline styles — the production CSP forbids the `style` attribute, so
- *    the hidden/visible states and every stagger delay live in the CSS module.
- *  • Content is readable without JavaScript. Both the hidden and the revealed
- *    rules are keyed on `data-reveal`, an attribute only this component sets,
- *    so a visitor whose JS never runs simply reads the finished page.
- *  • Reduced motion never opts in at all, so no observer work happens and the
- *    content renders in its final state.
- *  • Only opacity/transform and paint properties animate — the element keeps
- *    its box, so revealing cannot shift layout.
+ *    the hidden state, the entrance, every variant, stagger and delay live in
+ *    site.module.css and are selected by attributes/classes.
+ *  • Readable without JavaScript. The hidden state is keyed on `data-reveal`,
+ *    an attribute only this component sets, so a visitor whose JS never runs
+ *    reads the finished page.
+ *  • Reduced motion never opts in: no attribute, no observer work, nothing
+ *    hidden — the content renders in its final state.
+ *  • A block already in the reading area when the page loads is marked
+ *    `done`, never animated: it was painted visible, and hiding it to fade it
+ *    back in would be a flicker, not an entrance.
+ *  • Only opacity and transform animate, so an entrance cannot shift layout.
+ *  • Revealing sets an attribute on the DOM node — no React state, so it never
+ *    re-renders the tree around it.
  *
- * ── Why the previous trigger made the motion invisible ──────────────────────
+ * ── When a block counts as "arrived" ────────────────────────────────────────
  *
- * The threshold was a fraction OF THE ELEMENT: 18% of the observed block had
- * to be inside the reading area. That is the right question for a short block
- * and the wrong one for a tall one. The operating layer is one 806px block on
- * a 900px screen, so 18% of it is its top 145px — the eyebrow. Measured in the
- * browser, it fired with its top at y=601 and 63% of itself still below the
- * fold: the four pillars and the lifecycle ribbon were off-screen for the
- * whole sequence, which finished ~1.3s later, long before the reader scrolled
- * to them. Every choreographed block on the page had already played by the
- * time it was looked at. That is what "the page feels static" was.
- *
- * Two things fix it, and both are needed:
- *
- *  1. The trigger is measured in SCREEN pixels, not element percent. A block
- *     reveals once `REVEAL_RATIO` of it is inside the reading area, but never
- *     before at least `MIN_READING_PX` of it is on screen — so a tall section
- *     waits until the reader is actually looking at it rather than at its top
- *     edge. `MAX_READING_SHARE` caps the wait so a very tall block does not
- *     hold out for an impossible amount of screen.
- *  2. Sections that choreograph several blocks (the operating layer) observe
- *     each block separately, so the sequence plays where the reader's eye is.
- *
- * The observer and the load-time check share one predicate — `arrived()` — so
- * a section peeking below the fold on a tall screen can never be written off
- * as "already read" by one rule and staged by the other.
+ * A bare percent-of-the-element threshold is the right question for a short
+ * block and the wrong one for a tall one: 20% of an 800px section is its top
+ * sliver, so the whole sequence would play while most of it was still below
+ * the fold. So the trigger is measured in SCREEN pixels: a block reveals once
+ * `REVEAL_RATIO` of it is inside the reading area, but never before at least
+ * `MIN_READING_PX` of it is on screen, and never demanding more than
+ * `MAX_READING_SHARE` of the screen. The observer and the load-time check
+ * share one predicate — `arrived()` — so a block cannot be staged by one rule
+ * and written off as already read by the other.
  */
 
 /** Fraction of the block that must be inside the reading area to trigger. */
@@ -62,10 +55,6 @@ let observedCount = 0;
 function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function reveal(el: Element): void {
-  el.setAttribute('data-reveal', 'in');
 }
 
 function viewportHeight(): number {
@@ -109,7 +98,7 @@ function hasArrived(el: Element): boolean {
   return arrived(rect, visibleHeight(rect));
 }
 
-/** Lazily created, shared by every <ScrollReveal> on the page. */
+/** Lazily created, shared by every reveal on the page. */
 function getObserver(): IntersectionObserver | null {
   if (typeof IntersectionObserver === 'undefined') {
     return null;
@@ -124,9 +113,7 @@ function getObserver(): IntersectionObserver | null {
             || !arrived(entry.boundingClientRect, entry.intersectionRect.height)) {
             continue;
           }
-          // Set the attribute directly: no React state, so revealing a section
-          // never re-renders the tree around it.
-          reveal(entry.target);
+          entry.target.setAttribute('data-reveal', 'in');
           observer?.unobserve(entry.target);
         }
       },
@@ -145,20 +132,9 @@ function getObserver(): IntersectionObserver | null {
   return observer;
 }
 
-export function ScrollReveal({
-  children,
-  className,
-  as: Tag = 'div',
-  stagger = false,
-}: {
-  children: ReactNode;
-  className?: string;
-  /** Element to render. Defaults to a plain div. */
-  as?: ElementType;
-  /** Fade the direct children in sequence instead of the wrapper as a whole. */
-  stagger?: boolean;
-}) {
-  const ref = useRef<HTMLElement | null>(null);
+/** Stage the element below the reading line; reveal it once, when it arrives. */
+function useReveal<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -171,11 +147,10 @@ export function ScrollReveal({
       return undefined;
     }
 
-    // Already arrived at load (a short viewport, a deep link, a restored
-    // scroll position): finish it immediately. Going straight to "in" without
-    // ever being "out" changes no animatable property, so nothing flickers.
+    // Already in the reading area at load (a tall screen, a deep link, a
+    // restored scroll position): it was painted visible, so it stays visible.
     if (hasArrived(el)) {
-      reveal(el);
+      el.setAttribute('data-reveal', 'done');
       return undefined;
     }
 
@@ -187,7 +162,7 @@ export function ScrollReveal({
       io.unobserve(el);
       observedCount -= 1;
       if (observedCount <= 0) {
-        // Leaving the landing page: drop the shared observer entirely.
+        // Leaving the page: drop the shared observer entirely.
         observer?.disconnect();
         observer = null;
         observedCount = 0;
@@ -195,11 +170,60 @@ export function ScrollReveal({
     };
   }, []);
 
-  const revealClass = stagger ? styles.revealStagger : styles.reveal;
+  return ref;
+}
 
-  return (
-    <Tag ref={ref} className={className ? `${revealClass} ${className}` : revealClass}>
-      {children}
-    </Tag>
+type Tag = 'div' | 'section' | 'ul' | 'ol' | 'li' | 'article' | 'aside' | 'figure' | 'header' | 'dl' | 'p';
+
+export type RevealVariant = 'up' | 'fade' | 'scale' | 'left' | 'right';
+
+type RevealProps = {
+  children?: ReactNode;
+  className?: string;
+  /** Element to render. Defaults to a plain div. */
+  as?: Tag;
+  /** Entrance style. Default: rise and fade in. */
+  variant?: RevealVariant;
+  id?: string;
+  role?: string;
+  'aria-label'?: string;
+  'aria-labelledby'?: string;
+};
+
+function classes(base: string, extra?: string): string {
+  return extra ? `${base} ${extra}` : base;
+}
+
+/** Reveals a block once, the first time it reaches the reading area. */
+export function Reveal({ children, className, as = 'div', variant = 'up', ...rest }: RevealProps) {
+  const ref = useReveal<HTMLElement>();
+  return createElement(
+    as,
+    {
+      ...rest,
+      ref,
+      className: classes(styles.reveal, className),
+      'data-variant': variant === 'up' ? undefined : variant,
+    },
+    children,
+  );
+}
+
+/**
+ * The same one-shot reveal for a list or grid: the wrapper stays put and its
+ * direct children enter one after another. Pass the grid class through
+ * `className` so this element IS the grid — no extra wrapper.
+ */
+export function RevealGroup({ children, className, as = 'div', variant = 'up', ...rest }: RevealProps) {
+  const ref = useReveal<HTMLElement>();
+  return createElement(
+    as,
+    {
+      ...rest,
+      ref,
+      className: classes(styles.revealGroup, className),
+      'data-variant': variant === 'up' ? undefined : variant,
+    },
+    children,
   );
 }

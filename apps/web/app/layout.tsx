@@ -3,6 +3,7 @@ import localFont from 'next/font/local';
 import { headers } from 'next/headers';
 
 import { PilotAuthProvider } from 'app/pilot-auth-context';
+import { GUARD_SITE_URL } from 'app/public-site-links';
 import { ThemeProvider } from 'app/theme-context';
 import { THEME_INIT_SCRIPT } from 'app/theme-script';
 import './styles.css';
@@ -19,9 +20,18 @@ const inter = localFont({
   variable: '--font-inter',
 });
 
+// The Guard-specific document title, and the canonical origin every relative
+// metadata URL (canonical links, the share image) resolves against. Public
+// pages set their own title, description and canonical path through
+// app/public-metadata.ts. The tab icon comes from the file conventions in this
+// directory — favicon.ico, icon.svg and apple-icon.png — all drawn from the
+// company website's canonical Decoda shield (its app/icon.svg).
 export const metadata: Metadata = {
-  title: 'Decoda RWA Guard',
-  description: 'Customer-ready control center for tokenized treasury threat, compliance, and resilience operations',
+  metadataBase: new URL(GUARD_SITE_URL),
+  title: 'Decoda RWA Guard | Decoda Security',
+  description:
+    'Security monitoring, evidence-grounded investigation and policy-controlled response for tokenized financial infrastructure.',
+  applicationName: 'Decoda RWA Guard',
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

@@ -1,86 +1,36 @@
-import Link from 'next/link';
-
-import { HomeIcon } from './home-icons';
+import { EXECUTION_NOTE } from '../../pricing-plans';
+import { ROUTES, SECTION_IDS } from './home-data';
+import { PlanCards } from './plan-cards';
+import { Reveal } from './scroll-reveal';
+import { SectionHeading, TextLink } from './site-ui';
+import site from './site.module.css';
 import styles from './home.module.css';
 
-export interface PricingTier {
-  tier: string;
-  price: string;
-  /** True when `price` is a word label rather than a currency amount. */
-  priceIsLabel?: boolean;
-  /** Secondary line beside the price. Empty when the tier has none. */
-  per: string;
-  description: string;
-  featured: boolean;
-  badge?: string;
-  ctaLabel: string;
-  ctaHref: string;
-  features: string[];
-}
-
-function isExternal(href: string) {
-  return href.startsWith('mailto:') || href.startsWith('http');
-}
-
-export function PricingSection({ tiers, note }: { tiers: PricingTier[]; note: string }) {
+/**
+ * Section H — pricing, from the canonical shared config (app/pricing-plans.ts),
+ * which mirrors the company website's plans. The full comparison lives on
+ * /pricing.
+ */
+export function PricingSection() {
   return (
-    <section className={styles.section} id="pricing">
-      <div className={styles.sectionInner}>
-        <div className={styles.sectionHead}>
-          <p className={styles.eyebrow}>Pricing</p>
-          <h2 className={styles.sectionTitle}>Simple pricing. Enterprise ready.</h2>
-          <p className={styles.sectionLead}>
-            Full product access on every plan. No feature gating on core monitoring, detection or
-            evidence export.
-          </p>
-        </div>
-
-        <div className={styles.priceGrid}>
-          {tiers.map((tier) => (
-            <article
-              key={tier.tier}
-              className={`${styles.priceCard}${tier.featured ? ` ${styles.priceFeatured}` : ''}`}
-            >
-              {tier.badge && <span className={styles.priceBadge}>{tier.badge}</span>}
-              <div className={styles.priceTier}>{tier.tier}</div>
-              <div className={styles.priceAmountRow}>
-                <span className={tier.priceIsLabel ? styles.priceAmountLabel : styles.priceAmount}>
-                  {tier.price}
-                </span>
-                {tier.per && <span className={styles.pricePer}>{tier.per}</span>}
-              </div>
-              <p className={styles.priceDesc}>{tier.description}</p>
-              {isExternal(tier.ctaHref) ? (
-                <a
-                  href={tier.ctaHref}
-                  className={`${tier.featured ? styles.btnPrimary : styles.btnSecondary} ${styles.priceCta}`}
-                >
-                  {tier.ctaLabel}
-                </a>
-              ) : (
-                <Link
-                  href={tier.ctaHref}
-                  prefetch={false}
-                  className={`${tier.featured ? styles.btnPrimary : styles.btnSecondary} ${styles.priceCta}`}
-                >
-                  {tier.ctaLabel}
-                </Link>
-              )}
-              <ul className={styles.priceFeatures}>
-                {tier.features.map((feature) => (
-                  <li key={feature} className={styles.priceFeature}>
-                    <span className={styles.priceCheck}>
-                      <HomeIcon name="check" />
-                    </span>
-                    {feature}
-                  </li>
-                ))}
-              </ul>
-            </article>
-          ))}
-        </div>
-
-        <p className={styles.priceNote}>{note}</p>
+    <section
+      id={SECTION_IDS.pricing}
+      className={`${site.section} ${site.sectionSoft}`}
+      aria-labelledby="pricing-title"
+    >
+      <div className={site.container}>
+        <SectionHeading
+          id="pricing-title"
+          align="center"
+          eyebrow="Pricing"
+          title="Start with a Scoped Pilot."
+          lead="Evaluate Decoda RWA Guard against your own infrastructure, then move to recurring security operations when you are ready. Every plan is arranged with the Decoda team — there is no automatic checkout."
+        />
+        <PlanCards />
+        <Reveal className={styles.pricingFoot}>
+          <p>{EXECUTION_NOTE}</p>
+          <TextLink href={ROUTES.pricing}>Compare plans in detail</TextLink>
+        </Reveal>
       </div>
     </section>
   );

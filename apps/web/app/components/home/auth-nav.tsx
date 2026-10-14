@@ -6,21 +6,26 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LandingSessionHint } from '../../auth-guards';
 import { accountDisplayName, accountInitials } from './auth-nav-state';
 import { ROUTES } from './home-data';
+import { HomeIcon } from './home-icons';
 import { useLandingAuth } from './use-landing-auth';
-import styles from './home.module.css';
+import styles from './site.module.css';
 
 export type AuthNavVariant = 'desktop' | 'mobile';
 
 /**
- * Auth-aware controls for the public marketing header.
+ * Auth-aware controls for the public site header.
  *
- * Signed out  → "Sign in" + "Start monitoring" (unchanged behaviour).
+ * Signed out  → "Sign in" + "Request Pilot" — the same two ways into Decoda
+ *               the company website offers. There is no registration: Decoda
+ *               accounts are created by invitation, and /request-pilot is the
+ *               reviewed application (or, with the shared Decoda identity,
+ *               the company website's Request pilot page).
  * Signed in   → "Dashboard" + an account menu (name/email, Dashboard, Sign out).
- * Unresolved  → a neutral placeholder, so the signed-out controls never flash for a
- *               visitor who is in fact signed in.
+ * Unresolved  → a neutral placeholder, so the signed-out controls never flash
+ *               for a visitor who is in fact signed in.
  *
- * The authenticated visitor is NOT redirected away from the public page; only these
- * controls change.
+ * The authenticated visitor is NOT redirected away from the public page; only
+ * these controls change.
  */
 export function AuthNav({
   sessionHint,
@@ -78,7 +83,7 @@ export function AuthNav({
   if (state === 'checking') {
     return (
       <div
-        className={variant === 'desktop' ? styles.navRight : styles.mobileRow}
+        className={variant === 'desktop' ? styles.actions : styles.menuActions}
         aria-busy="true"
         data-auth-nav-state="checking"
       >
@@ -94,22 +99,20 @@ export function AuthNav({
 
     if (variant === 'mobile') {
       return (
-        <div className={styles.mobileAuth} data-auth-nav-state="authenticated">
+        <div className={styles.menuActions} data-auth-nav-state="authenticated">
           <p className={styles.mobileAccountIdentity}>{displayName}</p>
-          <div className={styles.mobileRow}>
-            <Link href={ROUTES.dashboard} className={styles.btnPrimary} prefetch={false} onClick={onNavigate}>
-              Dashboard
-            </Link>
-            <button type="button" className={styles.btnSecondary} onClick={() => void handleSignOut()}>
-              Sign out
-            </button>
-          </div>
+          <Link href={ROUTES.dashboard} className={styles.btnPrimary} prefetch={false} onClick={onNavigate}>
+            Dashboard
+          </Link>
+          <button type="button" className={styles.btnSecondary} onClick={() => void handleSignOut()}>
+            Sign out
+          </button>
         </div>
       );
     }
 
     return (
-      <div className={styles.navRight} data-auth-nav-state="authenticated">
+      <div className={styles.actions} data-auth-nav-state="authenticated">
         <Link
           href={ROUTES.dashboard}
           className={`${styles.btnPrimary} ${styles.headerCta}`}
@@ -117,6 +120,7 @@ export function AuthNav({
           onClick={onNavigate}
         >
           Dashboard
+          <HomeIcon name="arrowRight" size={16} />
         </Link>
 
         <div className={styles.accountMenu} ref={menuRef}>
@@ -166,24 +170,26 @@ export function AuthNav({
 
   if (variant === 'mobile') {
     return (
-      <div className={styles.mobileRow} data-auth-nav-state="anonymous">
+      <div className={styles.menuActions} data-auth-nav-state="anonymous">
         <Link href={ROUTES.signIn} className={styles.btnSecondary} prefetch={false} onClick={onNavigate}>
           Sign in
         </Link>
-        <Link href={ROUTES.startMonitoring} className={styles.btnPrimary} prefetch={false} onClick={onNavigate}>
-          Start monitoring
+        <Link href={ROUTES.requestPilot} className={styles.btnPrimary} prefetch={false} onClick={onNavigate}>
+          Request Pilot
+          <HomeIcon name="arrowRight" size={16} />
         </Link>
       </div>
     );
   }
 
   return (
-    <div className={styles.navRight} data-auth-nav-state="anonymous">
+    <div className={styles.actions} data-auth-nav-state="anonymous">
       <Link href={ROUTES.signIn} className={styles.signIn} prefetch={false}>
         Sign in
       </Link>
-      <Link href={ROUTES.startMonitoring} className={`${styles.btnPrimary} ${styles.headerCta}`} prefetch={false}>
-        Start monitoring
+      <Link href={ROUTES.requestPilot} className={`${styles.btnPrimary} ${styles.headerCta}`} prefetch={false}>
+        Request Pilot
+        <HomeIcon name="arrowRight" size={16} />
       </Link>
     </div>
   );
