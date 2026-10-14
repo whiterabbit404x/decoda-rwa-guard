@@ -2,19 +2,24 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { PRICING_PLANS, PRICING_NOTE } from '../app/pricing-plans';
+import { EXECUTION_NOTE, PRICING_NOTE, PRICING_PLANS } from '../app/pricing-plans';
+import { DECODA_SITE } from '../app/public-site-links';
 
 // Source-level guardrails for the public pricing surfaces. These run without a
-// web server so they stay reliable in CI. They lock in the institutional RWA
-// buying path — Pilot = evaluation, Scale = production, Enterprise = custom —
-// and keep consumer-SaaS and unsupported-claim wording out of both the
-// standalone /pricing page and the homepage pricing section.
+// web server so they stay reliable in CI. They lock in the commercial statement
+// of the Decoda company website (www.decodasecurity.com/pricing) — Pilot is a
+// scoped evaluation on tailored terms, Scale starts from $999 a month, and
+// Enterprise is custom — and they keep every published limit equal to the
+// limit the entitlement engine enforces.
 
 const APP_DIR = path.join(__dirname, '..', 'app');
 
 function read(...segments: string[]): string {
   return fs.readFileSync(path.join(...segments), 'utf-8');
 }
+
+/** Every word of pricing copy a visitor can read. */
+const COPY = JSON.stringify(PRICING_PLANS) + PRICING_NOTE + EXECUTION_NOTE;
 
 const CONSUMER_WORDING = [
   'Base Mainnet telemetry',
@@ -26,7 +31,14 @@ const CONSUMER_WORDING = [
   'No credit card',
   '$299',
   'Start Pro trial',
+  'Start Scale',
 ];
+
+function value(plan: (typeof PRICING_PLANS)[number], label: string): string {
+  const row = plan.comparison.find((entry) => entry.label === label);
+  expect(row, `plan ${plan.key} is missing the "${label}" comparison row`).toBeDefined();
+  return row!.value;
+}
 
 test('pricing plans are the canonical Pilot / Scale / Enterprise ladder', () => {
   expect(PRICING_PLANS.map((plan) => plan.key)).toEqual(['pilot', 'scale', 'enterprise']);
@@ -34,156 +46,96 @@ test('pricing plans are the canonical Pilot / Scale / Enterprise ladder', () => 
 
   const [pilot, scale, enterprise] = PRICING_PLANS;
 
-  // The Pilot is a complimentary, approval-only EVALUATION, and the headline
-  // slot says exactly that. It no longer names a duration, because the Pilot is
-  // no longer a fixed window — and it does not say "Free", which would read as
-  // a self-serve tier rather than something Decoda approves.
-  expect(pilot.price).toBe('Pilot Evaluation');
-  expect(pilot.priceSub).toBe('');
-  expect(pilot.ctaLabel).toBe('Request Pilot →');
-  expect(pilot.badge).toBeUndefined();
-  expect(pilot.featured).toBe(false);
+  // Pilot: a scoped evaluation whose scope and terms are agreed with each team.
+  expect(pilot.tagline).toBe('Scoped evaluation');
+  expect(pilot.price).toBe('Tailored');
+  expect(pilot.priceIsLabel).toBe(true);
+  expect(pilot.priceNote).toBe('Tailored scope and commercial terms');
+  expect(pilot.ctaLabel).toBe('Request a pilot');
+  // The Pilot is where the page recommends starting — and the only featured card.
+  expect(PRICING_PLANS.filter((plan) => plan.featured).map((plan) => plan.key)).toEqual(['pilot']);
 
+  // Scale: from $999 a month; the final price depends on scope.
   expect(scale.price).toBe('From $999');
+  expect(scale.priceIsLabel).toBe(false);
   expect(scale.priceSub).toBe('/ month');
-  expect(scale.badge).toBe('Production');
-  expect(scale.ctaLabel).toBe('Start Scale →');
-  // Scale is the visually emphasised production tier, and the only one.
-  expect(PRICING_PLANS.filter((plan) => plan.featured).map((plan) => plan.key)).toEqual(['scale']);
+  expect(scale.priceNote).toBe('Final pricing depends on scope');
+  expect(scale.ctaLabel).toBe('Contact sales');
 
+  // Enterprise: custom.
   expect(enterprise.price).toBe('Custom');
-  expect(enterprise.priceSub).toBe('Contact us for pricing');
-  expect(enterprise.ctaLabel).toBe('Contact Sales →');
+  expect(enterprise.priceIsLabel).toBe(true);
+  expect(enterprise.priceNote).toBe('Custom pricing');
+  expect(enterprise.ctaLabel).toBe('Contact sales');
 });
 
-test('plan limits match the published entitlements', () => {
-  const [pilot, scale, enterprise] = PRICING_PLANS;
-
-  expect(pilot.highlights).toContain('1 workspace');
-  expect(pilot.highlights).toContain('5 monitored contracts');
-
-  // Scale is capped at 25 monitored contracts — never the old 50.
-  expect(scale.highlights).toContain('3 workspaces');
-  expect(scale.highlights).toContain('25 monitored contracts');
-  expect(scale.highlights).not.toContain('50 monitored contracts');
-  expect(value(scale, 'Monitored contracts')).toBe('25');
-
-  expect(enterprise.highlights).toContain('Custom workspaces & asset coverage');
-  expect(enterprise.highlights).toContain('Custom SLA');
+test('the Pilot is never advertised as free or complimentary', () => {
+  // The company website sells the Pilot as a scoped evaluation on tailored
+  // terms. "Free" would read as a self-serve tier, and would not be true.
+  for (const pattern of [/\bfree\b/i, /complimentary/i, /no cost/i, /\$0\b/]) {
+    expect(COPY, String(pattern)).not.toMatch(pattern);
+  }
 });
 
-test('the Pilot card describes a complimentary, approval-only evaluation', () => {
+test('the Pilot card describes a guided, recommend-only evaluation', () => {
   const [pilot] = PRICING_PLANS;
-
-  expect(pilot.description).toBe(
-    'Evaluate Decoda\u2019s security workflows with a complimentary, approval-only workspace.',
-  );
-  // Pilot is recommend-only, so the card must not describe it as production
-  // EXECUTION even while describing production security workflows.
-  expect(pilot.description).not.toMatch(/production execution/i);
   for (const bullet of [
-    'Flexible evaluation period',
-    '1 workspace',
-    '5 monitored contracts',
-    'Threat & compliance detection',
-    'Incident investigation & playbooks',
-    'Response recommendations — Recommend only',
-    'Evidence & audit workflows — up to 10 packages',
-    'Standard support',
+    'Defined monitoring scope — 1 workspace, up to 5 monitored contracts',
+    'Guided evaluation with the Decoda team',
+    'Alerts, incident investigation and evidence workflows',
+    'Recommend-only response workflows — no production execution',
+    'Feedback sessions and technical validation',
   ]) {
     expect(pilot.highlights, bullet).toContain(bullet);
   }
-
-  // Pilot evaluates playbooks and AI investigation WHILE the window is open —
-  // the entitlement engine turns both on for an ACTIVE_PILOT — so the card must
-  // not present them as withheld. The qualifier keeps it truthful once the
-  // window closes.
-  expect(value(pilot, 'Incident playbooks')).toBe('✓ During evaluation');
-  expect(value(pilot, 'AI investigation')).toBe('✓ During evaluation');
+  // Pilot evaluates playbooks WHILE it is active — the entitlement engine turns
+  // them on for an ACTIVE pilot — so the card says so, with the qualifier that
+  // keeps it true once the evaluation ends.
+  expect(value(pilot, 'Incident playbooks')).toBe('During evaluation');
 });
 
-test('the Scale card describes ongoing production monitoring', () => {
-  const [, scale] = PRICING_PLANS;
-
-  expect(scale.description).toBe(
-    'Production monitoring and incident response for ongoing RWA operations.',
-  );
-  for (const bullet of [
-    'Continuous production monitoring',
-    'Priority alert routing',
-    'Incident playbooks',
-    'Unlimited evidence packages',
-    'Audit-ready exports',
-    'Priority email support',
-  ]) {
-    expect(scale.highlights, bullet).toContain(bullet);
-  }
-});
-
-test('no card advertises automatic production execution', () => {
+test('no plan advertises automatic or autonomous production execution', () => {
   // Every plan is recommend-only by default in entitlements.py. Advertising
   // autonomous execution would promise a capability the execution gate refuses.
-  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
-  expect(copy).not.toMatch(/automatic (production )?execution/i);
-  expect(copy).not.toMatch(/autonomous/i);
-  expect(value(PRICING_PLANS[0], 'Response execution')).toBe('Recommend only');
-  for (const plan of PRICING_PLANS.slice(1)) {
-    expect(value(plan, 'Response execution')).toBe('Policy-gated, human-authorized');
-  }
+  expect(COPY).not.toMatch(/automatic (production )?execution/i);
+  expect(COPY).not.toMatch(/autonomous/i);
+  expect(value(PRICING_PLANS[0], 'Production response execution')).toBe('Recommend only');
+  expect(value(PRICING_PLANS[1], 'Production response execution')).toBe('Recommend only');
+  expect(value(PRICING_PLANS[2], 'Production response execution')).toBe('Only by explicit agreement');
+  expect(EXECUTION_NOTE).toContain('your people authorize');
+  expect(EXECUTION_NOTE).toContain('Decoda never holds customer private keys');
 });
 
 test('public pricing no longer sells Pilot as a fixed 30-day window', () => {
-  // A Pilot runs while the team is evaluating and ends when Decoda ends it.
-  // Naming a duration on the public card would be a commitment the product no
-  // longer makes — and the entitlement engine no longer stamps.
-  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
   for (const pattern of [/30[-\s]?day/i, /\bdays remaining\b/i, /\bexpires in\b/i]) {
-    expect(copy, String(pattern)).not.toMatch(pattern);
+    expect(COPY, String(pattern)).not.toMatch(pattern);
   }
-});
-
-test('Pilot is complimentary, and never sold as free forever', () => {
-  // The opposite untruth. Pilot access is granted by approval and ended by
-  // Decoda; nothing on the public surface may imply it is permanent, and Scale
-  // stays the paid production plan.
-  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
-  for (const pattern of [/free forever/i, /unlimited free/i, /permanent(ly)? free/i, /always free/i]) {
-    expect(copy, String(pattern)).not.toMatch(pattern);
-  }
-  const [, scale] = PRICING_PLANS;
-  expect(scale.price).toBe('From $999');
-  expect(scale.priceSub).toBe('/ month');
-  expect(scale.description).toContain('Production monitoring');
 });
 
 test('public pricing does not present Decoda as a single-network product', () => {
-  // A primary supported network in the current deployment is an implementation
-  // fact, not a commercial limit, and it does not belong on a public card.
-  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
-  expect(copy).not.toMatch(/Base Mainnet/i);
+  expect(COPY).not.toMatch(/Base Mainnet/i);
 });
 
-test('the footnote states the evaluation model and claims no automatic billing', () => {
-  expect(PRICING_NOTE).toContain('complimentary, approval-only evaluation');
-  expect(PRICING_NOTE).toContain('ongoing production monitoring');
-  expect(PRICING_NOTE).toContain('Enterprise pricing is custom');
-  // Checkout exists, but no provider webhook moves an organization onto Scale —
-  // `organizations.plan` is changed by internal admin only. Saying otherwise
-  // would describe billing behaviour the application does not implement.
+test('the footnote states the commercial model and claims no automatic billing', () => {
+  expect(PRICING_NOTE).toContain('scoped evaluation, by request');
+  expect(PRICING_NOTE).toContain('from $999 per month');
+  expect(PRICING_NOTE).toContain('Enterprise: custom pricing');
+  expect(PRICING_NOTE).toContain('there is no automatic checkout');
+  // No provider webhook moves an organization onto Scale — `organizations.plan`
+  // is changed by internal admin only. Saying otherwise would describe billing
+  // behaviour the application does not implement.
   expect(PRICING_NOTE).not.toMatch(/Paddle/i);
   expect(PRICING_NOTE).not.toMatch(/billed (monthly|automatically)/i);
 });
 
 test('retention is not advertised as a plan tier it is not', () => {
-  // workspace_retention_policies is per-workspace and configurable 1–3650 days
-  // for every plan. The old "30 days" / "1 year" rows described a tiering the
-  // product does not implement.
-  for (const plan of PRICING_PLANS.slice(0, 2)) {
+  // workspace_retention_policies is per-workspace and configurable for every plan.
+  for (const plan of PRICING_PLANS) {
     expect(value(plan, 'Audit log retention'), plan.key).toBe('Configurable per workspace');
   }
 });
 
-test('published prices match the backend entitlement matrix', () => {
+test('published limits match the backend entitlement matrix', () => {
   // docs/PLAN_ENTITLEMENT_MATRIX.md is GENERATED from
   // services/api/app/entitlements.py :: capability_matrix(). Reading it here is
   // what keeps the public numbers and the enforced numbers the same numbers —
@@ -205,18 +157,21 @@ test('published prices match the backend entitlement matrix', () => {
 
   const [pilot, scale] = PRICING_PLANS;
   expect(value(pilot, 'Workspaces')).toBe(pilotWorkspaces);
-  expect(value(pilot, 'Monitored contracts')).toBe(pilotContracts);
+  expect(value(pilot, 'Monitored contracts')).toBe(`Up to ${pilotContracts}`);
   expect(value(pilot, 'Evidence packages')).toBe(`Up to ${pilotEvidence}`);
-  expect(pilot.highlights).toContain(`${pilotWorkspaces} workspace`);
-  expect(pilot.highlights).toContain(`${pilotContracts} monitored contracts`);
+  expect(pilot.highlights[0]).toBe(
+    `Defined monitoring scope — ${pilotWorkspaces} workspace, up to ${pilotContracts} monitored contracts`,
+  );
 
   expect(value(scale, 'Workspaces')).toBe(scaleWorkspaces);
-  expect(value(scale, 'Monitored contracts')).toBe(scaleContracts);
+  expect(value(scale, 'Monitored contracts')).toBe(`Up to ${scaleContracts}`);
   expect(scaleEvidence).toBe('UNLIMITED');
   expect(value(scale, 'Evidence packages')).toBe('Unlimited');
+  expect(scale.highlights[0]).toBe(
+    `Defined limits — ${scaleWorkspaces} workspaces, up to ${scaleContracts} monitored contracts`,
+  );
 
-  // Incident playbooks: ON for an active evaluation, OFF once it ends. That is
-  // exactly what the Pilot card's qualifier says, and what Scale states flatly.
+  // Incident playbooks: ON for an active evaluation, OFF once it ends.
   const [, playbooksActive, playbooksExpired, playbooksScale] = matrixRow('Incident playbooks');
   expect([playbooksActive, playbooksExpired, playbooksScale]).toEqual(['YES', 'NO', 'YES']);
 
@@ -225,10 +180,18 @@ test('published prices match the backend entitlement matrix', () => {
   expect(execution.slice(0, 4)).toEqual(['NO', 'NO', 'NO', 'NO']);
 });
 
+test('capabilities the engine declares but does not enforce are not sold', () => {
+  // The matrix marks these "NOT ENFORCED" (priority routing, multi-network,
+  // custom evidence templates) or "no software control" (custom SLA). A public
+  // card must not promise them as plan features.
+  for (const pattern of [/priority alert routing/i, /multi-network/i, /custom evidence templates/i, /\bSLA\b/]) {
+    expect(COPY, String(pattern)).not.toMatch(pattern);
+  }
+});
+
 test('no plan advertises a TVL or asset-value cap', () => {
-  const copy = JSON.stringify(PRICING_PLANS) + PRICING_NOTE;
-  expect(copy).not.toMatch(/TVL/i);
-  expect(copy).not.toMatch(/assets under|asset value cap/i);
+  expect(COPY).not.toMatch(/TVL/i);
+  expect(COPY).not.toMatch(/assets under|asset value cap/i);
 });
 
 test('comparison rows stay index-aligned across every plan', () => {
@@ -238,14 +201,18 @@ test('comparison rows stay index-aligned across every plan', () => {
   }
 });
 
-test('CTA routes stay on real, existing destinations', () => {
+test('CTA routes stay on real, existing destinations — and none is a checkout or a sign-up', () => {
   const [pilot, scale, enterprise] = PRICING_PLANS;
   // Approval-only: the Pilot CTA leads to the APPLICATION, not to sign-up.
-  // Sending it to sign-up was the self-serve path, where anyone who found the
-  // URL received an active evaluation without Decoda approving them.
   expect(pilot.ctaHref).toBe('/request-pilot');
-  expect(scale.ctaHref.startsWith('/sign-up')).toBe(true);
-  expect(enterprise.ctaHref).toBe('mailto:sales@decodasecurity.com');
+  expect(fs.existsSync(path.join(APP_DIR, 'request-pilot', 'page.tsx'))).toBe(true);
+  // Every paid plan is arranged with the Decoda team.
+  expect(scale.ctaHref).toBe(DECODA_SITE.contact);
+  expect(enterprise.ctaHref).toBe(DECODA_SITE.contact);
+  for (const plan of PRICING_PLANS) {
+    expect(plan.ctaHref).not.toContain('/sign-up');
+    expect(plan.ctaHref).not.toMatch(/checkout|billing/i);
+  }
 });
 
 test('pricing surfaces drop consumer-SaaS and unsupported-claim wording', () => {
@@ -254,13 +221,15 @@ test('pricing surfaces drop consumer-SaaS and unsupported-claim wording', () => 
     read(APP_DIR, 'pricing', 'page.tsx'),
     read(APP_DIR, 'page.tsx'),
     read(APP_DIR, 'components', 'home', 'pricing-section.tsx'),
+    read(APP_DIR, 'components', 'home', 'plan-cards.tsx'),
   ].join('\n');
 
   for (const phrase of CONSUMER_WORDING) {
     expect(sources, `expected pricing sources to drop "${phrase}"`).not.toContain(phrase);
   }
 
-  // No social proof, no fabricated peer comparison, no guaranteed SLA claim.
+  // No social proof, no fabricated peer comparison, no guaranteed SLA, no
+  // certification claim.
   expect(sources).not.toMatch(/Fireblocks/i);
   expect(sources).not.toMatch(/SLA guarantee/i);
   expect(sources).not.toMatch(/SOC ?2|ISO ?27001/i);
@@ -269,11 +238,7 @@ test('pricing surfaces drop consumer-SaaS and unsupported-claim wording', () => 
 
 test('both pricing surfaces render from the shared config, not duplicated copy', () => {
   expect(read(APP_DIR, 'pricing', 'page.tsx')).toContain("from '../pricing-plans'");
-  expect(read(APP_DIR, 'page.tsx')).toContain("from 'app/pricing-plans'");
+  expect(read(APP_DIR, 'components', 'home', 'plan-cards.tsx')).toContain("from '../../pricing-plans'");
+  expect(read(APP_DIR, 'components', 'home', 'pricing-section.tsx')).toContain('<PlanCards');
+  expect(read(APP_DIR, 'pricing', 'page.tsx')).toContain('<PlanCards');
 });
-
-function value(plan: (typeof PRICING_PLANS)[number], label: string): string {
-  const row = plan.comparison.find((entry) => entry.label === label);
-  expect(row, `plan ${plan.key} is missing the "${label}" comparison row`).toBeDefined();
-  return row!.value;
-}

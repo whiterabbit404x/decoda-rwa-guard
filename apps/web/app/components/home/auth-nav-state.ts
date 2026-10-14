@@ -2,8 +2,8 @@
 // Pure resolution rules for the public landing page's auth-aware
 // navigation. No fetching happens here: the canonical session comes
 // from PilotAuthProvider (/api/auth/me), and these helpers only turn
-// that answer plus the server-side cookie hint into what the navbar
-// and the primary CTA should render.
+// that answer plus the server-side cookie hint into what the header
+// should render.
 // ─────────────────────────────────────────────────────────────
 
 import type { LandingSessionHint } from '../../auth-guards';
@@ -17,8 +17,6 @@ import type { LandingSessionHint } from '../../auth-guards';
  *                     OR the session could not be verified at all. Fail-closed default.
  */
 export type AuthNavState = 'checking' | 'authenticated' | 'anonymous';
-
-export type StartMonitoringTarget = 'dashboard' | 'sign-up';
 
 export type AuthNavStateInput = {
   /** PilotAuthProvider `loading` — runtime config + session restore still in flight. */
@@ -41,18 +39,6 @@ export function resolveAuthNavState({ loading, isAuthenticated, sessionHint }: A
   // already correct and render immediately with no flicker. A request that DID carry a
   // cookie waits in a neutral state instead of flashing "Sign in".
   return sessionHint === 'session-cookie-present' ? 'checking' : 'anonymous';
-}
-
-/**
- * Where the primary "Start monitoring" CTA points.
- *
- * An authenticated visitor is sent straight to the product instead of back through
- * sign-up. While the session is still being checked the CTA also points at /dashboard:
- * that route is protected and re-validates the session on both the server and the
- * client, so a stale cookie fails closed to /sign-in rather than exposing anything.
- */
-export function resolveStartMonitoringTarget(state: AuthNavState): StartMonitoringTarget {
-  return state === 'anonymous' ? 'sign-up' : 'dashboard';
 }
 
 type AccountIdentity = { full_name?: string | null; email?: string | null } | null | undefined;

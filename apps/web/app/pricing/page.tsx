@@ -1,208 +1,207 @@
+import type { Metadata, Viewport } from 'next';
 import Link from 'next/link';
 
-import { PRICING_PLANS } from '../pricing-plans';
+import { ROUTES } from '../components/home/home-data';
+import { PlanCards } from '../components/home/plan-cards';
+import { PublicShell } from '../components/home/public-shell';
+import { Reveal } from '../components/home/scroll-reveal';
+import { Faq, PlanCompare, Steps, type FaqItem, type Step } from '../components/home/site-blocks';
+import { CtaBand, PageHero, SectionHeading } from '../components/home/site-ui';
+import site from '../components/home/site.module.css';
+import pages from '../components/home/pages.module.css';
+import { EXECUTION_NOTE, PRICING_NOTE } from '../pricing-plans';
+import { publicPageMetadata } from '../public-metadata';
+import { DECODA_SITE } from '../public-site-links';
 
 export const dynamic = 'force-dynamic';
 
-const faqs = [
+export const metadata: Metadata = publicPageMetadata({
+  title: 'Pricing',
+  description: `Plans for Decoda RWA Guard. ${PRICING_NOTE}`,
+  path: '/pricing',
+});
+
+export const viewport: Viewport = { themeColor: '#ffffff', colorScheme: 'light' };
+
+/**
+ * How a Pilot starts. Approval-only: nothing is provisioned until Decoda has
+ * reviewed the request and the applicant accepts the invitation.
+ */
+const PILOT_STEPS: Step[] = [
   {
-    q: 'What does the Pilot include?',
-    a: 'The Pilot is a scoped, no-cost evaluation of the full product — monitoring, detection, alerts, incidents, and evidence export — for one workspace and up to five monitored contracts. It runs against your live RWA assets so you can validate Decoda before a production rollout.',
+    icon: 'mail',
+    title: 'You request a pilot',
+    body: 'Tell us about your team, your program and what you want to monitor.',
   },
   {
-    q: 'How do I get a Pilot evaluation?',
-    a: 'Submit a Pilot request with your work email, company, role, and intended use case. Decoda reviews each request individually and emails an invitation to approved applicants; the evaluation starts when you accept it. There is no self-service sign-up for the Pilot.',
+    icon: 'investigate',
+    title: 'Decoda reviews and scopes it',
+    body: 'The Decoda team reviews every request and agrees the monitoring scope and terms with you.',
   },
   {
-    q: 'Why does Scale start "from" $999?',
-    a: 'Scale starts at $999 per month for the published limits — 3 workspaces and 25 monitored contracts. Deployments that need more workspaces, more monitored contracts, or additional networks are quoted on the Enterprise tier. Contact sales@decodasecurity.com to confirm your configuration.',
+    icon: 'workflow',
+    title: 'Your organization is set up',
+    body: 'If the request is approved, Decoda enables Guard for your organization — nothing is provisioned before.',
   },
   {
-    q: 'What counts as a "monitored contract"?',
-    a: 'Each on-chain address you register as a monitoring target in your workspace counts as one monitored contract. EOA wallets and oracle feeds each count separately.',
+    icon: 'approval',
+    title: 'You accept the invitation',
+    body: 'Your administrator accepts the invitation and sets up multi-factor sign-in.',
   },
   {
-    q: 'Can I change plans at any time?',
-    a: 'Yes. Upgrades take effect immediately. Downgrades take effect at the end of the current billing period. Data and evidence packages are preserved when you downgrade.',
-  },
-  {
-    q: 'How is billing handled?',
-    a: 'Paid plans use Paddle for subscription management. Invoices are issued monthly. Payment methods: credit/debit card and wire transfer for Enterprise.',
-  },
-  {
-    q: 'Is there a discount for annual billing?',
-    a: 'Annual billing is available for Scale and Enterprise at a 15% discount. Contact sales@decodasecurity.com to arrange.',
+    icon: 'checkCircle',
+    title: 'You evaluate and decide',
+    body: 'Validate Guard against your own infrastructure, then decide whether to continue on Scale.',
   },
 ];
 
-function isExternal(href: string) {
-  return href.startsWith('mailto:') || href.startsWith('http');
-}
+const FAQ: FaqItem[] = [
+  {
+    q: 'How is a pilot priced?',
+    a: (
+      <p>
+        Pilot scope and commercial terms are agreed with each team before the evaluation starts.{' '}
+        <a href={ROUTES.requestPilot}>Request a pilot</a> or <a href={DECODA_SITE.contact}>contact Decoda</a> to
+        discuss yours.
+      </p>
+    ),
+  },
+  {
+    q: 'How do I get a Pilot evaluation?',
+    a: (
+      <p>
+        Submit a <a href="/request-pilot">Pilot request</a>. Decoda reviews each request individually and sends an
+        invitation to approved applicants; the evaluation starts when you accept it.
+        There is no self-service sign-up for the Pilot.
+      </p>
+    ),
+  },
+  {
+    q: 'What does the Scale price include?',
+    a: (
+      <p>
+        Scale starts at $999 per month for a defined scope — up to 3 workspaces and 25 monitored contracts. Final
+        pricing depends on your monitoring scope and the support arrangements in your agreement.
+      </p>
+    ),
+  },
+  {
+    q: 'What counts as a monitored contract?',
+    a: (
+      <p>
+        A monitored contract is an asset you register in your workspace. Each one can carry several monitoring
+        targets — for example its contract, related wallets and an oracle feed — up to an operational bound of two
+        targets per monitored contract on Pilot and Scale.
+      </p>
+    ),
+  },
+  {
+    q: 'Can I buy a plan online?',
+    a: (
+      <p>
+        No. Every plan is arranged with the Decoda team, and the commercial terms are set out in your order or
+        agreement.
+      </p>
+    ),
+  },
+  { q: 'Can Decoda execute transactions on our behalf?', a: <p>{EXECUTION_NOTE}</p> },
+  {
+    q: 'What happens to our data when a pilot ends?',
+    a: (
+      <p>
+        Your workspace stays readable and your evidence stays exportable for 30 days after the Pilot ends; after
+        that, operational data is deleted on the schedule set out in the{' '}
+        <Link href={ROUTES.privacy} prefetch={false}>
+          Privacy Policy
+        </Link>
+        . Continuing on a plan before then cancels the deletion.
+      </p>
+    ),
+  },
+  {
+    q: 'Are Decoda Vault and Decoda Assets included?',
+    a: (
+      <p>
+        No. Vault and Assets are earlier-stage products on public testnets. They are not commercially available and
+        are not integrated with Guard.
+      </p>
+    ),
+  },
+  {
+    q: 'Do plans include an SLA or certifications?',
+    a: (
+      <p>
+        No plan includes an SLA or a compliance certification unless it is set out in your agreement. Our current
+        security posture — including what we have not yet achieved — is on{' '}
+        <Link href={ROUTES.trust} prefetch={false}>
+          Security &amp; Trust
+        </Link>
+        .
+      </p>
+    ),
+  },
+];
 
-function CheckIcon({ filled }: { filled?: boolean }) {
-  if (filled) {
-    return (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="8" cy="8" r="7.5" fill="rgba(59,130,246,0.18)" stroke="rgba(59,130,246,0.35)" />
-        <path d="M5 8l2 2 4-4" stroke="var(--text-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  return <span className="pricingFeatureNa">—</span>;
-}
-
-function SmallShield() {
+/**
+ * Public pricing. Plans, prices, CTAs and the comparison all render from the
+ * canonical shared config (app/pricing-plans.ts), aligned with the company
+ * website's pricing.
+ */
+export default async function PricingPage() {
   return (
-    <svg width="22" height="24" viewBox="0 0 26 28" fill="none" aria-hidden="true">
-      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="var(--accent-blue)" />
-      <path d="M9 14.5l2.5 2.5 5.5-5.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
+    <PublicShell active="pricing">
+      <PageHero
+        eyebrow="Pricing"
+        title="Start with a Scoped Pilot. Scale When You’re Ready."
+        lead="Pricing for Decoda RWA Guard. Evaluate against your own infrastructure first, then move to recurring security operations — every plan is arranged with the Decoda team."
+      />
 
-export default function PricingPage() {
-  return (
-    <>
-      {/* ── Sticky nav ─────────────────────────────────────── */}
-      <a href="#pricing-main" className="skipToContent">Skip to main content</a>
-      <header className="mktStandaloneNav" role="banner">
-        <div className="mktStandaloneNavInner">
-          <Link href="/" className="mktStandaloneNavLogo" prefetch={false}>
-            <SmallShield />
-            <span className="mktNavLogoText">
-              <span className="mktStandaloneNavBrand">DECODA</span>
-              <span className="mktStandaloneNavProduct">RWA GUARD</span>
-            </span>
-          </Link>
-          <nav className="mktStandaloneNavLinks" aria-label="Site navigation">
-            <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
-            <Link href="/#how-it-works" className="mktStandaloneNavLink" prefetch={false}>How it works</Link>
-            <Link href="/trust" className="mktStandaloneNavLink" prefetch={false}>Trust</Link>
-          </nav>
-          <div className="mktStandaloneNavRight">
-            <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-            <Link href="/request-pilot" className="mktStandaloneNavCta" prefetch={false}>Request Pilot →</Link>
-          </div>
-        </div>
-      </header>
-
-    <main id="pricing-main" className="pricingPage">
-
-      <header className="pricingHero">
-        <p className="mktSectionLabel">PRICING</p>
-        <h1 className="pricingHeroTitle">Evaluate on live assets. Deploy in production.</h1>
-        <p className="pricingHeroSubtitle">
-          Full product access on every plan. No feature gating on core monitoring, detection, or evidence export.
-          Paid plans are billed monthly via Paddle.
-        </p>
-      </header>
-
-      {/* ── Pricing cards ──────────────────────────────────── */}
-      <div className="pricingTierGrid">
-        {PRICING_PLANS.map((plan) => (
-          <article key={plan.key} className={`pricingTierCard${plan.featured ? ' pricingTierCard--featured' : ''}`}>
-            {plan.badge && <div className="pricingTierBadge">{plan.badge}</div>}
-            <div className="pricingTierName">{plan.tier}</div>
-            <div className={`pricingTierPrice${plan.priceIsLabel ? ' pricingTierPrice--label' : ''}`}>{plan.price}</div>
-            {/* Rendered even when empty so every card keeps the same vertical rhythm. */}
-            <div className="pricingTierPriceSub">{plan.priceSub}</div>
-            <p className="pricingTierDesc">{plan.description}</p>
-            {isExternal(plan.ctaHref) ? (
-              <a
-                href={plan.ctaHref}
-                className={`pricingTierCta${plan.featured ? ' pricingTierCta--featured' : ''}`}
-              >
-                {plan.ctaLabel}
-              </a>
-            ) : (
-              <Link
-                href={plan.ctaHref}
-                className={`pricingTierCta${plan.featured ? ' pricingTierCta--featured' : ''}`}
-                prefetch={false}
-              >
-                {plan.ctaLabel}
-              </Link>
-            )}
-            <ul className="pricingTierFeatures">
-              {plan.highlights.map((highlight) => (
-                <li key={highlight} className="pricingTierFeature">
-                  <CheckIcon filled />
-                  <span>{highlight}</span>
-                </li>
-              ))}
-            </ul>
-          </article>
-        ))}
-      </div>
-
-      {/* ── Feature comparison table ───────────────────────── */}
-      <section className="pricingComparisonSection">
-        <h2 className="pricingComparisonTitle">Full feature comparison</h2>
-        <div className="pricingComparisonWrap">
-          <table className="pricingComparisonTable">
-            <thead>
-              <tr>
-                <th className="pricingComparisonFeatureCol">Feature</th>
-                {PRICING_PLANS.map((plan) => (
-                  <th key={plan.key} className={plan.featured ? 'pricingComparisonFeaturedCol' : ''}>{plan.tier}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {PRICING_PLANS[0].comparison.map((row, idx) => (
-                <tr key={row.label}>
-                  <td className="pricingComparisonFeatureLabel">{row.label}</td>
-                  {PRICING_PLANS.map((plan) => (
-                    <td key={plan.key} className={`pricingComparisonValue${plan.featured ? ' pricingComparisonFeaturedValue' : ''}`}>
-                      {plan.comparison[idx].value === '✓' ? (
-                        <CheckIcon filled />
-                      ) : plan.comparison[idx].value === '—' ? (
-                        <span className="pricingFeatureNa">—</span>
-                      ) : (
-                        <span className="pricingFeatureText">{plan.comparison[idx].value}</span>
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className={`${pages.band} ${pages.bandFirst}`} aria-label="Plans">
+        <div className={site.container}>
+          <PlanCards headingLevel={2} />
+          <Reveal as="p" className={pages.note}>
+            {EXECUTION_NOTE}
+          </Reveal>
         </div>
       </section>
 
-      {/* ── FAQ ─────────────────────────────────────────────── */}
-      <section className="pricingFaqSection">
-        <h2 className="pricingFaqTitle">Pricing FAQ</h2>
-        <div className="mktFaqGrid">
-          {faqs.map((item) => (
-            <div key={item.q} className="mktFaqItem">
-              <p className="mktFaqQ">{item.q}</p>
-              <p className="mktFaqA">{item.a}</p>
-            </div>
-          ))}
+      <section className={`${pages.band} ${pages.bandSoft}`} aria-labelledby="compare-title">
+        <div className={site.container}>
+          <SectionHeading id="compare-title" eyebrow="Compare plans" title="What Each Plan Includes." />
+          <PlanCompare />
+          <p className={pages.note}>
+            Limits reflect the plan entitlements Decoda RWA Guard enforces. Enterprise scope is agreed per
+            organization. No plan includes an SLA or compliance certification unless it is set out in your agreement.
+          </p>
         </div>
       </section>
 
-      {/* ── Enterprise callout ──────────────────────────────── */}
-      <section className="pricingEnterpriseCallout">
-        <h2 className="pricingEnterpriseTitle">Need custom requirements?</h2>
-        <p className="pricingEnterpriseDesc">
-          Enterprise covers multi-network deployment, custom detection and policy controls, custom evidence
-          templates, compliance and regulatory export formats, configurable audit-log retention, enterprise
-          integrations, dedicated onboarding, and a custom SLA agreed with your team.
-        </p>
-        <a href="mailto:sales@decodasecurity.com" className="mktCtaPrimary">
-          Contact Sales →
-        </a>
+      <section className={pages.band} aria-labelledby="pilot-steps-title">
+        <div className={site.container}>
+          <SectionHeading
+            id="pilot-steps-title"
+            eyebrow="How a pilot works"
+            title="Reviewed, Scoped, Then Provisioned."
+            lead="Decoda RWA Guard is invitation-only. Nothing is provisioned until a request has been reviewed and approved."
+          />
+          <Steps steps={PILOT_STEPS} label="How a pilot works" />
+        </div>
       </section>
 
-      <div className="trustFooterLinks">
-        <Link href="/" prefetch={false} className="trustLink">← Home</Link>
-        <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
-        <Link href="/request-pilot" prefetch={false} className="trustLink">Request a pilot</Link>
-        <a href="mailto:support@decodasecurity.com" className="trustLink">Support</a>
-      </div>
-    </main>
-    </>
+      <section className={`${pages.band} ${pages.bandSoft}`} aria-labelledby="pricing-faq-title">
+        <div className={site.container}>
+          <SectionHeading id="pricing-faq-title" align="center" eyebrow="FAQ" title="Questions About Plans." />
+          <Faq items={FAQ} />
+        </div>
+      </section>
+
+      <CtaBand
+        id="pricing-cta-title"
+        title="Evaluate Guard Against Your Own Infrastructure."
+        body="Request a scoped pilot. The Decoda team reviews every request and agrees the monitoring scope with you before anything is provisioned."
+        primary={{ label: 'Request a Pilot', href: ROUTES.requestPilot }}
+        secondary={{ label: 'Contact sales', href: DECODA_SITE.contact }}
+      />
+    </PublicShell>
   );
 }

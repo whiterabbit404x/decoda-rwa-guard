@@ -1,73 +1,62 @@
-import { cookies } from 'next/headers';
+import type { Metadata, Viewport } from 'next';
 
-import { MarketingHeader } from 'app/components/home/marketing-header';
-import { HeroSection } from 'app/components/home/hero-section';
-import { OperatingLayerSection } from 'app/components/home/operating-layer-section';
-import { IncidentLifecycleSection } from 'app/components/home/incident-lifecycle-section';
-import { ProductConsoleSection } from 'app/components/home/product-console-section';
-import { EvidenceAISection } from 'app/components/home/evidence-ai-section';
-import { RWASecuritySection } from 'app/components/home/rwa-security-section';
-import { PolicyAutomationSection } from 'app/components/home/policy-automation-section';
-import { TeamsSection } from 'app/components/home/teams-section';
-import { PricingSection, type PricingTier } from 'app/components/home/pricing-section';
+import { AiSection } from 'app/components/home/ai-section';
+import { ControlsSection } from 'app/components/home/controls-section';
+import { EcosystemSection } from 'app/components/home/ecosystem-section';
 import { FinalCTA } from 'app/components/home/final-cta';
-import { MarketingFooter } from 'app/components/home/marketing-footer';
-import { PRICING_PLANS, PRICING_NOTE } from 'app/pricing-plans';
-import { SESSION_COOKIE_NAME, readLandingSessionHint } from 'app/auth-guards';
-import styles from 'app/components/home/home.module.css';
+import { HeroSection } from 'app/components/home/hero-section';
+import { HowItWorksSection } from 'app/components/home/how-it-works-section';
+import { PlatformSection } from 'app/components/home/platform-section';
+import { PricingSection } from 'app/components/home/pricing-section';
+import { ProblemSection } from 'app/components/home/problem-section';
+import { ProductSection } from 'app/components/home/product-section';
+import { PublicShell } from 'app/components/home/public-shell';
+import { publicPageMetadata } from 'app/public-metadata';
 
 export const dynamic = 'force-dynamic';
 
-// Pricing renders from the canonical shared config in `app/pricing-plans.ts`,
-// which the standalone /pricing page uses as well — plan names, prices, CTA
-// labels and CTA routes cannot drift between the two surfaces. No billing
-// logic is invented here; the CTA hrefs are real, existing routes.
-const pricingTiers: PricingTier[] = PRICING_PLANS.map((plan) => ({
-  tier: plan.tier,
-  price: plan.price,
-  priceIsLabel: plan.priceIsLabel,
-  per: plan.priceSub,
-  description: plan.description,
-  featured: plan.featured,
-  badge: plan.badge,
-  ctaLabel: plan.ctaLabel,
-  ctaHref: plan.ctaHref,
-  features: plan.highlights,
-}));
+const HOME_TITLE = 'Decoda RWA Guard | Decoda Security';
 
+export const metadata: Metadata = publicPageMetadata({
+  title: { absolute: HOME_TITLE },
+  socialTitle: HOME_TITLE,
+  description:
+    'Decoda RWA Guard brings security monitoring, evidence-grounded investigation and policy-controlled response '
+    + 'workflows together for tokenized financial infrastructure. Available for pilot evaluation.',
+  path: '/',
+});
+
+export const viewport: Viewport = {
+  themeColor: '#ffffff',
+  colorScheme: 'light',
+};
+
+/**
+ * The public homepage of Decoda RWA Guard — the same visual system as
+ * www.decodasecurity.com, from header to footer:
+ *
+ *   Hero → A the problem → B the platform → C how Guard works →
+ *   D product experience → E evidence-grounded AI → F institutional controls →
+ *   G the Decoda ecosystem → H pricing → I final call to action
+ *
+ * Pricing renders from the canonical shared config in `app/pricing-plans.ts`
+ * (PRICING_PLANS), which the standalone /pricing page uses as well. The page
+ * never redirects an authenticated visitor away; the header offers them the
+ * dashboard instead (see PublicShell).
+ */
 export default async function MarketingHomePage() {
-  const supportEmail = process.env.NEXT_PUBLIC_SUPPORT_EMAIL ?? 'support@decodasecurity.com';
-
-  // Server-side session HINT only (see app/auth-guards.ts). It decides whether the
-  // auth-aware navbar starts neutral instead of flashing "Sign in" at a signed-in
-  // visitor. It never renders an authenticated state on its own: PilotAuthProvider
-  // confirms the session against the backend through /api/auth/me, and an authenticated
-  // visitor is never redirected away from this public page.
-  const cookieStore = await cookies();
-  const sessionHint = readLandingSessionHint(cookieStore.get(SESSION_COOKIE_NAME)?.value);
-
   return (
-    <div className={styles.page}>
-      <a href="#main" className={styles.skipLink}>
-        Skip to main content
-      </a>
-
-      <MarketingHeader sessionHint={sessionHint} />
-
-      <main id="main">
-        <HeroSection sessionHint={sessionHint} />
-        <OperatingLayerSection />
-        <IncidentLifecycleSection />
-        <ProductConsoleSection />
-        <EvidenceAISection />
-        <RWASecuritySection />
-        <PolicyAutomationSection />
-        <TeamsSection />
-        <PricingSection tiers={pricingTiers} note={PRICING_NOTE} />
-        <FinalCTA sessionHint={sessionHint} />
-      </main>
-
-      <MarketingFooter supportEmail={supportEmail} />
-    </div>
+    <PublicShell>
+      <HeroSection />
+      <ProblemSection />
+      <PlatformSection />
+      <HowItWorksSection />
+      <ProductSection />
+      <AiSection />
+      <ControlsSection />
+      <EcosystemSection />
+      <PricingSection />
+      <FinalCTA />
+    </PublicShell>
   );
 }

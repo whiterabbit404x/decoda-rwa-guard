@@ -6,12 +6,19 @@ import { fetchDashboardPageData } from '../app/dashboard-data';
 
 test('customer-facing routes remove demo wording', async () => {
   const content = fs.readFileSync(path.join(__dirname, '..', 'app', 'page.tsx'), 'utf-8');
+  const pricingSection = fs.readFileSync(path.join(__dirname, '..', 'app', 'components', 'home', 'pricing-section.tsx'), 'utf-8');
+  const planCards = fs.readFileSync(path.join(__dirname, '..', 'app', 'components', 'home', 'plan-cards.tsx'), 'utf-8');
   const plans = fs.readFileSync(path.join(__dirname, '..', 'app', 'pricing-plans.ts'), 'utf-8');
   // The homepage renders pricing from the canonical shared config.
-  expect(content).toContain('PRICING_PLANS');
-  expect(plans).toContain('Request Pilot');
-  expect(plans).toContain('Contact Sales');
+  expect(content).toContain('<PricingSection />');
+  expect(pricingSection).toContain('<PlanCards');
+  expect(planCards).toContain('PRICING_PLANS');
+  expect(plans).toContain('Request a pilot');
+  expect(plans).toContain('Contact sales');
   expect(plans).not.toContain('Start free trial');
+  for (const source of [content, pricingSection, planCards, plans]) {
+    expect(source).not.toMatch(/\bdemo\b/i);
+  }
 });
 
 test('production mode does not silently render sample dashboard payloads', async () => {

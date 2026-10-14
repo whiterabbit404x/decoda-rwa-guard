@@ -6,8 +6,8 @@
  * customer SEES in the public navbar, and — just as important — what they see in the
  * ~200ms before the session check answers.
  *
- * So this spec mounts the UNMODIFIED MarketingHeader and StartMonitoringCta through the
- * real PilotAuthProvider in Chromium. Nothing here reimplements the components; only
+ * So this spec mounts the UNMODIFIED MarketingHeader through the real
+ * PilotAuthProvider in Chromium. Nothing here reimplements the components; only
  * `fetch` is stubbed, so the DOM under assertion is rendered from a KNOWN /api/auth/me
  * payload, with a deliberate delay so the pre-resolution paint can be sampled.
  */
@@ -23,17 +23,14 @@ import React from '/vendor/react.js';
 import { createRoot } from '/vendor/react-dom-client.js';
 import { PilotAuthProvider } from '/app/pilot-auth-context.tsx';
 import { MarketingHeader } from '/app/components/home/marketing-header.tsx';
-import { StartMonitoringCta } from '/app/components/home/start-monitoring-cta.tsx';
 
 // The hint the server would have computed from the session cookie for this request.
 const sessionHint = new URLSearchParams(location.search).get('hint') || 'no-session-cookie';
 
 createRoot(document.getElementById('root')).render(
   React.createElement(PilotAuthProvider, null,
-    React.createElement(React.Fragment, null,
-      React.createElement(MarketingHeader, { sessionHint }),
-      React.createElement('div', { id: 'hero-cta' },
-        React.createElement(StartMonitoringCta, { sessionHint, withArrow: true })))));
+    React.createElement('div', { className: 'site' },
+      React.createElement(MarketingHeader, { sessionHint }))));
 `;
 
 let harness: Harness;
@@ -93,7 +90,7 @@ async function assertNoRenderError(page: Page) {
   expect(await page.evaluate(() => (window as any).__renderError)).toBeNull();
 }
 
-test('a signed-out visitor gets Sign in and Start monitoring, and no dashboard control', async ({ page }) => {
+test('a signed-out visitor gets Sign in and Request Pilot, and no dashboard control', async ({ page }) => {
   await stubSession(page, { authenticated: false });
   await page.goto(`${harness.url}?hint=no-session-cookie`);
 
@@ -102,10 +99,10 @@ test('a signed-out visitor gets Sign in and Start monitoring, and no dashboard c
   await assertNoRenderError(page);
 
   await expect(nav.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
-  await expect(nav.getByRole('link', { name: 'Start monitoring' })).toHaveAttribute('href', '/sign-up');
+  // The way in is the reviewed Pilot application — there is no registration.
+  await expect(nav.getByRole('link', { name: 'Request Pilot' })).toHaveAttribute('href', '/request-pilot');
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
-  // The signed-out CTA keeps the existing onboarding destination.
-  await expect(page.locator('#hero-cta a')).toHaveAttribute('href', '/sign-up');
+  await expect(page.locator('header a[href="/sign-up"]')).toHaveCount(0);
 });
 
 test('a signed-in visitor gets Dashboard plus an account menu, and never sees Sign in', async ({ page }) => {
@@ -118,8 +115,7 @@ test('a signed-in visitor gets Dashboard plus an account menu, and never sees Si
 
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/dashboard');
   await expect(page.locator('header').getByRole('link', { name: 'Sign in' })).toHaveCount(0);
-  // The authenticated CTA goes straight to the product instead of back through sign-up.
-  await expect(page.locator('#hero-cta a')).toHaveAttribute('href', '/dashboard');
+  await expect(nav.getByRole('link', { name: 'Request Pilot' })).toHaveCount(0);
 
   // The address is not in the always-visible navbar; it appears once the menu opens.
   await expect(page.getByText('pilot.user@acme.test')).toHaveCount(0);
@@ -192,7 +188,7 @@ test('signing out from the landing page returns it to the signed-out controls', 
 
   await expect(desktopNav(page)).toHaveAttribute('data-auth-nav-state', 'anonymous');
   await expect(desktopNav(page).getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in');
-  await expect(page.locator('#hero-cta a')).toHaveAttribute('href', '/sign-up');
+  await expect(desktopNav(page).getByRole('link', { name: 'Request Pilot' })).toHaveAttribute('href', '/request-pilot');
   // Sign-out went through the canonical provider endpoint, not a landing-page copy.
   expect(await page.evaluate(() => (window as any).__signOutCalls)).toBe(1);
 });

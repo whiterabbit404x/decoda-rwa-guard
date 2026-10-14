@@ -1,0 +1,249 @@
+/* ==========================================================================
+   Plan cards — shared by the homepage and /pricing.
+
+   The company website's plan cards (decoda-website components/site/
+   plans.module.css). Each card spans three subgrid rows (summary · features ·
+   action), so the dividers and buttons line up across plans whatever their
+   copy length.
+   ========================================================================== */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: auto 1fr auto;
+  column-gap: 20px;
+  row-gap: 0;
+}
+
+.card {
+  position: relative;
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+  row-gap: 0;
+  padding: 30px 28px 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  transition:
+    transform 400ms var(--ease-out),
+    box-shadow 400ms var(--ease-out),
+    border-color 400ms var(--ease-out);
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+.card[data-recommended] {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    linear-gradient(160deg, rgba(20, 184, 166, 0.85), rgba(14, 116, 144, 0.5) 45%, var(--border) 80%) border-box;
+  box-shadow: 0 1px 2px rgba(11, 26, 46, 0.04), 0 24px 48px -24px rgba(13, 148, 136, 0.45);
+}
+
+.ribbon {
+  position: absolute;
+  top: -12px;
+  left: 26px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f766e, #0e7490);
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 6px 16px -6px rgba(13, 148, 136, 0.7);
+}
+
+.top {
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tagline {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.name {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 18px 0 0;
+}
+
+.amount {
+  font-size: 2.25rem;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  color: var(--text);
+}
+
+.suffix {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.priceNote {
+  margin: 6px 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.summary {
+  margin: 16px 0 0;
+  font-size: 0.975rem;
+  line-height: 1.6;
+  color: var(--muted-strong);
+}
+
+.features {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  margin: 22px 0 28px;
+  padding: 0;
+  list-style: none;
+}
+
+.features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.94rem;
+  line-height: 1.5;
+  color: var(--muted-strong);
+}
+
+.check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.cta {
+  align-self: end;
+  width: 100%;
+}
+
+/* ------------------------------ Comparison ------------------------------- */
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.table th,
+.table td {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-soft);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.table tbody tr:last-child th,
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table tbody tr {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.table tbody tr:hover {
+  background: var(--bg-soft);
+}
+
+.table tbody th {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.table td {
+  color: var(--muted-strong);
+}
+
+.table [data-recommended] {
+  background: rgba(20, 184, 166, 0.045);
+}
+
+.yes {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.no {
+  color: var(--subtle);
+}
+
+/* ------------------------------ Responsive ------------------------------- */
+
+@media (max-width: 980px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    row-gap: 28px;
+    max-width: 560px;
+    margin-inline: auto;
+  }
+
+  .card {
+    grid-row: auto;
+    grid-template-rows: auto 1fr auto;
+  }
+}

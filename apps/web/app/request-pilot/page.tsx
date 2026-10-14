@@ -1,26 +1,21 @@
-import Link from 'next/link';
+import type { Metadata, Viewport } from 'next';
 import { redirect } from 'next/navigation';
 
 import { decodaLinks, guardIdentityMode } from '../decoda-identity';
+import { publicPageMetadata } from '../public-metadata';
 
-import RequestPilotClient from './request-pilot-client';
+import { RequestPilotView } from './request-pilot-view';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata = {
-  title: 'Request a Pilot evaluation · Decoda RWA Guard',
+export const metadata: Metadata = publicPageMetadata({
+  title: 'Request a Pilot evaluation',
   description:
     'Apply for a Decoda RWA Guard Pilot evaluation. Every Pilot evaluation is reviewed and approved by Decoda before it is activated.',
-};
+  path: '/request-pilot',
+});
 
-function SmallShield() {
-  return (
-    <svg width="22" height="24" viewBox="0 0 26 28" fill="none" aria-hidden="true">
-      <path d="M13 1.5L2 6.5V14c0 6.2 4.8 11.5 11 12.5 6.2-1 11-6.3 11-12.5V6.5L13 1.5z" fill="var(--accent-blue)" />
-      <path d="M9 14.5l2.5 2.5 5.5-5.5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
+export const viewport: Viewport = { themeColor: '#ffffff', colorScheme: 'light' };
 
 /**
  * Public Pilot application.
@@ -40,29 +35,5 @@ export default function RequestPilotPage() {
     // which owns review and invitations (the Guard API refuses this intake too).
     redirect(decodaLinks().requestAccess);
   }
-  return (
-    <>
-      <a href="#request-pilot-main" className="skipToContent">Skip to main content</a>
-      <header className="mktStandaloneNav" role="banner">
-        <div className="mktStandaloneNavInner">
-          <Link href="/" className="mktStandaloneNavLogo" prefetch={false}>
-            <SmallShield />
-            <span className="mktNavLogoText">
-              <span className="mktStandaloneNavBrand">DECODA</span>
-              <span className="mktStandaloneNavProduct">RWA GUARD</span>
-            </span>
-          </Link>
-          <nav className="mktStandaloneNavLinks" aria-label="Site navigation">
-            <Link href="/#platform" className="mktStandaloneNavLink" prefetch={false}>Product</Link>
-            <Link href="/pricing" className="mktStandaloneNavLink" prefetch={false}>Pricing</Link>
-            <Link href="/trust" className="mktStandaloneNavLink" prefetch={false}>Trust</Link>
-          </nav>
-          <div className="mktStandaloneNavRight">
-            <Link href="/sign-in" className="mktStandaloneNavSignIn" prefetch={false}>Sign in</Link>
-          </div>
-        </div>
-      </header>
-      <RequestPilotClient />
-    </>
-  );
+  return <RequestPilotView />;
 }

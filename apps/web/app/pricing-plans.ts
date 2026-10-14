@@ -1,25 +1,37 @@
 // ─────────────────────────────────────────────────────────────
 // Canonical public pricing source of truth.
 //
-// Both the marketing homepage pricing section (`app/page.tsx` →
+// The homepage pricing section (`app/page.tsx` →
 // `app/components/home/pricing-section.tsx`) and the standalone pricing page
-// (`app/pricing/page.tsx`) render from this file, so plan names, prices, CTA
-// labels and CTA routes cannot drift apart between the two surfaces.
+// (`app/pricing/page.tsx`) both render from this file, so plan names, prices,
+// CTA labels and CTA routes cannot drift apart between the two surfaces.
 //
-// Positioning for institutional RWA security buyers:
-//   Pilot      — complimentary evaluation against live assets, by approval only
-//   Scale      — production monitoring / incident response / evidence
-//   Enterprise — institutional, custom deployment
+// Aligned with the Decoda company website (www.decodasecurity.com/pricing,
+// decoda-website lib/site/pricing.ts), which is the authoritative commercial
+// statement:
+//   Pilot      — scoped evaluation; scope and commercial terms are agreed
+//                with each team (it is NOT advertised as free/complimentary)
+//   Scale      — from $999 / month for recurring security operations; final
+//                pricing depends on scope
+//   Enterprise — custom; tailored institutional requirements
 //
-// The Pilot CTA leads to /request-pilot, which records an application for review.
-// It is not a self-service trial: no plan, workspace, or monitoring exists until
-// Decoda approves the request and the applicant accepts the invitation.
+// Every plan is arranged with the Decoda team: there is no automatic checkout,
+// so the paid plans' CTAs go to Decoda's contact page, and the Pilot CTA goes
+// to /request-pilot — a reviewed application (with the shared Decoda identity,
+// the company website's Request pilot page). No plan, workspace or monitoring
+// exists until Decoda approves the request and the applicant accepts the
+// invitation.
 //
-// Truthfulness: every feature string below describes a capability the product
-// actually ships, or — for Enterprise — a service that is explicitly custom or
-// configurable. No customer counts, no social-proof badges, no unsupported SLA
-// or compliance-certification claims.
+// Truthfulness: limits match services/api/app/entitlements.py (asserted against
+// docs/PLAN_ENTITLEMENT_MATRIX.md by tests/pricing-positioning-source.spec.ts).
+// Deliberately NOT stated, because no code or approved configuration supports
+// it: that the Pilot is free, any SLA, any compliance certification, a
+// self-serve checkout, or a capability the entitlement engine declares but
+// does not enforce (priority routing, multi-network, custom evidence
+// templates, custom integrations). No customer counts or social proof.
 // ─────────────────────────────────────────────────────────────
+
+import { DECODA_SITE } from './public-site-links';
 
 export type PlanKey = 'pilot' | 'scale' | 'enterprise';
 
@@ -33,19 +45,20 @@ export interface PlanComparisonRow {
 export interface PricingPlan {
   key: PlanKey;
   tier: string;
+  /** Short qualifier above the plan name, e.g. "Scoped evaluation". */
+  tagline: string;
   /** Headline shown in the large price slot. */
   price: string;
-  /**
-   * True when `price` is a word label ("Pilot Evaluation") rather than a
-   * currency amount, so the card can size it to fit the price slot.
-   */
+  /** True when `price` is a word ("Tailored", "Custom") rather than an amount. */
   priceIsLabel: boolean;
-  /** Secondary line under the price. Empty string when the plan has none. */
+  /** Small text after the price, e.g. "/ month". Empty when the plan has none. */
   priceSub: string;
+  /** The line under the price. */
+  priceNote: string;
   description: string;
-  /** Visually emphasised production tier. */
+  /** The plan the page recommends starting with. */
   featured: boolean;
-  /** Optional card badge. Positioning label only, never social proof. */
+  /** Optional card ribbon. Positioning label only, never social proof. */
   badge?: string;
   ctaLabel: string;
   ctaHref: string;
@@ -59,149 +72,132 @@ export const PRICING_PLANS: PricingPlan[] = [
   {
     key: 'pilot',
     tier: 'Pilot',
-    price: 'Pilot Evaluation',
+    tagline: 'Scoped evaluation',
+    price: 'Tailored',
     priceIsLabel: true,
     priceSub: '',
+    priceNote: 'Tailored scope and commercial terms',
     description:
-      'Evaluate Decoda’s security workflows with a complimentary, approval-only workspace.',
-    featured: false,
-    ctaLabel: 'Request Pilot →',
+      'Validate Decoda RWA Guard against your own infrastructure with a defined scope and a guided evaluation.',
+    featured: true,
+    badge: 'Recommended starting point',
+    ctaLabel: 'Request a pilot',
     // Approval-only: this goes to the Pilot APPLICATION, not to sign-up. Sending
     // it to sign-up would be the old self-serve path, where anyone who found the
     // URL received an active evaluation without Decoda approving them.
     ctaHref: '/request-pilot',
     highlights: [
-      'Flexible evaluation period',
-      '1 workspace',
-      '5 monitored contracts',
-      'Threat & compliance detection',
-      'Incident investigation & playbooks',
-      'Response recommendations — Recommend only',
-      'Evidence & audit workflows — up to 10 packages',
-      'Standard support',
+      'Defined monitoring scope — 1 workspace, up to 5 monitored contracts',
+      'Guided evaluation with the Decoda team',
+      'Alerts, incident investigation and evidence workflows',
+      'Recommend-only response workflows — no production execution',
+      'Feedback sessions and technical validation',
     ],
     comparison: [
       { label: 'Workspaces', value: '1' },
-      { label: 'Monitored contracts', value: '5' },
+      { label: 'Monitored contracts', value: 'Up to 5' },
       { label: 'Networks', value: 'Supported EVM networks' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: '✓' },
-      { label: 'Alert routing', value: 'Severity-based routing & escalation' },
+      { label: 'Threat and policy detection', value: '✓' },
+      { label: 'Alerts and incident investigation', value: '✓' },
+      // Playbooks are ON for an ACTIVE evaluation and off once it ends.
+      { label: 'Incident playbooks', value: 'During evaluation' },
       { label: 'Evidence packages', value: 'Up to 10' },
-      { label: 'Export formats', value: 'Audit-ready evidence package' },
-      { label: 'Custom evidence templates', value: '—' },
-      { label: 'Incident playbooks', value: '✓ During evaluation' },
-      { label: 'AI investigation', value: '✓ During evaluation' },
-      { label: 'Response execution', value: 'Recommend only' },
       { label: 'Audit log retention', value: 'Configurable per workspace' },
-      { label: 'Integrations', value: 'Webhook & Slack' },
-      { label: 'Support', value: 'Standard' },
-      { label: 'SLA', value: '—' },
+      { label: 'Production response execution', value: 'Recommend only' },
+      { label: 'Notifications', value: 'Email, webhook and Slack' },
+      { label: 'Onboarding and support', value: 'Guided evaluation' },
     ],
   },
   {
     key: 'scale',
     tier: 'Scale',
+    tagline: 'Recurring security operations',
     price: 'From $999',
     priceIsLabel: false,
     priceSub: '/ month',
-    description:
-      'Production monitoring and incident response for ongoing RWA operations.',
-    featured: true,
-    badge: 'Production',
-    // Route preserved: nothing in the app reads the `plan` query parameter, so
-    // renaming it would only risk breaking external campaign attribution.
-    ctaHref: '/sign-up?plan=pro',
-    ctaLabel: 'Start Scale →',
+    priceNote: 'Final pricing depends on scope',
+    description: 'For teams moving beyond pilot evaluation to recurring security operations.',
+    featured: false,
+    ctaLabel: 'Contact sales',
+    ctaHref: DECODA_SITE.contact,
     highlights: [
-      '3 workspaces',
-      '25 monitored contracts',
-      'Continuous production monitoring',
-      'Threat & compliance detection',
-      'Priority alert routing',
-      'Incident playbooks',
-      'Unlimited evidence packages',
-      'Audit-ready exports',
-      'Priority email support',
+      'Defined limits — 3 workspaces, up to 25 monitored contracts',
+      'Continuous monitoring, alerting and incident workflows',
+      'Investigation workflows and incident playbooks',
+      'Unlimited evidence packages and audit-ready exports',
+      'Support scoped to your agreement',
     ],
     comparison: [
       { label: 'Workspaces', value: '3' },
-      { label: 'Monitored contracts', value: '25' },
+      { label: 'Monitored contracts', value: 'Up to 25' },
       { label: 'Networks', value: 'Supported EVM networks' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: '✓' },
-      // Stated as the mechanism both metered plans actually run today. The
-      // `priority_routing` entitlement exists in the engine but no delivery path
-      // reads it yet (entitlements.UNENFORCED_FEATURES), so this row must not
-      // claim a routing behaviour a Pilot evaluator would not also see.
-      { label: 'Alert routing', value: 'Severity-based routing & escalation' },
-      { label: 'Evidence packages', value: 'Unlimited' },
-      { label: 'Export formats', value: 'Audit-ready exports' },
-      { label: 'Custom evidence templates', value: '—' },
+      { label: 'Threat and policy detection', value: '✓' },
+      { label: 'Alerts and incident investigation', value: '✓' },
       { label: 'Incident playbooks', value: '✓' },
-      { label: 'AI investigation', value: '✓' },
-      { label: 'Response execution', value: 'Policy-gated, human-authorized' },
-      // Retention is a per-workspace policy (1–3650 days), not a plan tier. The
-      // old "30 days" / "1 year" rows described a plan-tiered retention the
-      // product does not implement.
+      { label: 'Evidence packages', value: 'Unlimited' },
+      // Retention is a per-workspace policy (1–3650 days), not a plan tier.
       { label: 'Audit log retention', value: 'Configurable per workspace' },
-      { label: 'Integrations', value: 'Webhook & Slack' },
-      { label: 'Support', value: 'Priority email' },
-      { label: 'SLA', value: '—' },
+      // automatic_execution is False on every plan (entitlements.py); a tenant
+      // without it cannot execute production changes, Scale included.
+      { label: 'Production response execution', value: 'Recommend only' },
+      { label: 'Notifications', value: 'Email, webhook and Slack' },
+      { label: 'Onboarding and support', value: 'Scoped to agreement' },
     ],
   },
   {
     key: 'enterprise',
     tier: 'Enterprise',
+    tagline: 'Institutional programs',
     price: 'Custom',
-    priceIsLabel: false,
-    priceSub: 'Contact us for pricing',
+    priceIsLabel: true,
+    priceSub: '',
+    priceNote: 'Custom pricing',
     description:
-      'Institutional controls, integrations, evidence, and support for production RWA infrastructure.',
+      'For institutions with tailored requirements, a broader monitoring scope and their own security and governance reviews.',
     featured: false,
-    ctaLabel: 'Contact Sales →',
-    ctaHref: 'mailto:sales@decodasecurity.com',
+    ctaLabel: 'Contact sales',
+    ctaHref: DECODA_SITE.contact,
     highlights: [
-      'Custom workspaces & asset coverage',
-      'Multi-network deployment',
-      'Custom detection & policy controls',
-      'Custom evidence templates',
-      'Compliance & regulatory exports',
-      'Configurable audit-log retention',
-      'Enterprise integrations',
-      'Dedicated onboarding & support',
-      'Custom SLA',
+      'Tailored institutional requirements and monitoring scope',
+      'Custom monitoring and integrations, where supported',
+      'Security and governance requirements reviewed with your team',
+      'Custom onboarding and support arrangements',
     ],
     comparison: [
-      { label: 'Workspaces', value: 'Custom' },
-      { label: 'Monitored contracts', value: 'Custom asset coverage' },
-      { label: 'Networks', value: 'Multi-network deployment' },
-      { label: 'Live EVM telemetry', value: '✓' },
-      { label: 'Threat & compliance detection', value: 'Custom detection & policy controls' },
-      { label: 'Alert routing', value: 'Custom routing rules' },
-      { label: 'Evidence packages', value: 'Unlimited' },
-      { label: 'Export formats', value: 'Compliance & regulatory exports' },
-      { label: 'Custom evidence templates', value: '✓' },
+      { label: 'Workspaces', value: 'Tailored' },
+      { label: 'Monitored contracts', value: 'Tailored' },
+      { label: 'Networks', value: 'Scoped per agreement' },
+      { label: 'Threat and policy detection', value: '✓' },
+      { label: 'Alerts and incident investigation', value: '✓' },
       { label: 'Incident playbooks', value: '✓' },
-      { label: 'AI investigation', value: '✓' },
-      { label: 'Response execution', value: 'Policy-gated, human-authorized' },
-      { label: 'Audit log retention', value: 'Configurable' },
-      { label: 'Integrations', value: 'Enterprise integrations' },
-      { label: 'Support', value: 'Dedicated onboarding & support' },
-      { label: 'SLA', value: 'Custom SLA' },
+      { label: 'Evidence packages', value: 'Unlimited' },
+      { label: 'Audit log retention', value: 'Configurable per workspace' },
+      // Enabled for an Enterprise tenant only through an explicit, audited
+      // entitlement_overrides entry — never merely by being Enterprise.
+      { label: 'Production response execution', value: 'Only by explicit agreement' },
+      { label: 'Notifications', value: 'Advanced integrations, where supported' },
+      { label: 'Onboarding and support', value: 'Custom arrangements' },
     ],
   },
 ];
 
 /**
- * Footnote rendered under the homepage pricing grid.
+ * How response authority works on every plan — stated under every plan
+ * comparison, exactly as the company website states it.
+ */
+export const EXECUTION_NOTE =
+  'On every plan, Decoda recommends and your people authorize. Production execution is off by default and is '
+  + 'enabled only for an Enterprise tenant through an explicit, audited agreement. Decoda never holds customer '
+  + 'private keys.';
+
+/**
+ * Footnote rendered under the pricing cards.
  *
  * Deliberately says nothing about self-serve billing moving an organization onto
- * Scale. Checkout exists (Paddle), but the provider webhooks write the legacy
- * workspace `billing_subscriptions` row — they do NOT change `organizations.plan`,
- * which is what actually governs limits and entitlements. Claiming otherwise would
- * describe automatic billing behaviour the application does not implement.
+ * Scale: no provider webhook changes `organizations.plan`, which is what governs
+ * limits and entitlements. Every plan is arranged with the Decoda team.
  */
 export const PRICING_NOTE =
-  'Pilot is a complimentary, approval-only evaluation with usage limits. Scale is for ongoing '
-  + 'production monitoring. Enterprise pricing is custom — contact sales@decodasecurity.com.';
+  'Pilot: a scoped evaluation, by request, with scope and commercial terms agreed with your team. '
+  + 'Scale: from $999 per month; final pricing depends on scope. Enterprise: custom pricing. '
+  + 'Every plan is arranged with the Decoda team — there is no automatic checkout.';

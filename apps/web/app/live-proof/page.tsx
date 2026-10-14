@@ -1,9 +1,24 @@
-import Link from 'next/link';
+import type { Metadata, Viewport } from 'next';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+
 import { getBuildInfo } from '../build-info';
+import { PublicShell } from '../components/home/public-shell';
+import { PageHero, TextLink } from '../components/home/site-ui';
+import site from '../components/home/site.module.css';
+import pages from '../components/home/pages.module.css';
+import { publicPageMetadata } from '../public-metadata';
 
 export const dynamic = 'force-dynamic';
+
+export const metadata: Metadata = publicPageMetadata({
+  title: 'Live deployment status',
+  description:
+    'The Decoda RWA Guard deployment serving this request, read live from the running system. Proof artifacts appear only when they are published — nothing on the page is simulated or seeded.',
+  path: '/live-proof',
+});
+
+export const viewport: Viewport = { themeColor: '#ffffff', colorScheme: 'light' };
 
 // ─── Network naming ───────────────────────────────────────────
 // Decoda's live monitoring environment runs on Base Mainnet (chain 8453)
@@ -202,97 +217,111 @@ export default function LiveProofPage() {
   const publishedFail = publishedCards.filter((c) => c.status === 'fail').length;
   const allPublishedPass = hasPublished && publishedFail === 0;
 
-  return (
-    <main className="proofPage">
-      <nav className="trustNav" aria-label="Breadcrumb">
-        <Link href="/" className="trustNavBack" prefetch={false}>← Back to Decoda RWA Guard</Link>
-      </nav>
+  const summaryTone = hasPublished ? (allPublishedPass ? 'pass' : 'fail') : 'neutral';
 
-      {/* ── Hero ─────────────────────────────────────────────── */}
-      <header className="proofHero">
-        <p className="mktSectionLabel">LIVE PROOF</p>
-        <h1 className="proofHeroTitle">
-          Live deployment status — read from the running system, never fabricated.
-        </h1>
-        <p className="proofHeroSubtitle">
-          The deployment card below is read live from the running Decoda RWA Guard deployment serving this request.
-          Decoda also runs internal CI and staging live-evidence proof pipelines; when a proof run is attached to a
-          public deployment, its results appear here. Nothing on this page is simulated, seeded, or hard-coded — when a
-          proof artifact is not published to this deployment, it is not shown.
-        </p>
-        {hasPublished ? (
-          <div className={`proofSummaryBadge${allPublishedPass ? ' proofSummaryBadge--pass' : ' proofSummaryBadge--fail'}`}>
-            {allPublishedPass
-              ? '✓ All published proof checks passing'
-              : `✗ ${publishedFail} published proof check${publishedFail > 1 ? 's' : ''} need attention`}
-          </div>
-        ) : (
-          <div className="proofSummaryBadge proofSummaryBadge--neutral">
-            Live deployment status shown below · detailed public verification artifacts are not currently published
-          </div>
-        )}
-      </header>
+  return (
+    <PublicShell>
+      <PageHero
+        eyebrow="Live proof"
+        title="Live deployment status — read from the running system, never fabricated."
+        lead={
+          <>
+            The deployment card below is read live from the running Decoda RWA Guard deployment serving this request.
+            Decoda also runs internal CI and staging live-evidence proof pipelines; when a proof run is attached to a
+            public deployment, its results appear here. Nothing on this page is simulated, seeded, or hard-coded — when
+            a proof artifact is not published to this deployment, it is not shown.
+          </>
+        }
+        meta={
+          hasPublished ? (
+            <p
+              className={`${pages.proofSummaryBadge} ${pages[allPublishedPass ? 'proofSummaryBadge--pass' : 'proofSummaryBadge--fail']}`}
+              data-tone={summaryTone}
+            >
+              {allPublishedPass
+                ? '✓ All published proof checks passing'
+                : `✗ ${publishedFail} published proof check${publishedFail > 1 ? 's' : ''} need attention`}
+            </p>
+          ) : (
+            <p className={`${pages.proofSummaryBadge} ${pages['proofSummaryBadge--neutral']}`} data-tone={summaryTone}>
+              Live deployment status shown below · detailed public verification artifacts are not currently published
+            </p>
+          )
+        }
+      />
 
       {/* ── Proof cards ──────────────────────────────────────── */}
-      <div className="proofGrid">
-        {[deploymentCard, ...publishedCards].map((card) => (
-          <article key={card.title} className={`proofCard proofCard--${card.status}`}>
-            <div className="proofCardHeader">
-              <h2 className="proofCardTitle">{card.title}</h2>
-              <span className={`proofCardStatus proofCardStatus--${card.status}`}>{card.statusLabel}</span>
-            </div>
-            <table className="proofCardTable">
-              <tbody>
-                {card.lines.map((line) => (
-                  <tr key={line.label + line.value}>
-                    <td className="proofCardLabel">{line.label}</td>
-                    <td className="proofCardValue">{line.value}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {card.note && <p className="proofCardNote">{card.note}</p>}
-          </article>
-        ))}
-      </div>
-
-      {/* ── Public verification evidence status ───────────────── */}
-      {!hasPublished && (
-        <section className="proofHonestyNote">
-          <h2 className="proofHonestyTitle">Public verification evidence</h2>
-          <p className="proofHeroSubtitle" style={{ margin: '0 0 0.75rem' }}>
-            Decoda&rsquo;s detailed CI and staging live-evidence proof artifacts (readiness gates, live-provider
-            telemetry, the alert → incident → evidence chain, and release gates) are produced by internal pipelines and
-            are not currently published to this public deployment. Rather than show placeholder or fabricated results,
-            this page shows only what can be verified live from the running system.
-          </p>
-          <ul className="proofHonestyList">
-            <li>The live deployment card above reflects the real environment, commit, and configuration serving this page.</li>
-            <li>Detailed proof artifacts are available to Design Partners and reviewers on request during evaluation.</li>
-            <li>When a proof run is attached to a public deployment, its genuine results render above automatically.</li>
-          </ul>
-        </section>
-      )}
-
-      {/* ── Artifact honesty note ─────────────────────────────── */}
-      <section className="proofHonestyNote">
-        <h2 className="proofHonestyTitle">How this page works</h2>
-        <ul className="proofHonestyList">
-          <li>The Build &amp; Deployment card is read at server-render time from the live deployment environment serving this request.</li>
-          <li>Proof cards are read from JSON artifacts produced by our CI and staging live-evidence pipelines, which run the full evidence chain against a live Base Mainnet RPC endpoint.</li>
-          <li>When a proof artifact is not attached to this deployment, the card is omitted rather than shown as passing, failing, or pending.</li>
-          <li>No chart or status is fabricated. Any UUIDs shown are from actual CI runs.</li>
-          <li>Simulator or seeded data is never used on this page.</li>
-        </ul>
+      <section className={`${pages.band} ${pages.bandFirst}`} aria-label="Deployment and proof status">
+        <div className={site.container}>
+          <div className={pages.proofGrid}>
+            {[deploymentCard, ...publishedCards].map((card) => (
+              <article key={card.title} className={pages.proofCard} data-tone={card.status}>
+                <div className={pages.proofCardHead}>
+                  <h2>{card.title}</h2>
+                  <span className={pages.proofStatus} data-tone={card.status}>
+                    {card.statusLabel}
+                  </span>
+                </div>
+                <table className={pages.proofTable}>
+                  <tbody>
+                    {card.lines.map((line) => (
+                      <tr key={line.label + line.value}>
+                        <th scope="row">{line.label}</th>
+                        <td>{line.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {card.note && <p className={pages.proofNote}>{card.note}</p>}
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
-      {/* ── Links ────────────────────────────────────────────── */}
-      <div className="trustFooterLinks">
-        <Link href="/" prefetch={false} className="trustLink">← Home</Link>
-        <Link href="/evidence" prefetch={false} className="trustLink">Evidence viewer</Link>
-        <Link href="/trust" prefetch={false} className="trustLink">Security &amp; Trust</Link>
-        <Link href="/request-pilot" prefetch={false} className="trustLink">Request Pilot</Link>
-      </div>
-    </main>
+      <section className={`${pages.band} ${pages.bandSoft}`} aria-label="About this page">
+        <div className={site.container}>
+          <div className={pages.narrow}>
+            {/* ── Public verification evidence status ───────────────── */}
+            {!hasPublished && (
+              <div className={pages.notePanel}>
+                <h2>Public verification evidence</h2>
+                <p>
+                  Decoda&rsquo;s detailed CI and staging live-evidence proof artifacts (readiness gates, live-provider
+                  telemetry, the alert → incident → evidence chain, and release gates) are produced by internal pipelines
+                  and are not currently published to this public deployment. Rather than show placeholder or fabricated
+                  results, this page shows only what can be verified live from the running system.
+                </p>
+                <ul>
+                  <li>The live deployment card above reflects the real environment, commit, and configuration serving this page.</li>
+                  <li>Detailed proof artifacts are available to Design Partners and reviewers on request during evaluation.</li>
+                  <li>When a proof run is attached to a public deployment, its genuine results render above automatically.</li>
+                </ul>
+              </div>
+            )}
+
+            {/* ── Artifact honesty note ─────────────────────────────── */}
+            <div className={pages.notePanel}>
+              <h2>How this page works</h2>
+              <ul>
+                <li>The Build &amp; Deployment card is read at server-render time from the live deployment environment serving this request.</li>
+                <li>Proof cards are read from JSON artifacts produced by our CI and staging live-evidence pipelines, which run the full evidence chain against a live Base Mainnet RPC endpoint.</li>
+                <li>When a proof artifact is not attached to this deployment, the card is omitted rather than shown as passing, failing, or pending.</li>
+                <li>No chart or status is fabricated. Any UUIDs shown are from actual CI runs.</li>
+                <li>Simulator or seeded data is never used on this page.</li>
+              </ul>
+            </div>
+
+            {/* ── Links ────────────────────────────────────────────── */}
+            <nav className={pages.related} aria-label="Related pages">
+              <TextLink href="/">Home</TextLink>
+              <TextLink href="/evidence">Evidence viewer</TextLink>
+              <TextLink href="/trust">Security &amp; Trust</TextLink>
+              <TextLink href="/request-pilot">Request Pilot</TextLink>
+            </nav>
+          </div>
+        </div>
+      </section>
+    </PublicShell>
   );
 }

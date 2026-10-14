@@ -7,8 +7,8 @@ import {
   accountDisplayName,
   accountInitials,
   resolveAuthNavState,
-  resolveStartMonitoringTarget,
 } from '../app/components/home/auth-nav-state';
+import { ROUTES } from '../app/components/home/home-data';
 
 // Authentication-aware navigation on the PUBLIC landing page.
 //
@@ -23,6 +23,19 @@ function read(...segments: string[]): string {
   return fs.readFileSync(path.join(...segments), 'utf-8');
 }
 
+/** Source with comments removed: what can actually render. */
+function code(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+}
+
+/** The branch of auth-nav.tsx that renders once a session is confirmed. */
+function authenticatedBranch(authNav: string): string {
+  return authNav.slice(
+    authNav.indexOf("if (state === 'authenticated')"),
+    authNav.indexOf('<div className={styles.menuActions} data-auth-nav-state="anonymous">'),
+  );
+}
+
 // ── 1. Unauthenticated visitor on / ───────────────────────────
 test.describe('unauthenticated landing page', () => {
   test('a visitor with no session cookie resolves to the signed-out controls immediately', () => {
@@ -34,7 +47,7 @@ test.describe('unauthenticated landing page', () => {
       .toBe('anonymous');
   });
 
-  test('the signed-out navbar renders Sign in and Start monitoring, and no dashboard control', () => {
+  test('the signed-out navbar renders Sign in and Request Pilot, and no dashboard control', () => {
     const authNav = read(HOME_DIR, 'auth-nav.tsx');
     const anonymousBranches = authNav.split("data-auth-nav-state=\"anonymous\"");
     // Desktop + mobile signed-out branches both exist.
@@ -42,21 +55,23 @@ test.describe('unauthenticated landing page', () => {
     for (const branch of anonymousBranches.slice(1)) {
       expect(branch).toContain('ROUTES.signIn');
       expect(branch).toContain('Sign in');
-      expect(branch).toContain('ROUTES.startMonitoring');
-      expect(branch).toContain('Start monitoring');
+      expect(branch).toContain('ROUTES.requestPilot');
+      expect(branch).toContain('Request Pilot');
+      // A signed-out visitor is never offered the dashboard.
+      expect(branch).not.toContain('ROUTES.dashboard');
     }
-    // The Dashboard control belongs only to the authenticated branch, so a signed-out
-    // visitor is never offered it.
-    const authenticatedSection = authNav.slice(authNav.indexOf("state === 'authenticated'"), authNav.indexOf("if (variant === 'mobile') {\n    return (\n      <div className={styles.mobileRow}"));
-    expect(authenticatedSection).toContain('Dashboard');
+    expect(authenticatedBranch(authNav)).toContain('Dashboard');
   });
 
-  test('the signed-out Start monitoring CTA keeps the existing sign-up destination', () => {
-    expect(resolveStartMonitoringTarget('anonymous')).toBe('sign-up');
-    const cta = read(HOME_DIR, 'start-monitoring-cta.tsx');
-    expect(cta).toContain('ROUTES.startMonitoring');
-    const routes = read(HOME_DIR, 'home-data.ts');
-    expect(routes).toContain("startMonitoring: '/sign-up'");
+  test('the signed-out Request Pilot CTA leads to the reviewed application, never to registration', () => {
+    // Decoda accounts are created by invitation: the public site offers no
+    // sign-up, only the Pilot request (which shared-identity deployments hand
+    // to the company website).
+    expect(ROUTES.requestPilot).toBe('/request-pilot');
+    expect(ROUTES.signIn).toBe('/sign-in');
+    for (const file of fs.readdirSync(HOME_DIR).filter((name) => /\.(tsx|ts)$/.test(name))) {
+      expect(code(read(HOME_DIR, file)), `${file} links to registration`).not.toContain('/sign-up');
+    }
   });
 });
 
@@ -73,7 +88,7 @@ test.describe('authenticated landing page', () => {
 
   test('the authenticated navbar replaces Sign in with Dashboard plus an account menu', () => {
     const authNav = read(HOME_DIR, 'auth-nav.tsx');
-    const authenticated = authNav.slice(authNav.indexOf("if (state === 'authenticated')"), authNav.indexOf("if (variant === 'mobile') {\n    return (\n      <div className={styles.mobileRow}"));
+    const authenticated = authenticatedBranch(authNav);
     expect(authenticated).toContain('ROUTES.dashboard');
     expect(authenticated).toContain('Dashboard');
     expect(authenticated).toContain('Sign out');
@@ -81,19 +96,20 @@ test.describe('authenticated landing page', () => {
     // "Sign in" must not appear anywhere in the authenticated branch.
     expect(authenticated).not.toContain('Sign in');
     expect(authenticated).not.toContain('ROUTES.signIn');
-    // Start monitoring is replaced by Dashboard in the authenticated header.
-    expect(authenticated).not.toContain('ROUTES.startMonitoring');
+    // Request Pilot is replaced by Dashboard in the authenticated header.
+    expect(authenticated).not.toContain('ROUTES.requestPilot');
   });
 
-  test('the authenticated Start monitoring CTA routes to /dashboard, not back through sign-up', () => {
-    expect(resolveStartMonitoringTarget('authenticated')).toBe('dashboard');
-    const cta = read(HOME_DIR, 'start-monitoring-cta.tsx');
-    expect(cta).toContain("resolveStartMonitoringTarget(state) === 'dashboard' ? ROUTES.dashboard : ROUTES.startMonitoring");
-    const routes = read(HOME_DIR, 'home-data.ts');
-    expect(routes).toContain("dashboard: '/dashboard'");
-    // Both primary CTAs on the page go through the same auth-aware component.
-    expect(read(HOME_DIR, 'hero-section.tsx')).toContain('<StartMonitoringCta sessionHint={sessionHint}');
-    expect(read(HOME_DIR, 'final-cta.tsx')).toContain('<StartMonitoringCta sessionHint={sessionHint}');
+  test('a signed-in visitor reaches the dashboard from the header; the page CTAs stay the same for everyone', () => {
+    expect(ROUTES.dashboard).toBe('/dashboard');
+    // The hero and closing calls to action are plain server-rendered links —
+    // they never read the session, so they cannot flash or guess.
+    for (const file of ['hero-section.tsx', 'final-cta.tsx']) {
+      const source = read(HOME_DIR, file);
+      expect(source, file).not.toContain('useLandingAuth');
+      expect(source, file).not.toContain("'use client'");
+    }
+    expect(fs.existsSync(path.join(HOME_DIR, 'start-monitoring-cta.tsx'))).toBe(false);
   });
 
   test('the public navbar does not render the account email outside the opened menu', () => {
@@ -119,23 +135,27 @@ test.describe('session loading state', () => {
     expect(checking).toContain('styles.authPending');
     expect(checking).toContain('aria-busy="true"');
     expect(checking).not.toContain('Sign in');
-    expect(checking).not.toContain('Start monitoring');
+    expect(checking).not.toContain('Request Pilot');
     expect(checking).not.toContain('Dashboard');
     // The placeholder is static, so it is safe under prefers-reduced-motion.
-    const css = read(HOME_DIR, 'home.module.css');
+    const css = read(HOME_DIR, 'site.module.css');
     expect(css).toContain('.authPending {');
     expect(css.slice(css.indexOf('.authPending {'), css.indexOf('.authPendingWide'))).not.toContain('animation');
   });
 
-  test('the landing page passes a server-rendered session hint so the first paint is not a guess', () => {
+  test('every public page passes a server-rendered session hint so the first paint is not a guess', () => {
+    // The shared public shell reads the cookie once for every public page.
+    const shell = read(HOME_DIR, 'public-shell.tsx');
+    expect(shell).toContain("import { cookies } from 'next/headers'");
+    expect(shell).toContain('readLandingSessionHint');
+    expect(shell).toContain('SESSION_COOKIE_NAME');
+    expect(shell).toContain('<MarketingHeader sessionHint={sessionHint} active={active} />');
     const page = read(APP_DIR, 'page.tsx');
-    expect(page).toContain("import { cookies } from 'next/headers'");
-    expect(page).toContain('readLandingSessionHint');
-    expect(page).toContain('SESSION_COOKIE_NAME');
-    expect(page).toContain('<MarketingHeader sessionHint={sessionHint} />');
+    expect(page).toContain('<PublicShell>');
     expect(page).toContain("export const dynamic = 'force-dynamic'");
     // The public page must not redirect an authenticated visitor away from it.
     expect(page).not.toContain('redirect(');
+    expect(shell).not.toContain('redirect(');
   });
 
   test('readLandingSessionHint reports presence only, and treats blank cookies as absent', () => {
@@ -209,17 +229,21 @@ test.describe('sign-in page for an already authenticated visitor', () => {
 // ── 6. Mobile navbar reflects the same session ────────────────
 test.describe('responsive navigation', () => {
   test('the mobile menu renders the same auth-aware controls as the desktop navbar', () => {
-    const header = read(HOME_DIR, 'marketing-header.tsx');
+    const header = code(read(HOME_DIR, 'marketing-header.tsx'));
     expect(header).toContain('<AuthNav sessionHint={sessionHint} variant="desktop" />');
     expect(header).toContain('<AuthNav sessionHint={sessionHint} variant="mobile" onNavigate={close} />');
-    // The old hard-coded signed-out mobile row is gone.
-    expect(header).not.toContain('Start monitoring');
+    // No hard-coded signed-out controls: both menus come from AuthNav.
+    expect(header).not.toContain('Request Pilot');
     expect(header).not.toContain('Sign in');
   });
 
   test('the mobile authenticated menu offers Dashboard and Sign out', () => {
     const authNav = read(HOME_DIR, 'auth-nav.tsx');
-    const mobileAuthenticated = authNav.slice(authNav.indexOf('styles.mobileAuth'), authNav.indexOf("return (\n      <div className={styles.navRight} data-auth-nav-state=\"authenticated\">"));
+    const mobileAuthenticated = authNav.slice(
+      authNav.indexOf('<div className={styles.menuActions} data-auth-nav-state="authenticated">'),
+      authNav.indexOf('<div className={styles.actions} data-auth-nav-state="authenticated">'),
+    );
+    expect(mobileAuthenticated.length).toBeGreaterThan(0);
     expect(mobileAuthenticated).toContain('ROUTES.dashboard');
     expect(mobileAuthenticated).toContain('Dashboard');
     expect(mobileAuthenticated).toContain('Sign out');
@@ -232,8 +256,8 @@ test.describe('landing page auth architecture', () => {
     const hook = read(HOME_DIR, 'use-landing-auth.ts');
     expect(hook).toContain("import { usePilotAuth, type PilotUser } from 'app/pilot-auth-context';");
 
-    // Navbar and CTA both read the session through the single shared hook.
-    for (const file of ['auth-nav.tsx', 'start-monitoring-cta.tsx']) {
+    // The navbar reads the session through the single shared hook.
+    for (const file of ['auth-nav.tsx']) {
       const source = read(HOME_DIR, file);
       expect(source).toContain("from './use-landing-auth'");
       expect(source).not.toContain('/api/auth/me');
@@ -242,7 +266,7 @@ test.describe('landing page auth architecture', () => {
   });
 
   test('no landing-page component invents its own logged-in flag or reads tokens', () => {
-    for (const file of ['auth-nav.tsx', 'start-monitoring-cta.tsx', 'use-landing-auth.ts', 'auth-nav-state.ts']) {
+    for (const file of ['auth-nav.tsx', 'use-landing-auth.ts', 'auth-nav-state.ts']) {
       const source = read(HOME_DIR, file);
       expect(source).not.toContain('localStorage');
       expect(source).not.toContain('sessionStorage');

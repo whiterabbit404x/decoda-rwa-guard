@@ -1,16 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   DUPLICATE_BODY,
-  REVIEW_NOTICE,
   SECRET_WARNING,
   SUBMITTED_BODY,
   SUBMITTED_HEADLINE,
   USE_CASE_SUGGESTIONS,
 } from 'app/pilot-request-copy';
+import { HomeIcon } from '../components/home/home-icons';
+import site from '../components/home/site.module.css';
+import pages from '../components/home/pages.module.css';
 
 type SubmitResult = { duplicate: boolean };
 
@@ -39,6 +41,15 @@ export default function RequestPilotClient() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SubmitResult | null>(null);
+  const confirmationRef = useRef<HTMLHeadingElement>(null);
+
+  // The confirmation replaces the form; move focus to it so keyboard and
+  // screen-reader users land on the outcome instead of on a removed button.
+  useEffect(() => {
+    if (result) {
+      confirmationRef.current?.focus();
+    }
+  }, [result]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -75,55 +86,62 @@ export default function RequestPilotClient() {
 
   if (result) {
     return (
-      <main id="request-pilot-main" className="pilotRequestPage">
-        <section className="pilotRequestCard" aria-live="polite">
-          <p className="mktSectionLabel">PILOT EVALUATION</p>
-          <h1 className="pilotRequestTitle">
-            {result.duplicate ? 'Request already under review' : SUBMITTED_HEADLINE}
-          </h1>
-          <p className="pilotRequestLede">{result.duplicate ? DUPLICATE_BODY : SUBMITTED_BODY}</p>
-          <p className="pilotRequestFootnote">
-            Already approved and have an invitation? Open the link in your invitation email to
-            activate your evaluation.
-          </p>
-          <Link href="/" className="pilotRequestSecondary" prefetch={false}>Back to decodasecurity.com</Link>
-        </section>
-      </main>
+      <section className={`${pages.formCard} ${pages.confirmation}`} aria-live="polite">
+        <span className={pages.confirmationIcon} aria-hidden="true">
+          <HomeIcon name="checkCircle" size={22} />
+        </span>
+        <h2 ref={confirmationRef} tabIndex={-1}>
+          {result.duplicate ? 'Request already under review' : SUBMITTED_HEADLINE}
+        </h2>
+        <p className={pages.formLede}>{result.duplicate ? DUPLICATE_BODY : SUBMITTED_BODY}</p>
+        <p className={pages.footnote}>
+          Already approved and have an invitation? Open the link in your invitation email to activate your
+          evaluation.
+        </p>
+        <Link href="/" className={`${site.btnSecondary} ${pages.confirmationBack}`} prefetch={false}>
+          Back to Decoda RWA Guard
+        </Link>
+      </section>
     );
   }
 
   return (
-    <main id="request-pilot-main" className="pilotRequestPage">
-      <section className="pilotRequestCard">
-        <p className="mktSectionLabel">PILOT EVALUATION</p>
-        <h1 className="pilotRequestTitle">Request a Pilot evaluation</h1>
-        <p className="pilotRequestLede">{REVIEW_NOTICE}</p>
+    <section className={pages.formCard} aria-labelledby="request-pilot-form-title">
+      <h2 id="request-pilot-form-title">Tell us about your team</h2>
+      <p className={pages.formLede}>Every field is required unless it is marked optional.</p>
 
-        {error ? (
-          <div className="pilotRequestAlert" role="alert">{error}</div>
-        ) : null}
+      {error ? (
+        <div className={pages.alert} role="alert">
+          {error}
+        </div>
+      ) : null}
 
-        <form onSubmit={handleSubmit} noValidate>
-          <div className="suFormGroup">
-            <label className="suLabel" htmlFor="rp-email">WORK EMAIL</label>
-            <input
-              id="rp-email"
-              className="suInput"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="email"
-              placeholder="you@company.com"
-              maxLength={254}
-              required
-            />
-          </div>
+      <form onSubmit={handleSubmit} noValidate>
+        <div className={pages.field}>
+          <label className={pages.label} htmlFor="rp-email">
+            Work email
+          </label>
+          <input
+            id="rp-email"
+            className={pages.input}
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="email"
+            placeholder="you@company.com"
+            maxLength={254}
+            required
+          />
+        </div>
 
-          <div className="suFormGroup">
-            <label className="suLabel" htmlFor="rp-company">COMPANY NAME</label>
+        <div className={pages.fieldRow}>
+          <div className={pages.field}>
+            <label className={pages.label} htmlFor="rp-company">
+              Company name
+            </label>
             <input
               id="rp-company"
-              className="suInput"
+              className={pages.input}
               type="text"
               value={companyName}
               onChange={(event) => setCompanyName(event.target.value)}
@@ -134,77 +152,88 @@ export default function RequestPilotClient() {
             />
           </div>
 
-          <div className="suFormGroup">
-            <label className="suLabel" htmlFor="rp-role">ROLE / TITLE</label>
+          <div className={pages.field}>
+            <label className={pages.label} htmlFor="rp-role">
+              Role / title
+            </label>
             <input
               id="rp-role"
-              className="suInput"
+              className={pages.input}
               type="text"
               value={role}
               onChange={(event) => setRole(event.target.value)}
               autoComplete="organization-title"
-              placeholder="Head of Security, CTO, Operations Lead…"
+              placeholder="Head of Security, CTO…"
               maxLength={120}
               required
             />
           </div>
+        </div>
 
-          <div className="suFormGroup">
-            <label className="suLabel" htmlFor="rp-website">
-              COMPANY WEBSITE <span className="pilotRequestOptional">(optional)</span>
-            </label>
-            <input
-              id="rp-website"
-              className="suInput"
-              type="text"
-              value={companyWebsite}
-              onChange={(event) => setCompanyWebsite(event.target.value)}
-              autoComplete="url"
-              placeholder="company.com"
-              maxLength={300}
-            />
+        <div className={pages.field}>
+          <label className={pages.label} htmlFor="rp-website">
+            Company website <span className={pages.optional}>(optional)</span>
+          </label>
+          <input
+            id="rp-website"
+            className={pages.input}
+            type="text"
+            value={companyWebsite}
+            onChange={(event) => setCompanyWebsite(event.target.value)}
+            autoComplete="url"
+            placeholder="company.com"
+            maxLength={300}
+          />
+        </div>
+
+        <div className={pages.field}>
+          <label className={pages.label} htmlFor="rp-use-case">
+            Intended use case
+          </label>
+          <textarea
+            id="rp-use-case"
+            className={`${pages.input} ${pages.textarea}`}
+            value={useCase}
+            onChange={(event) => setUseCase(event.target.value)}
+            placeholder="What do you want to monitor, and what would a successful evaluation prove?"
+            rows={4}
+            maxLength={2000}
+            aria-describedby="pilot-secret-warning"
+            required
+          />
+          <div className={pages.suggestions}>
+            <span className={pages.suggestionsLabel}>Common evaluations:</span>
+            {USE_CASE_SUGGESTIONS.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                className={pages.suggestion}
+                onClick={() => setUseCase((current) => (current.trim() ? current : suggestion))}
+              >
+                {suggestion}
+              </button>
+            ))}
           </div>
+          {/* Mirrors the backend rule. A submission that looks like it carries a
+              key is REFUSED rather than stored and redacted, so there is nothing
+              to leak from the review console later. */}
+          <p id="pilot-secret-warning" className={pages.warning}>
+            {SECRET_WARNING}
+          </p>
+        </div>
 
-          <div className="suFormGroup">
-            <label className="suLabel" htmlFor="rp-use-case">INTENDED USE CASE</label>
-            <textarea
-              id="rp-use-case"
-              className="suInput pilotRequestTextarea"
-              value={useCase}
-              onChange={(event) => setUseCase(event.target.value)}
-              placeholder="What do you want to monitor, and what would a successful evaluation prove?"
-              rows={4}
-              maxLength={2000}
-              required
-            />
-            <div className="pilotRequestSuggestions">
-              <span className="pilotRequestSuggestionsLabel">Common evaluations:</span>
-              {USE_CASE_SUGGESTIONS.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  className="pilotRequestSuggestion"
-                  onClick={() => setUseCase((current) => (current.trim() ? current : suggestion))}
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-            {/* Mirrors the backend rule. A submission that looks like it carries a
-                key is REFUSED rather than stored and redacted, so there is nothing
-                to leak from the review console later. */}
-            <p className="pilotRequestWarning">{SECRET_WARNING}</p>
-          </div>
+        <button type="submit" className={`${site.btnPrimary} ${site.btnLg} ${pages.submit}`} disabled={submitting}>
+          {submitting ? 'Submitting…' : 'Submit Pilot request'}
+        </button>
+      </form>
 
-          <button type="submit" className="suSubmitBtn" disabled={submitting}>
-            {submitting ? 'Submitting…' : 'Submit Pilot request'}
-          </button>
-        </form>
-
-        <p className="pilotRequestFootnote">
-          Already have a Decoda account? <Link href="/sign-in" prefetch={false}>Sign in</Link>.
-        </p>
-      </section>
-    </main>
+      <p className={pages.footnote}>
+        Already have a Decoda account?{' '}
+        <Link href="/sign-in" prefetch={false}>
+          Sign in
+        </Link>
+        .
+      </p>
+    </section>
   );
 }

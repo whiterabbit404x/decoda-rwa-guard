@@ -57,7 +57,7 @@ function baseRequest(overrides: Partial<PilotRequest> = {}): PilotRequest {
 
 test('the Pilot CTA leads to the application, not to sign-up', () => {
   const pilot = PRICING_PLANS.find((plan) => plan.key === 'pilot');
-  expect(pilot?.ctaLabel).toBe('Request Pilot →');
+  expect(pilot?.ctaLabel).toBe('Request a pilot');
   expect(pilot?.ctaHref).toBe('/request-pilot');
 });
 
