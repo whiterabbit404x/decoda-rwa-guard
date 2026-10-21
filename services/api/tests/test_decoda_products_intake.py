@@ -234,11 +234,30 @@ def test_assets_alert_signal_has_the_shape_assets_validates():
     [('critical', 'open', 'critical'), ('high', 'investigating', 'elevated'), ('critical', 'resolved', 'normal'), ('medium', 'open', None)],
 )
 def test_vault_risk_follows_the_alert(severity, status, risk):
-    signals = dp.vault_risk_signals(_alert(severity=severity, status=status), PLATFORM)
+    signals = dp.vault_risk_signals([_alert(severity=severity, status=status)], PLATFORM)
     assert [s['risk_state'] for s in signals] == ([risk] if risk else [])
     for signal in signals:
         assert (signal['platform_organization_id'], signal['network'], signal['subject_address']) == (PLATFORM, 'base-sepolia', CONTRACT)
         assert len(signal['external_id']) <= 128
+
+
+@pytest.mark.parametrize(
+    ('alerts', 'risk'),
+    [
+        # most recent first, as refresh_signals reads them
+        ([('critical', 'resolved'), ('critical', 'open')], 'critical'),
+        ([('high', 'open'), ('critical', 'open')], 'critical'),
+        ([('critical', 'resolved'), ('high', 'investigating')], 'elevated'),
+        ([('critical', 'resolved'), ('high', 'false_positive')], 'normal'),
+        ([('medium', 'open'), ('critical', 'resolved')], 'normal'),
+    ],
+)
+def test_vault_gets_one_risk_per_address_the_worst_open_alert(alerts, risk):
+    signals = dp.vault_risk_signals([_alert(severity=severity, status=status) for severity, status in alerts], PLATFORM)
+    assert [(s['subject_address'], s['risk_state']) for s in signals] == [(CONTRACT, risk)], (
+        'resolving one alert, or a later lower-severity one, never clears the block another open alert calls for'
+    )
+    assert signals[0]['external_id'] == f'guard-risk-base-sepolia-{CONTRACT}', 'one stable signal per address'
 
 
 def test_coverage_claims_only_what_guard_monitors():

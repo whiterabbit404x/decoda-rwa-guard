@@ -355,6 +355,49 @@ def test_signals_reach_assets_and_vault_and_only_changes_are_sent_again(live, te
     assert kinds[('assets.test', 'alert')][0]['status'] == 'resolved'
 
 
+def test_vault_keeps_blocking_while_any_open_alert_names_the_address(live, tenants):
+    a = tenants['a']
+    contract = '0x' + '44' * 20
+
+    def mismatch(severity: str, scope: str) -> dict:
+        return _assets_event(
+            a,
+            'assets.ownership.mismatch',
+            severity=severity,
+            asset_id=str(uuid.uuid4()),
+            metadata={'headline': 'Register differs from chain state', 'scope': scope, 'network': 'base_sepolia', 'token_contract': contract},
+        )
+
+    def vault_risk() -> list[str]:
+        _drain(receiver, a['workspace_id'])
+        rows = live.execute(
+            """
+            SELECT body->>'risk_state' AS risk, status FROM decoda_product_signals
+            WHERE destination = 'decoda-vault' AND kind = 'risk' AND body->>'subject_address' = %s
+            """,
+            (contract,),
+        ).fetchall()
+        assert {r['status'] for r in rows} <= {'delivered'}
+        return [r['risk'] for r in rows]
+
+    def resolve(envelope: dict) -> None:
+        live.execute(
+            "UPDATE alerts SET status = 'resolved', updated_at = NOW() WHERE workspace_id = %s AND payload->>'event_id' = %s",
+            (a['workspace_id'], envelope['eventId']),
+        )
+
+    first, second, holder = mismatch('critical', 'supply'), mismatch('critical', 'supply'), mismatch('high', 'holder')
+    for envelope in (first, second, holder):
+        _send(envelope)
+    assert vault_risk() == ['critical'], 'one signal per address; a later high alert does not downgrade the block'
+    resolve(first)
+    assert vault_risk() == ['critical'], 'the other critical alert is still open: Vault keeps blocking'
+    resolve(second)
+    assert vault_risk() == ['elevated'], 'only the high alert is open'
+    resolve(holder)
+    assert vault_risk() == ['normal'], 'every alert naming the address is closed'
+
+
 def test_coverage_is_active_only_for_what_guard_actually_monitors(live, tenants):
     a = tenants['a']
     asset_id = str(uuid.uuid4())

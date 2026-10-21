@@ -748,29 +748,43 @@ def assets_coverage_signals(
     return signals
 
 
-def vault_risk_signals(alert: dict[str, Any], platform_organization_id: str) -> list[dict[str, Any]]:
-    """An open critical alert makes its subjects critical in Vault (Vault blocks); high, elevated; closed, normal."""
-    payload = alert['payload'] or {}
-    severity = alert['severity']
-    if severity not in ('critical', 'high'):
-        return []
-    open_ = str(alert['status'] or 'open').lower() not in CLOSED_ALERT_STATUSES
-    risk = ('critical' if severity == 'critical' else 'elevated') if open_ else 'normal'
-    signals = []
-    for subject in payload.get('subjects') or []:
-        address, network = subject.get('address'), subject.get('network')
-        if not isinstance(address, str) or not _ADDRESS.match(address) or network not in VAULT_NETWORKS:
+def vault_risk_signals(alerts: list[dict[str, Any]], platform_organization_id: str) -> list[dict[str, Any]]:
+    """One risk state per address, as Vault holds it: the worst alert that names it.
+
+    Vault keeps only the latest signal for an address, so a signal per alert would let
+    resolving one alert (or a later, lower-severity one) clear a block another open
+    critical alert still calls for. An open critical alert makes its subjects critical
+    (Vault blocks); open high, elevated; normal only once every alert naming the address
+    is closed. Alerts come most recent first: the most recent alert of the worst state
+    gives the reason.
+    """
+    worst: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+    for alert in alerts:
+        severity = alert['severity']
+        if severity not in ('critical', 'high'):
             continue
+        open_ = str(alert['status'] or 'open').lower() not in CLOSED_ALERT_STATUSES
+        rank = (2 if severity == 'critical' else 1) if open_ else 0
+        for subject in (alert['payload'] or {}).get('subjects') or []:
+            address, network = subject.get('address'), subject.get('network')
+            if not isinstance(address, str) or not _ADDRESS.match(address) or network not in VAULT_NETWORKS:
+                continue
+            key = (network, address.lower())
+            if key not in worst or rank > worst[key][0]:
+                worst[key] = (rank, alert)
+    signals = []
+    for (network, address), (rank, alert) in sorted(worst.items()):
+        title = str(alert['title'])
         signals.append(
             {
                 'kind': 'risk',
                 'platform_organization_id': platform_organization_id,
                 'network': network,
-                'subject_address': address.lower(),
-                'risk_state': risk,
-                'reason': str(alert['title'])[:300] if open_ else f'Resolved in Decoda RWA Guard: {str(alert["title"])[:260]}',
-                'external_id': f'guard-alert-{alert["id"]}-{network}-{address.lower()}'[:128],
-                'related_event_id': payload.get('event_id'),
+                'subject_address': address,
+                'risk_state': ('normal', 'elevated', 'critical')[rank],
+                'reason': title[:300] if rank else f'Resolved in Decoda RWA Guard: {title[:260]}',
+                'external_id': f'guard-risk-{network}-{address}'[:128],
+                'related_event_id': (alert['payload'] or {}).get('event_id'),
             }
         )
     return signals
@@ -885,10 +899,23 @@ def refresh_signals(connection: Any, workspace_id: str) -> None:
             incident = incidents.get(str(alert['incident_id'])) if alert['incident_id'] else None
             if incident:
                 _upsert_signal(connection, workspace_id, 'decoda-assets', assets_incident_signal(incident, alert))
-        # Vault applies Guard's risk only for an organization that connected Vault to Guard.
-        if 'decoda-vault' in connected and platform_org:
-            for body in vault_risk_signals(alert, platform_org):
-                _upsert_signal(connection, workspace_id, 'decoda-vault', body)
+    # Vault applies Guard's risk only for an organization that connected Vault to Guard. Vault holds
+    # one state per address for the whole organization, so it is computed from the product alerts of
+    # every workspace of THIS organization (never another's): an open alert in one workspace is not
+    # cleared by resolving another's.
+    if 'decoda-vault' in connected and platform_org:
+        risk_alerts = connection.execute(
+            """
+            SELECT a.id, a.title, a.severity, a.status, a.payload FROM alerts a
+            JOIN workspaces w ON w.id = a.workspace_id
+            WHERE w.organization_id = %s AND a.source = %s AND a.severity IN ('critical', 'high')
+              AND (a.status NOT IN ('resolved', 'false_positive', 'closed', 'dismissed') OR a.updated_at > NOW() - INTERVAL '30 days')
+            ORDER BY a.created_at DESC
+            """,
+            (organization['id'], PRODUCT_EVENT_SOURCE),
+        ).fetchall()
+        for body in vault_risk_signals([dict(r) for r in risk_alerts], platform_org):
+            _upsert_signal(connection, workspace_id, 'decoda-vault', body)
     if 'decoda-assets' in routed_here:
         completed = connection.execute(
             """

@@ -82,8 +82,14 @@ can send failed signals again from Integrations.
 |---|---|---|
 | Assets | `alert`, `incident` (shape of `POST /v1/integrations/rwa-guard/signals`) | an alert or incident from an Assets event is created or changes |
 | Assets | `coverage` (organization and asset) | after `assets.tokenization.completed` |
-| Vault | `risk` (`critical` / `elevated` / `normal`) on the addresses an alert names | a high or critical alert opens, changes or closes — only for an organization that also routed Vault |
+| Vault | `risk` (`critical` / `elevated` / `normal`), one per address (`guard-risk-<network>-<address>`) | a high or critical alert naming the address opens, changes or closes — only for an organization that also routed Vault |
 | Vault | `coverage` | for the workspace Vault is routed to; re-sent every 10 minutes (Vault shows older reports as stale) |
+
+Vault keeps one risk state per address (the latest signal), so Guard sends the **worst**
+open alert naming the address across the organization's workspaces: critical while any
+critical alert is open, elevated while only high ones are, and `normal` only once every
+alert naming it is closed. Resolving one alert, or a later lower-severity one, never
+clears a block another open alert still calls for.
 
 Coverage is only what Guard can stand behind: asset monitoring and incident detection
 are `active` because events are routed and analysed; contract and wallet monitoring are
