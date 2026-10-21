@@ -1,0 +1,71 @@
+{
+  "scheme": "decoda-signature-v1",
+  "description": "X-Decoda-Signature: v1=<hex HMAC-SHA256(secret, \"<timestamp>.<raw body>\")>; X-Decoda-Timestamp within \u00b1300 s of now; X-Decoda-Event-Id matches ^[A-Za-z0-9._:-]{8,128}$. Identical copies live in Decoda Assets, Decoda Vault and Decoda RWA Guard; each repository's tests check its signer and verifier against them. Synthetic secret: never use it anywhere else.",
+  "tolerance_seconds": 300,
+  "cases": [
+    {
+      "name": "valid",
+      "secret": "decoda-test-vector-secret-not-for-production-0001",
+      "timestamp": 1767225600,
+      "now": 1767225720,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.created\",\"producer\":\"decoda-assets\"}",
+      "event_id": "evt_0123456789abcdef0123456789abcdef",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": true
+    },
+    {
+      "name": "tampered_body",
+      "secret": "decoda-test-vector-secret-not-for-production-0001",
+      "timestamp": 1767225600,
+      "now": 1767225600,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.deleted\",\"producer\":\"decoda-assets\"}",
+      "event_id": "evt_0123456789abcdef0123456789abcdef",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "wrong_secret",
+      "secret": "decoda-test-vector-secret-not-for-production-0001-other",
+      "timestamp": 1767225600,
+      "now": 1767225600,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.created\",\"producer\":\"decoda-assets\"}",
+      "event_id": "evt_0123456789abcdef0123456789abcdef",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": false,
+      "reason": "bad_signature"
+    },
+    {
+      "name": "stale_timestamp",
+      "secret": "decoda-test-vector-secret-not-for-production-0001",
+      "timestamp": 1767225600,
+      "now": 1767225901,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.created\",\"producer\":\"decoda-assets\"}",
+      "event_id": "evt_0123456789abcdef0123456789abcdef",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": false,
+      "reason": "stale_timestamp"
+    },
+    {
+      "name": "future_timestamp_within_window",
+      "secret": "decoda-test-vector-secret-not-for-production-0001",
+      "timestamp": 1767225600,
+      "now": 1767225300,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.created\",\"producer\":\"decoda-assets\"}",
+      "event_id": "evt_0123456789abcdef0123456789abcdef",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": true
+    },
+    {
+      "name": "missing_event_id",
+      "secret": "decoda-test-vector-secret-not-for-production-0001",
+      "timestamp": 1767225600,
+      "now": 1767225600,
+      "body": "{\"eventId\":\"evt_0123456789abcdef0123456789abcdef\",\"eventType\":\"assets.asset.created\",\"producer\":\"decoda-assets\"}",
+      "event_id": "",
+      "signature": "v1=7ebfdaf0d4d480b4139480b2c628d9f1001f53f24047198edc50c45a9d2f3619",
+      "valid": false,
+      "reason": "missing_headers"
+    }
+  ]
+}
