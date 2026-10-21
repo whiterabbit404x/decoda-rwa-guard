@@ -28,7 +28,9 @@ The signature is checked before anything touches the database. The envelope must
 `producer` equal to the header, an `eventType` with the producer's prefix (`assets.`,
 `vault.`), `environment: testnet`, and `tenant.platformOrganizationId` — the Decoda
 platform organization, matched to `organizations.platform_organization_id`. Bodies are
-limited to 256 KiB. The shared vectors in
+limited to 256 KiB, enforced while the body is read (a chunked body is cut off at the
+limit, never buffered whole). An `occurredAt` that is not a real ISO 8601 time is
+dropped (stored as unknown), not refused. The shared vectors in
 [`docs/contracts/decoda-signature-v1.vectors.json`](contracts/decoda-signature-v1.vectors.json)
 are identical in all three repositories, and each one's tests check its signer and
 verifier against them.
@@ -68,7 +70,11 @@ routing later does not re-analyse them.
 Guard derives what to report from the current state of its alerts and incidents, so any
 status change (whichever screen or workflow made it) is reported; an unchanged state is
 not sent again. Each new state is a new version with its own `X-Decoda-Event-Id`, signed
-with the same v1 scheme (producer `decoda-rwa-guard`). 408/429/5xx and network errors
+with the same v1 scheme (producer `decoda-rwa-guard`). The body carries the same id as
+`event_id`, so the signature covers it: receivers refuse a body whose `event_id` differs
+from the header, and a captured signal cannot be replayed under a fresh id. A failure of
+an older version never affects a newer one written while it was in flight: the newer
+version stays pending. 408/429/5xx and network errors
 are retried with backoff (dead after 10 attempts); other 4xx are dead at once. Admins
 can send failed signals again from Integrations.
 

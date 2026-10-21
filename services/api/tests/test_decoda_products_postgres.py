@@ -178,6 +178,7 @@ class Receiver:
     def __init__(self):
         self.received: list[tuple[str, dict, dict]] = []
         self.status = {'assets.test': 202, 'vault.test': 202}
+        self.intercept = None  # (host, body) -> a status for this request, or None
 
     def client(self):
         import httpx
@@ -193,8 +194,11 @@ class Receiver:
         secret = ASSETS_SIGNALS_SECRET if host == 'assets.test' else VAULT_SIGNALS_SECRET
         event_id = decoda_products.verify_signature(secret, request.content, dict(request.headers))
         assert request.headers['x-decoda-producer'] == 'decoda-rwa-guard'
-        self.received.append((host, json.loads(request.content), {'event_id': event_id}))
-        return httpx.Response(self.status[host], json={'accepted': True})
+        body = json.loads(request.content)
+        assert body.get('event_id') == event_id, 'the event id is inside the signed body: a replay cannot change it'
+        self.received.append((host, body, {'event_id': event_id}))
+        status = self.intercept(host, body) if self.intercept else None
+        return httpx.Response(status or self.status[host], json={'accepted': True})
 
     def take(self) -> list[tuple[str, dict, dict]]:
         out, self.received = self.received, []
@@ -258,20 +262,20 @@ def test_an_event_for_an_organization_without_a_link_is_kept_unrouted(live, tena
 def test_only_an_admin_of_the_organization_routes_its_products(live, tenants):
     from fastapi import HTTPException
 
-    from services.api.app import decoda_products
+    from services.api.app import decoda_products, pilot
 
     a, b = tenants['a'], tenants['b']
     with pytest.raises(HTTPException) as foreign:
-        decoda_products.http_set_link(_request(b['token'], a['workspace_id']), 'decoda-assets', link=True)
+        pilot.set_decoda_product_link(_request(b['token'], a['workspace_id']), 'decoda-assets', link=True)
     assert foreign.value.status_code in (403, 404), 'another tenant cannot route into this workspace'
     with pytest.raises(HTTPException) as no_mfa:
-        decoda_products.http_set_link(_request(b['token'], b['workspace_id']), 'decoda-assets', link=True)
+        pilot.set_decoda_product_link(_request(b['token'], b['workspace_id']), 'decoda-assets', link=True)
     assert no_mfa.value.status_code == 403 and no_mfa.value.detail['code'] == 'MFA_ENROLLMENT_REQUIRED', 'MFA is still required'
     with pytest.raises(decoda_products.IntakeError) as stranger:
         decoda_products.link_producer(live, workspace_id=a['workspace_id'], user_id=b['user_id'], producer='decoda-assets')
     assert stranger.value.status == 403
     for producer in ('decoda-assets', 'decoda-vault'):
-        linked = decoda_products.http_set_link(_request(a['token'], a['workspace_id']), producer, link=True)
+        linked = pilot.set_decoda_product_link(_request(a['token'], a['workspace_id']), producer, link=True)
         assert linked['linked'] is True
     assert _status(live, a, 'decoda-assets')['state'] == 'awaiting_first_event'
     audit = live.execute("SELECT count(*) AS n FROM audit_logs WHERE action = 'decoda_product.linked'").fetchone()['n']
@@ -395,6 +399,38 @@ def test_failed_deliveries_retry_and_rejected_ones_stop(live, tenants):
     assert decoda_products.retry_signals(live, workspace_id=a['workspace_id']) >= 1
     _drain(receiver, a['workspace_id'])
     assert live.execute("SELECT count(*) AS n FROM decoda_product_signals WHERE status = 'dead'").fetchone()['n'] == 0
+
+
+def test_a_rejected_old_version_never_buries_the_newer_one(live, tenants):
+    from services.api.app import decoda_products
+
+    a = tenants['a']
+    _send(_assets_event(a, 'assets.operation.blocked', metadata={'reason': 'policy: amount above limit'}))
+    alert_id = str(live.execute('SELECT id FROM alerts WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1', (a['workspace_id'],)).fetchone()['id'])
+    external_id = f'guard-alert-{alert_id}'
+
+    def resolve_while_in_flight(host, body):
+        if host != 'assets.test' or body.get('external_id') != external_id or body['status'] != 'open':
+            return None
+        # The alert is resolved while its 'open' version is being sent; that send is then rejected.
+        live.execute("UPDATE alerts SET status = 'resolved', updated_at = NOW() WHERE id = %s", (alert_id,))
+        decoda_products.refresh_signals(live, a['workspace_id'])
+        return 422
+
+    receiver.intercept = resolve_while_in_flight
+    try:
+        first = _drain(receiver, a['workspace_id'])
+    finally:
+        receiver.intercept = None
+    assert [b['status'] for h, b, _ in first if b.get('external_id') == external_id] == ['open']
+    row = live.execute(
+        "SELECT status, version, attempts, last_error FROM decoda_product_signals WHERE destination = 'decoda-assets' AND external_id = %s",
+        (external_id,),
+    ).fetchone()
+    assert (row['status'], row['version'], row['attempts'], row['last_error']) == ('pending', 2, 0, None), 'the newer version is not dead'
+    second = _drain(receiver, a['workspace_id'])
+    assert [b['status'] for h, b, _ in second if b.get('external_id') == external_id] == ['resolved']
+    assert live.execute('SELECT status FROM decoda_product_signals WHERE external_id = %s', (external_id,)).fetchone()['status'] == 'delivered'
 
 
 def test_tenants_never_see_each_others_product_events(live, tenants):

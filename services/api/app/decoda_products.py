@@ -43,6 +43,7 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -145,7 +146,7 @@ def verify_signature(secret: str, raw: bytes, headers: dict[str, str], *, now: f
     raw_ts = lowered.get('x-decoda-timestamp', '')
     provided = lowered.get('x-decoda-signature', '')
     event_id = lowered.get('x-decoda-event-id', '')
-    if not raw_ts.isdigit() or not provided or not _EVENT_ID.match(event_id):
+    if not raw_ts.isdigit() or len(raw_ts) > 12 or not provided or not _EVENT_ID.match(event_id):
         raise IntakeError(401, 'SIGNATURE_MISSING', 'X-Decoda-Timestamp, X-Decoda-Signature and X-Decoda-Event-Id are required.')
     current = int(now if now is not None else time.time())
     if abs(current - int(raw_ts)) > TOLERANCE_SECONDS:
@@ -621,9 +622,14 @@ def _record(envelope: Envelope, *, connect: Callable[[], Any] | None) -> IntakeR
 
 
 def _timestamp_or_none(value: str | None) -> str | None:
-    if not value or not re.match(r'^\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})?$', value):
+    """A real ISO 8601 timestamp, or None: an unparseable occurredAt is dropped, never cast by PostgreSQL."""
+    if not value or len(value) > 40:
         return None
-    return value
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).isoformat()
 
 
 # ── Signals back to the products ─────────────────────────────────────────────
@@ -966,14 +972,44 @@ def _claim(connection: Any, limit: int, owner: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def _settle(connection: Any, row: dict[str, Any], owner: str, **fields: Any) -> None:
-    assignments = ', '.join(f'{key} = %({key})s' for key in fields)
+def _settle(
+    connection: Any,
+    row: dict[str, Any],
+    owner: str,
+    *,
+    status: str,
+    attempts: int | None = None,
+    next_attempt_at: Any = None,
+    last_error: str | None = None,
+    last_http_status: int | None = None,
+) -> None:
+    """Record a failed (or unsendable) attempt for the version that was sent.
+
+    If the state changed while it was in flight (``refresh_signals`` wrote a newer
+    version), the newer version stays pending, due at once with a fresh attempt count:
+    a failure of the old body must never make the new one dead.
+    """
     connection.execute(
-        f"""
-        UPDATE decoda_product_signals SET {assignments}, lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
+        """
+        UPDATE decoda_product_signals SET
+            status = CASE WHEN version = %(version)s THEN %(status)s ELSE 'pending' END,
+            attempts = CASE WHEN version = %(version)s THEN COALESCE(%(attempts)s, attempts) ELSE 0 END,
+            next_attempt_at = CASE WHEN version = %(version)s THEN COALESCE(%(next)s, next_attempt_at) ELSE NOW() END,
+            last_error = CASE WHEN version = %(version)s THEN %(error)s ELSE NULL END,
+            last_http_status = CASE WHEN version = %(version)s THEN %(code)s ELSE NULL END,
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW()
         WHERE id = %(id)s AND lease_owner = %(owner)s
         """,
-        {**fields, 'id': row['id'], 'owner': owner},
+        {
+            'version': row['version'],
+            'status': status,
+            'attempts': attempts,
+            'next': next_attempt_at,
+            'error': last_error,
+            'code': last_http_status,
+            'id': row['id'],
+            'owner': owner,
+        },
     )
     connection.commit()
 
@@ -1012,8 +1048,12 @@ def deliver_due(
                     stats['not_configured'] += 1
                     continue
                 url, secret = endpoint
-                body = json.dumps(row['body'], sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
-                headers = signed_headers(secret, body, event_id=signal_event_id(str(row['id']), int(row['version'])))
+                event_id = signal_event_id(str(row['id']), int(row['version']))
+                # The event id is inside the signed body as well: the signature covers it, so a captured
+                # signal cannot be replayed under a fresh X-Decoda-Event-Id (receivers check they match).
+                sent = {**row['body'], 'event_id': event_id}
+                body = json.dumps(sent, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+                headers = signed_headers(secret, body, event_id=event_id)
                 attempts = int(row['attempts']) + 1
                 try:
                     response = client.post(url, content=body, headers=headers)
@@ -1230,74 +1270,8 @@ def retry_signals(connection: Any, *, workspace_id: str) -> int:
     return int(cursor.rowcount or 0)
 
 
-# ── HTTP handlers (thin; the routes live in main.py) ─────────────────────────
-
-
-def _http_error(exc: IntakeError) -> Exception:
+def http_error(exc: IntakeError) -> Exception:
+    """An IntakeError as the HTTPException the API answers with (the code travels in a header)."""
     from fastapi import HTTPException
 
     return HTTPException(status_code=exc.status, detail=exc.message, headers={'X-Decoda-Error-Code': exc.code})
-
-
-def http_status(request: Any) -> dict[str, Any]:
-    from services.api.app import pilot
-
-    pilot.require_live_mode()
-    with pilot.pg_connection() as connection:
-        pilot.ensure_pilot_schema(connection)
-        user, context, _ = pilot.resolve_workspace_context_for_request(connection, request)
-        workspace_id = str(context['workspace_id'])
-        role = pilot._normalize_workspace_role(str(context.get('role') or ''))
-        admin = pilot._workspace_permission_granted(connection, workspace_id, role, 'members.manage')
-        return status_view(connection, workspace_id=workspace_id, user_id=str(user['id']), workspace_admin=admin)
-
-
-def http_set_link(request: Any, producer: str, *, link: bool) -> dict[str, Any]:
-    """Route (or stop routing) a producer to the current workspace: workspace AND organization admins only."""
-    from services.api.app import pilot
-
-    pilot.require_live_mode()
-    with pilot.pg_connection() as connection:
-        pilot.ensure_pilot_schema(connection)
-        user, context = pilot._require_workspace_admin(connection, request)
-        workspace_id = str(context['workspace_id'])
-        try:
-            change = link_producer if link else unlink_producer
-            result = change(connection, workspace_id=workspace_id, user_id=str(user['id']), producer=producer)
-        except IntakeError as exc:
-            raise _http_error(exc) from None
-        pilot.log_audit(
-            connection,
-            action='decoda_product.linked' if link else 'decoda_product.unlinked',
-            entity_type='decoda_product_link',
-            entity_id=producer,
-            request=request,
-            user_id=str(user['id']),
-            workspace_id=workspace_id,
-            metadata={'producer': producer},
-        )
-        connection.commit()
-        return {**result, 'status': status_view(connection, workspace_id=workspace_id, user_id=str(user['id']), workspace_admin=True)}
-
-
-def http_retry_signals(request: Any) -> tuple[dict[str, Any], str]:
-    from services.api.app import pilot
-
-    pilot.require_live_mode()
-    with pilot.pg_connection() as connection:
-        pilot.ensure_pilot_schema(connection)
-        user, context = pilot._require_workspace_admin(connection, request)
-        workspace_id = str(context['workspace_id'])
-        retried = retry_signals(connection, workspace_id=workspace_id)
-        pilot.log_audit(
-            connection,
-            action='decoda_product.signals_retried',
-            entity_type='decoda_product_signal',
-            entity_id=workspace_id,
-            request=request,
-            user_id=str(user['id']),
-            workspace_id=workspace_id,
-            metadata={'retried': retried},
-        )
-        connection.commit()
-    return {'retried': retried}, workspace_id

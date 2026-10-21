@@ -116,6 +116,21 @@ def test_malformed_mismatched_oversized_and_unknown_producer_requests(configured
     assert forged.status == 401
 
 
+def test_an_oversized_timestamp_header_is_refused_not_an_error():
+    huge = '9' * 5000  # longer than Python converts to int: must answer 401, never raise
+    with pytest.raises(dp.IntakeError) as refused:
+        dp.verify_signature(SECRET, b'{}', {'X-Decoda-Timestamp': huge, 'X-Decoda-Signature': 'v1=00', 'X-Decoda-Event-Id': 'evt_' + 'c' * 32})
+    assert (refused.value.status, refused.value.code) == (401, 'SIGNATURE_MISSING')
+
+
+def test_an_invalid_occurred_at_is_dropped_before_postgres_sees_it():
+    assert dp._timestamp_or_none('2026-99-99T99:99:99Z') is None, 'regex-shaped but not a real time'
+    assert dp._timestamp_or_none('yesterday') is None and dp._timestamp_or_none('2026-10-21T08:00:00Z' + ' ' * 60) is None
+    assert dp._timestamp_or_none('2026-10-21T08:00:00Z') == '2026-10-21T08:00:00+00:00'
+    assert dp._timestamp_or_none('2026-10-21T10:00:00.5+02:00') == '2026-10-21T10:00:00.500000+02:00'
+    assert dp._timestamp_or_none('2026-10-21T08:00:00') == '2026-10-21T08:00:00+00:00', 'no offset: UTC'
+
+
 def test_a_database_failure_is_retryable(configured):
     envelope = _envelope()
     raw = json.dumps(envelope).encode()
@@ -284,3 +299,33 @@ def test_the_route_answers_with_the_intake_status_and_drains_after_the_response(
     )
     refused = client.post('/api/integrations/decoda/events', content=b'{}', headers={'Content-Type': 'application/json'})
     assert refused.status_code == 401 and drained == ['ws-1'], 'nothing is drained for a refusal'
+
+
+def test_the_body_limit_holds_while_streaming(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from services.api.app import main as api_main
+
+    def never(raw, headers):
+        raise AssertionError('an oversized body is refused before intake')
+
+    monkeypatch.setattr(api_main.decoda_products, 'process_event', never)
+    client = TestClient(api_main.app, raise_server_exceptions=False)
+
+    def chunks():  # chunked transfer encoding: no Content-Length for the size middleware to check
+        for _ in range(dp.MAX_BODY_BYTES // 4096 + 2):
+            yield b'x' * 4096
+
+    streamed = client.post('/api/integrations/decoda/events', content=chunks(), headers={'Content-Type': 'application/json'})
+    assert (streamed.status_code, streamed.json()['code']) == (413, 'EVENT_TOO_LARGE')
+    declared = client.post('/api/integrations/decoda/events', content=b'x' * (dp.MAX_BODY_BYTES + 1), headers={'Content-Type': 'application/json'})
+    assert (declared.status_code, declared.json()['code']) == (413, 'EVENT_TOO_LARGE')
+
+
+def test_the_routes_go_through_the_pilot_entry_points():
+    from services.api.app import main as api_main
+    from services.api.app import pilot
+
+    for name in ('ingest_decoda_product_event', 'get_decoda_products_status', 'set_decoda_product_link', 'retry_decoda_product_signals'):
+        assert getattr(api_main, name) is getattr(pilot, name), name
+    assert not hasattr(dp, 'http_status') and not hasattr(dp, 'http_set_link'), 'no second API layer in the domain module'

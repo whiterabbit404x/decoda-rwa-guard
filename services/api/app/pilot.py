@@ -8258,6 +8258,84 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
     return {'processed': processed, 'failed': failed, **notification_summary}
 
 
+# ── Decoda Assets / Decoda Vault product events ──────────────────────────────
+# The API entry points: session, workspace, RBAC (and MFA) and audit, as for every other
+# route. Signature checks, routing, detection and signal delivery live in decoda_products.
+
+
+def ingest_decoda_product_event(raw: bytes, headers: dict[str, str]) -> Any:
+    """Signed intake. No session: the v1 signature authenticates the producer before any database access."""
+    from services.api.app import decoda_products
+
+    return decoda_products.process_event(raw, headers)
+
+
+def get_decoda_products_status(request: Request) -> dict[str, Any]:
+    from services.api.app import decoda_products
+
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, context, _ = resolve_workspace_context_for_request(connection, request)
+        workspace_id = str(context['workspace_id'])
+        role = _normalize_workspace_role(str(context.get('role') or ''))
+        admin = _workspace_permission_granted(connection, workspace_id, role, 'members.manage')
+        return decoda_products.status_view(connection, workspace_id=workspace_id, user_id=str(user['id']), workspace_admin=admin)
+
+
+def set_decoda_product_link(request: Request, producer: str, *, link: bool) -> dict[str, Any]:
+    """Route (or stop routing) a producer to the current workspace: workspace AND organization admins only."""
+    from services.api.app import decoda_products
+
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, context = _require_workspace_admin(connection, request)
+        workspace_id = str(context['workspace_id'])
+        change = decoda_products.link_producer if link else decoda_products.unlink_producer
+        try:
+            result = change(connection, workspace_id=workspace_id, user_id=str(user['id']), producer=producer)
+        except decoda_products.IntakeError as exc:
+            raise decoda_products.http_error(exc) from None
+        log_audit(
+            connection,
+            action='decoda_product.linked' if link else 'decoda_product.unlinked',
+            entity_type='decoda_product_link',
+            entity_id=producer,
+            request=request,
+            user_id=str(user['id']),
+            workspace_id=workspace_id,
+            metadata={'producer': producer},
+        )
+        connection.commit()
+        status_view = decoda_products.status_view(connection, workspace_id=workspace_id, user_id=str(user['id']), workspace_admin=True)
+        return {**result, 'status': status_view}
+
+
+def retry_decoda_product_signals(request: Request) -> tuple[dict[str, Any], str]:
+    """Make this workspace's failed signals due again; the caller drains them after answering."""
+    from services.api.app import decoda_products
+
+    require_live_mode()
+    with pg_connection() as connection:
+        ensure_pilot_schema(connection)
+        user, context = _require_workspace_admin(connection, request)
+        workspace_id = str(context['workspace_id'])
+        retried = decoda_products.retry_signals(connection, workspace_id=workspace_id)
+        log_audit(
+            connection,
+            action='decoda_product.signals_retried',
+            entity_type='decoda_product_signal',
+            entity_id=workspace_id,
+            request=request,
+            user_id=str(user['id']),
+            workspace_id=workspace_id,
+            metadata={'retried': retried},
+        )
+        connection.commit()
+    return {'retried': retried}, workspace_id
+
+
 # In-process throttle for repeated external self-monitoring alerts. Keyed by
 # (alert_type, fingerprint) where the fingerprint already encodes workspace_id:target_id,
 # i.e. the workspace_id + target_id + alert_type throttle contract. Stops a single

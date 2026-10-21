@@ -254,6 +254,10 @@ from services.api.app.pilot import (
     list_finding_decisions,
     get_integration_health,
     get_integration_control_plane,
+    get_decoda_products_status,
+    ingest_decoda_product_event,
+    retry_decoda_product_signals,
+    set_decoda_product_link,
     run_integration_health_check,
     _resolve_integration_recommendation,
     get_workspace_readiness,
@@ -4847,6 +4851,24 @@ async def billing_webhook_paddle_canonical(request: Request) -> dict[str, Any]:
     return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
 
 
+async def _body_within(request: Request, limit: int) -> bytes | None:
+    """The request body, or None as soon as it exceeds ``limit`` bytes: never buffered past the limit.
+
+    The size middleware only sees a declared Content-Length; a chunked body declares none.
+    """
+    declared = request.headers.get('content-length', '').strip()
+    if declared.isdigit() and (len(declared) > 12 or int(declared) > limit):
+        return None
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b''.join(chunks)
+
+
 @app.post(
     '/api/integrations/decoda/events',
     status_code=202,
@@ -4855,8 +4877,11 @@ async def billing_webhook_paddle_canonical(request: Request) -> dict[str, Any]:
 async def decoda_product_events_intake(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     # No session: the request is authenticated by its v1 signature (decoda_products.verify_signature),
     # checked before any database access. A replay is acknowledged and never processed twice.
-    raw = await request.body()
-    result = await run_in_threadpool(decoda_products.process_event, raw, dict(request.headers))
+    raw = await _body_within(request, decoda_products.MAX_BODY_BYTES)
+    if raw is None:
+        too_large = decoda_products.IntakeError(413, 'EVENT_TOO_LARGE', f'Events are limited to {decoda_products.MAX_BODY_BYTES} bytes.')
+        return JSONResponse(too_large.body(), status_code=413)
+    result = await run_in_threadpool(ingest_decoda_product_event, raw, dict(request.headers))
     if result.workspace_id:
         background_tasks.add_task(decoda_products.drain_safely, result.workspace_id)
     return JSONResponse(result.body, status_code=result.status)
@@ -4864,22 +4889,22 @@ async def decoda_product_events_intake(request: Request, background_tasks: Backg
 
 @app.get('/integrations/decoda', summary='Decoda Assets / Decoda Vault product events: status for this workspace')
 def decoda_products_status(request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: decoda_products.http_status(request))
+    return with_auth_schema_json(lambda: get_decoda_products_status(request))
 
 
 @app.post('/integrations/decoda/links/{producer}', summary="Route a Decoda product's events to this workspace (organization admins)")
 def decoda_products_link(producer: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: decoda_products.http_set_link(request, producer, link=True))
+    return with_auth_schema_json(lambda: set_decoda_product_link(request, producer, link=True))
 
 
 @app.delete('/integrations/decoda/links/{producer}', summary="Stop routing a Decoda product's events to this workspace")
 def decoda_products_unlink(producer: str, request: Request) -> dict[str, Any]:
-    return with_auth_schema_json(lambda: decoda_products.http_set_link(request, producer, link=False))
+    return with_auth_schema_json(lambda: set_decoda_product_link(request, producer, link=False))
 
 
 @app.post('/integrations/decoda/signals/retry', summary='Send failed signals to Decoda Assets / Vault again')
 def decoda_products_retry_signals(request: Request, background_tasks: BackgroundTasks) -> Any:
-    outcome = with_auth_schema_json(lambda: decoda_products.http_retry_signals(request))
+    outcome = with_auth_schema_json(lambda: retry_decoda_product_signals(request))
     if isinstance(outcome, Response):  # an auth or schema error response
         return outcome
     body, workspace_id = outcome
