@@ -26,6 +26,7 @@ import hmac as _hmac_mod
 import uuid as _uuid_mod
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.api.app.domains import alert_stream, alert_delivery
@@ -315,6 +316,7 @@ from services.api.app.monitoring_runner import (
     set_background_loop_health,
 )
 from services.api.app import ai_triage
+from services.api.app import decoda_products
 from services.api.app import forensic_investigation
 from services.api.app import incident_forensics
 from services.api.app import incident_queue_summary
@@ -4843,6 +4845,46 @@ async def billing_webhook_paddle_canonical(request: Request) -> dict[str, Any]:
     signature = request.headers.get('paddle-signature')
     timestamp = request.headers.get('paddle-timestamp')
     return with_auth_schema_json(lambda: process_paddle_webhook(payload, signature_header=signature, timestamp_header=timestamp, raw_body=raw))
+
+
+@app.post(
+    '/api/integrations/decoda/events',
+    status_code=202,
+    summary='Signed Decoda Assets / Decoda Vault product events (testnet only)',
+)
+async def decoda_product_events_intake(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    # No session: the request is authenticated by its v1 signature (decoda_products.verify_signature),
+    # checked before any database access. A replay is acknowledged and never processed twice.
+    raw = await request.body()
+    result = await run_in_threadpool(decoda_products.process_event, raw, dict(request.headers))
+    if result.workspace_id:
+        background_tasks.add_task(decoda_products.drain_safely, result.workspace_id)
+    return JSONResponse(result.body, status_code=result.status)
+
+
+@app.get('/integrations/decoda', summary='Decoda Assets / Decoda Vault product events: status for this workspace')
+def decoda_products_status(request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: decoda_products.http_status(request))
+
+
+@app.post('/integrations/decoda/links/{producer}', summary="Route a Decoda product's events to this workspace (organization admins)")
+def decoda_products_link(producer: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: decoda_products.http_set_link(request, producer, link=True))
+
+
+@app.delete('/integrations/decoda/links/{producer}', summary="Stop routing a Decoda product's events to this workspace")
+def decoda_products_unlink(producer: str, request: Request) -> dict[str, Any]:
+    return with_auth_schema_json(lambda: decoda_products.http_set_link(request, producer, link=False))
+
+
+@app.post('/integrations/decoda/signals/retry', summary='Send failed signals to Decoda Assets / Vault again')
+def decoda_products_retry_signals(request: Request, background_tasks: BackgroundTasks) -> Any:
+    outcome = with_auth_schema_json(lambda: decoda_products.http_retry_signals(request))
+    if isinstance(outcome, Response):  # an auth or schema error response
+        return outcome
+    body, workspace_id = outcome
+    background_tasks.add_task(decoda_products.drain_safely, workspace_id)
+    return body
 
 
 @app.get('/api/integrations/quicknode/streams/base', summary='QuickNode Streams (Base) webhook health check')

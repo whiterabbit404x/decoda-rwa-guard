@@ -8251,6 +8251,10 @@ def run_background_jobs(*, worker_id: str = 'worker', limit: int = 20) -> dict[s
                 logger.exception('background job failed', extra={'event': 'jobs.failed', 'job_id': job_id, 'job_type': row['job_type']})
         notification_summary = _process_notification_attempts(connection, limit)
         connection.commit()
+    # Signals to Decoda Assets / Vault have their own outbox (decoda_product_signals); drain it too.
+    from services.api.app import decoda_products
+
+    decoda_products.drain_safely()
     return {'processed': processed, 'failed': failed, **notification_summary}
 
 
