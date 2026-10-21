@@ -42,6 +42,12 @@ def _num(value: Any) -> Optional[float]:
 # --------------------------------------------------------------------------
 # Serialization
 # --------------------------------------------------------------------------
+def _evidence_label(payload: Any) -> str | None:
+    if not isinstance(payload, dict) or payload.get('evidence_source') != 'product_event':
+        return None
+    return 'Testnet product event (synthetic data)' if payload.get('synthetic') else 'Testnet product event'
+
+
 def _serialize_alert(item: dict[str, Any], normalized: dict[str, Any], membership: dict[str, Any]) -> dict[str, Any]:
     alert_id = normalized['alert_id']
     cluster = membership.get(alert_id)
@@ -62,6 +68,9 @@ def _serialize_alert(item: dict[str, Any], normalized: dict[str, Any], membershi
         'detection_family': normalized.get('detection_family'),
         'detection_family_label': cfg.detection_family_label(normalized.get('detection_family')),
         'occurred_at': _iso(item.get('created_at')),
+        # A Decoda Assets / Vault testnet product event is labelled as such on every screen:
+        # it is neither live chain telemetry nor customer evidence from monitoring.
+        'evidence_label': _evidence_label(item.get('payload')),
         'incident_id': normalized.get('incident_id'),
         'detection_id': item.get('detection_id'),
         'cluster': (

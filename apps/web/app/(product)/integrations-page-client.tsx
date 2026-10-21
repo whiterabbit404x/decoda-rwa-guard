@@ -12,6 +12,7 @@ import {
   TabStrip,
 } from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
+import { DecodaProductsPanel } from './decoda-products-panel';
 import { IntegrationGatewayAgentPanel } from './integration-gateway-agent-panel';
 import {
   apiStatusVariant,
@@ -264,6 +265,8 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
         <MetricTile label="Disconnected" value={loading && !summary ? '—' : summary?.disconnected ?? 0} meta={summary && summary.disconnected > 0 ? 'Failover required' : 'Providers'} />
         <MetricTile label="Recommendations" value={loading && !summary ? '—' : summary?.recommendations ?? 0} meta="Open" />
       </div>
+
+      <DecodaProductsPanel />
 
       <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* ── Main content ─────────────────────────────────── */}
