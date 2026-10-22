@@ -470,6 +470,11 @@ function AlertsTableRegion({
               {alert.detection_family_label ? (
                 <div className="alertsRowMeta">{alert.detection_family_label}</div>
               ) : null}
+              {alert.evidence_label ? (
+                <div className="alertsRowMeta" data-testid="alert-evidence-label">
+                  <StatusPill label={alert.evidence_label} variant="info" />
+                </div>
+              ) : null}
             </td>
             <td className="alertsAssetCell">
               <span className={alert.asset_known ? 'alertsAssetName' : 'alertsAssetName alertsAssetUnknown'}>{alert.asset_name}</span>

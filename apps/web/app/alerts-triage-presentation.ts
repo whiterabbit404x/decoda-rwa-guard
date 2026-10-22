@@ -162,6 +162,8 @@ export type Screen6Alert = {
   detection_family: string | null;
   detection_family_label: string | null;
   occurred_at: string | null;
+  /** "Testnet product event" for Decoda Assets / Vault events — never live telemetry. */
+  evidence_label?: string | null;
   incident_id: string | null;
   detection_id: string | null;
   cluster: Screen6Cluster | null;
