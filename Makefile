@@ -1,4 +1,4 @@
-.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof validate-niw-positioning capture-dashboard-timings test-dashboard-timing
+.PHONY: up down logs install-python install-web install-web-test-runtime init-local seed-all run-api run-risk run-oracle run-compliance run-reconciliation run-event-watcher run-backend run-web run-web-smoke smoke-phase1 validate-production validate-staging validate-launch validate-no-billing-launch validate-paid-ga proof-no-billing-launch proof-feature1-live validate-feature1-live-artifacts validate-readiness-proof local-bootstrap-happy-path test-paid-launch-readiness test-release-proof-artifacts generate-release-proof validate-release-proof validate-100-percent-readiness generate-staging-proof validate-staging-proof generate-live-evidence-proof run-staging-live-proof check-staging-live-env sell-now-proof validate-niw-positioning capture-dashboard-timings test-dashboard-timing capture-navigation-timings
 
 up:
 	docker compose up -d
@@ -178,6 +178,15 @@ test-release-proof-artifacts:
 #   make capture-dashboard-timings CAPTURE_ARGS="--loads 5 --settle 20"
 capture-dashboard-timings:
 	node scripts/capture-dashboard-timings.mjs $(CAPTURE_ARGS)
+
+# Every primary screen: document load, sidebar navigation and steady-state
+# polling, read from the browser's own Resource Timing and the decoda.* marks.
+# Measurement only. Authenticate with CAPTURE_ARGS="--storage-state auth.json";
+# --latency-ms adds a round trip to every request (a local stack hides it), e.g.
+#   make capture-navigation-timings CAPTURE_ARGS="--storage-state auth.json --latency-ms 150 --label after"
+# Compare two captures with scripts/compare-navigation-timings.mjs.
+capture-navigation-timings:
+	node scripts/capture-navigation-timings.mjs $(CAPTURE_ARGS)
 
 # The instrumentation's own tests. Neither module had coverage before, and a
 # collector that silently drops a phase yields a timing table that looks
