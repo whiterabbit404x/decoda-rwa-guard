@@ -275,7 +275,7 @@ const ESCALATION_CANDIDATE_SCAN_LIMIT = 50;
 
 export default function IncidentsPanel({ initialSelectedId }: { initialSelectedId?: string } = {}) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
-  const { authHeaders } = usePilotAuth();
+  const { authHeaders, isAuthenticated } = usePilotAuth();
   const router = useRouter();
   const apiUrl = API_PROXY_BASE;
 
@@ -291,7 +291,9 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
-  const [dataLoading, setDataLoading] = useState(false);
+  // Starts true: nothing has been read yet, so no empty state or zero count
+  // may render before the first read settles.
+  const [dataLoading, setDataLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [responseActions, setResponseActions] = useState<ResponseActionRow[]>([]);
   // Whether the response-actions read has SETTLED. Without it an empty array during
@@ -406,7 +408,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   }, [selectedId, recommending, apiUrl, authHeaders, router]);
 
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
     let cancelled = false;
     setDataLoading(true);
     async function loadIncidents() {
@@ -461,7 +466,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
     }
     void loadIncidents();
     return () => { cancelled = true; };
-  }, [apiUrl, authHeaders, runtimeLoading, severityFilter, statusFilter, assigneeFilter, initialSelectedId]);
+  }, [apiUrl, authHeaders, isAuthenticated, severityFilter, statusFilter, assigneeFilter, initialSelectedId]);
 
   // Real "do alerts exist?" signal for the empty-state copy. The runtime counter only reflects
   // *active* alerts, so a resolved/linked alert would wrongly read as zero and surface the
@@ -475,7 +480,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   // one: enabled only when the workflow prerequisite genuinely exists, disabled with the
   // reason when it does not (CLAUDE.md: fail-closed, never claim a capability that is absent).
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
     let cancelled = false;
     void fetch(`${apiUrl}/alerts?limit=${ESCALATION_CANDIDATE_SCAN_LIMIT}`, { headers: authHeaders(), cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
@@ -491,7 +499,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
         setEscalatableAlert(null);
       });
     return () => { cancelled = true; };
-  }, [apiUrl, authHeaders, runtimeLoading]);
+  }, [apiUrl, authHeaders, isAuthenticated]);
 
   /* ── Queue counters (canonical, workspace-wide) ───────────────── */
   // The four KPI tiles are read from the backend, which counts EVERY incident in
@@ -500,7 +508,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   // array is one capped page, already narrowed by the severity/status filters, so
   // counting it would report a subset as the total and would disagree with Screen 2.
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
     let cancelled = false;
     const controller = new AbortController();
     setQueueCountsLoad('loading');
@@ -521,7 +532,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
       })
       .catch(() => { if (!cancelled) { setQueueCounts(null); setQueueCountsLoad('error'); } });
     return () => { cancelled = true; controller.abort(); };
-  }, [apiUrl, authHeaders, runtimeLoading]);
+  }, [apiUrl, authHeaders, isAuthenticated]);
 
   const filteredIncidents = useMemo(() => {
     return incidents.filter((inc) => {

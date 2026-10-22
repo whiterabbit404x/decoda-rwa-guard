@@ -23215,3 +23215,157 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
   }
 }
 /* ═══ Screen layer: assets — end ═══ */
+
+/* ── Breadcrumb trail (header) ─────────────────────────────────────
+   Group › screen › sub-page, as in Decoda Assets. The screen's one <h1> is
+   the page's own heading; the header only says where the screen sits. The
+   group is a heading, not a route, so it is plain text. */
+.shellCrumbs {
+  min-width: 0;
+}
+
+.shellCrumbs ol {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.shellCrumbs li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.shellCrumbs li + li::before {
+  content: '/';
+  color: var(--border-strong);
+}
+
+.shellCrumbs a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-xs);
+}
+
+.shellCrumbs a:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shellCrumbs a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.shellCrumbs [aria-current='page'] {
+  color: var(--text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 767px) {
+  /* Phone header: only the current screen, next to the menu button. */
+  .shellCrumbs {
+    flex: 1 1 auto;
+  }
+
+  .shellCrumbs li:not(:last-child) {
+    display: none;
+  }
+}
+
+/* The shell's content region is the skip-link target; it takes focus only
+   programmatically, so it gets no focus outline of its own. */
+.appShellPage:focus {
+  outline: none;
+}
+
+/* ── Screen states: loading skeleton and failure ──────────────────
+   Shared by the route boundaries and the auth gate. Placeholders only, in the
+   rough shape of a screen (title, line, figures, two panels), so the layout
+   does not jump when the screen's own content arrives. */
+.screenSkeleton {
+  min-width: 0;
+}
+
+.screenSkeletonShape {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.screenSkeletonShape > span {
+  display: block;
+  height: 5.5rem;
+  border-radius: var(--radius-md);
+  background-image: linear-gradient(90deg, var(--overlay-03) 20%, var(--accent-blue-bg) 40%, var(--overlay-03) 60%);
+  background-size: 300% 100%;
+  animation: dcBrandShimmer 1.6s var(--ease-in-out) infinite;
+}
+
+/* Title and lede line span the row; then four figures; then a wide and a
+   narrow panel. */
+.screenSkeletonShape > span:nth-child(1) {
+  grid-column: 1 / -1;
+  width: min(18rem, 60%);
+  height: 1.6rem;
+}
+
+.screenSkeletonShape > span:nth-child(2) {
+  grid-column: 1 / -1;
+  width: min(34rem, 85%);
+  height: 0.9rem;
+}
+
+.screenSkeletonShape > span:nth-child(7) {
+  grid-column: 1 / 4;
+  height: 16rem;
+}
+
+.screenSkeletonShape > span:nth-child(8) {
+  grid-column: 4 / 5;
+  height: 16rem;
+}
+
+@media (max-width: 900px) {
+  .screenSkeletonShape { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .screenSkeletonShape > span:nth-child(7),
+  .screenSkeletonShape > span:nth-child(8) { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screenSkeletonShape > span { animation: none; }
+}
+
+/* A failure is stated as a failure: danger border, never a neutral or green
+   "nothing here". */
+.screenError {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 44rem;
+  padding: 1.25rem 1.35rem;
+  border: 1px solid var(--danger-bdr);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.screenError h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.screenError p {
+  margin: 0;
+}

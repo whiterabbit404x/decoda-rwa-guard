@@ -806,7 +806,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 
 export default function EvidenceAuditPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
-  const { authHeaders } = usePilotAuth();
+  const { authHeaders, isAuthenticated } = usePilotAuth();
   const searchParams = useSearchParams();
 
   const urlPackageId = searchParams.get('package_id') ?? '';
@@ -828,7 +828,9 @@ export default function EvidenceAuditPanel() {
   // Technical error code shown only inside an expandable diagnostics disclosure,
   // never inline as raw JSON in the customer-facing status line.
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
-  const [dataLoading, setDataLoading] = useState(false);
+  // Starts true: nothing has been read yet, so no empty state or zero count
+  // may render before the first read settles.
+  const [dataLoading, setDataLoading] = useState(true);
   const [auditUnavailable, setAuditUnavailable] = useState('');
   const [responseActionsCount, setResponseActionsCount] = useState<number | null>(null);
   const [metrics, setMetrics] = useState<EvidenceMetrics | null>(null);
@@ -975,7 +977,10 @@ export default function EvidenceAuditPanel() {
 
   /* ── Data loading ────────────────────────────────────────────── */
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
     setDataLoading(true);
     const hdrs = authHeaders();
 
@@ -1070,7 +1075,7 @@ export default function EvidenceAuditPanel() {
     }
 
     void loadAll();
-  }, [authHeaders, runtimeLoading, urlPackageId, urlActionId, urlIncidentId, reloadKey]);
+  }, [authHeaders, isAuthenticated, urlPackageId, urlActionId, urlIncidentId, reloadKey]);
 
   // Fetch the full package report for the selected package so the agent card can
   // show its real completeness checklist, files, and integrity — all backend values.

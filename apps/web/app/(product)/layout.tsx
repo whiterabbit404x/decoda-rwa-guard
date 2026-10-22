@@ -6,15 +6,23 @@ import { redirect } from 'next/navigation';
 import { browserApiUrl } from '../api-config';
 import AppShell from '../app-shell';
 import AuthenticatedRoute from '../authenticated-route';
+import { ScreenSkeleton } from '../components/screen-states';
 import { getRuntimeConfig } from '../runtime-config';
 import { shouldRedirectUnauthenticatedProductAccess } from '../auth-guards';
 import WorkspaceMonitoringModeBanner from '../workspace-monitoring-mode-banner';
-import { RuntimeSummaryProvider } from '../runtime-summary-context';
 
 const TOKEN_COOKIE_NAME = 'decoda_session';
 
-function ProductLayoutLoading({ children }: { children: React.ReactNode }) {
-  return <div className="productShellContent">{children}</div>;
+// While AuthenticatedRoute is not yet rendered, the screen shows the shared
+// skeleton -- never the screen itself. This fallback used to render {children}
+// directly, OUTSIDE the auth/MFA/membership gate, so whenever React streamed it
+// the server sent a whole product screen (as "Guest") ahead of the gate.
+function ProductLayoutLoading() {
+  return (
+    <div className="productShellContent">
+      <ScreenSkeleton label="Validating your session and loading the active workspace…" />
+    </div>
+  );
 }
 
 export default async function ProductLayout({ children }: { children: React.ReactNode }) {
@@ -33,11 +41,14 @@ export default async function ProductLayout({ children }: { children: React.Reac
     redirect('/sign-in');
   }
 
+  // AppShell mounts the one RuntimeSummaryProvider every screen and the banner
+  // read. A second provider here had no consumer -- the nearest one wins -- but
+  // still ran its own runtime-status fetch and revalidation timer.
   return (
-    <RuntimeSummaryProvider><AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={browserApiUrl(runtimeConfig.apiUrl)} />}>
-      <Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>
+    <AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={browserApiUrl(runtimeConfig.apiUrl)} />}>
+      <Suspense fallback={<ProductLayoutLoading />}>
         <AuthenticatedRoute><div className="productShellContent">{children}</div></AuthenticatedRoute>
       </Suspense>
-    </AppShell></RuntimeSummaryProvider>
+    </AppShell>
   );
 }

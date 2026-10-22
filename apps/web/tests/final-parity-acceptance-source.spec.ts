@@ -34,7 +34,10 @@ test('product navigation order matches the 12 screen parity contract', () => {
 
 test('all protected product routes share shell + runtime banner', () => {
   const layout = read('(product)/layout.tsx');
-  expect(layout).toContain('<RuntimeSummaryProvider>');
+  // Exactly one runtime summary provider wraps the product: AppShell's. The
+  // layout used to mount a second, unconsumed one that polled on its own.
+  expect(read('app-shell.tsx')).toContain('<RuntimeSummaryProvider>');
+  expect(layout).not.toContain('<RuntimeSummaryProvider>');
   // The banner is a client component: it is handed the same-origin proxy base, never the API URL.
   expect(layout).toContain('<AppShell topBanner={<WorkspaceMonitoringModeBanner apiUrl={browserApiUrl(runtimeConfig.apiUrl)} />}>' );
   expect(layout).toContain('<AuthenticatedRoute>');

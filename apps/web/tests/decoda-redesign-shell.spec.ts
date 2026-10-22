@@ -100,8 +100,27 @@ test.describe('shell', () => {
   test('the header names the screen and its sidebar group', async ({ page }) => {
     await stubSession(page, '/alerts');
     await page.goto(harness.url);
-    await expect(page.locator('.shellPageTitle h1')).toHaveText('Alerts');
-    await expect(page.locator('.shellBreadcrumb')).toHaveText('Monitor');
+    const trail = page.getByRole('navigation', { name: 'Breadcrumb' });
+    await expect(trail.locator('li')).toHaveText(['Monitor', 'Alerts']);
+    await expect(trail.locator('[aria-current="page"]')).toHaveText('Alerts');
+    // The screen's <h1> is the page's own heading; the header must not add a second one.
+    await expect(page.locator('.appShellTop h1')).toHaveCount(0);
+  });
+
+  test('a page below a screen links back to it in the trail', async ({ page }) => {
+    await stubSession(page, '/incidents/inc-1');
+    await page.goto(harness.url);
+    const trail = page.getByRole('navigation', { name: 'Breadcrumb' });
+    await expect(trail.locator('li')).toHaveText(['Investigate & respond', 'Incidents', 'Incident']);
+    await expect(trail.getByRole('link', { name: 'Incidents' })).toHaveAttribute('href', '/incidents');
+  });
+
+  test('a skip link leads past the sidebar to the content, which is not a second <main>', async ({ page }) => {
+    await stubSession(page, '/dashboard');
+    await page.goto(harness.url);
+    await expect(page.locator('a.skipToContent')).toHaveAttribute('href', '#main');
+    await expect(page.locator('#main')).toHaveCount(1);
+    await expect(page.locator('main main')).toHaveCount(0);
   });
 
   test('desktop: the sidebar folds to an icon rail, remembers it, and keeps link names', async ({ page }) => {

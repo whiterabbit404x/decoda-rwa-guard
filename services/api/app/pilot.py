@@ -18,6 +18,7 @@ import threading
 import traceback
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic, sleep
@@ -662,8 +663,35 @@ def _resolve_database_url_for_connection(db_url: str) -> str:
     return urlunsplit((parsed.scheme, resolved_netloc, parsed.path, parsed.query, parsed.fragment))
 
 
+# The connection a read model already holds for THIS request, while it composes
+# other listings on it (see _share_pg_connection). Context variables are scoped to
+# the current request's thread/task context, so this can never leak a connection
+# to another request.
+_SHARED_PG_CONNECTION: ContextVar[Any | None] = ContextVar('decoda_shared_pg_connection', default=None)
+
+
+@contextmanager
+def _share_pg_connection(connection: Any) -> Iterable[Any]:
+    """Within this block, a nested ``pg_connection()`` reuses ``connection``.
+
+    For a read model that composes other listings: each of them still
+    authenticates the session and resolves the workspace exactly as on its own,
+    but on this connection instead of a fresh TCP+TLS+auth handshake apiece. The
+    owner's ``with pg_connection()`` commits or rolls back the whole block.
+    """
+    token = _SHARED_PG_CONNECTION.set(connection)
+    try:
+        yield connection
+    finally:
+        _SHARED_PG_CONNECTION.reset(token)
+
+
 @contextmanager
 def pg_connection() -> Iterable[Any]:
+    shared = _SHARED_PG_CONNECTION.get()
+    if shared is not None:
+        yield shared
+        return
     db_url = database_url()
     if not db_url:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Live pilot mode is not configured.')
@@ -14896,29 +14924,37 @@ def _isoformat_or_none(value: Any) -> str | None:
 
 def list_monitoring_sources(request: Request) -> dict[str, Any]:
     require_live_mode()
-    assets = list_assets(request).get('assets', [])
-    targets = list_targets(request).get('targets', [])
-    systems = list_monitored_systems(request).get('systems', [])
     enrichment: dict[str, Any] = {
         'sources': [], 'provider_health': None, 'agent': None, 'summary': None, 'decisions': [],
     }
     settings = {**_SOURCE_SETTINGS_DEFAULTS, 'persisted': False}
-    try:
-        with pg_connection() as connection:
-            ensure_pilot_schema(connection)
-            _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
-            workspace_id = workspace_context['workspace_id']
-            settings = _load_source_settings(connection, workspace_id=workspace_id)
-            enrichment = _build_monitoring_sources_enrichment(
-                connection, workspace_id=workspace_id, assets=assets, targets=targets, systems=systems,
-                settings=settings,
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        # Enrichment is additive; never fail the whole page if a canonical facts table is
-        # temporarily unavailable. The base assets/targets/systems payload still renders.
-        logger.exception('monitoring_sources_enrichment_failed')
+    # One connection for the whole read model. The three listings and the
+    # enrichment each used to open their own -- four handshakes per call (five for
+    # the Integrations control plane, which composes this) -- and to re-check the
+    # session on each. They still authenticate and scope to the workspace exactly
+    # as before, on this connection.
+    with pg_connection() as connection, _share_pg_connection(connection):
+        assets = list_assets(request).get('assets', [])
+        targets = list_targets(request).get('targets', [])
+        systems = list_monitored_systems(request).get('systems', [])
+        try:
+            # A savepoint: an enrichment failure must not abort the transaction
+            # the listings above were read in.
+            with connection.transaction():
+                ensure_pilot_schema(connection)
+                _, workspace_context, _ = resolve_workspace_context_for_request(connection, request)
+                workspace_id = workspace_context['workspace_id']
+                settings = _load_source_settings(connection, workspace_id=workspace_id)
+                enrichment = _build_monitoring_sources_enrichment(
+                    connection, workspace_id=workspace_id, assets=assets, targets=targets, systems=systems,
+                    settings=settings,
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # Enrichment is additive; never fail the whole page if a canonical facts table is
+            # temporarily unavailable. The base assets/targets/systems payload still renders.
+            logger.exception('monitoring_sources_enrichment_failed')
     return {
         'assets': assets,
         'targets': targets,
