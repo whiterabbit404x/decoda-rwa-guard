@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 
+import { ScreenSkeleton } from 'app/components/screen-states';
 import { markDashboardPerf } from 'app/dashboard-perf';
 import { MfaRequired, isMfaSetupPath, mfaGateVariant } from 'app/mfa-required-gate';
 import { PilotAccessRequired, usePilotAccessState } from 'app/pilot-access-gate';
@@ -20,7 +21,9 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   // creation prompt any more: creating a workspace used to mint an active Pilot
   // tenant, which is exactly the unapproved grant this flow removes.
   const hasMembership = (user?.memberships?.length ?? 0) > 0;
-  const { state: pilotAccessState } = usePilotAccessState();
+  // Only asked once the session is known to hold no membership: that is the one
+  // branch below that renders the answer.
+  const { state: pilotAccessState } = usePilotAccessState(!loading && isAuthenticated && !hasMembership);
 
   const currentPath = `${pathname || '/dashboard'}${searchParams?.toString() ? `?${searchParams.toString()}` : ''}`;
 
@@ -77,12 +80,9 @@ export default function AuthenticatedRoute({ children }: { children: React.React
   }, [currentPath, hasMembership, isAuthenticated, liveModeConfigured, loading, pathname, router, user?.current_workspace]);
 
   if (loading) {
-    return (
-      <section className="emptyStatePanel">
-        <h1>Loading workspace…</h1>
-        <p>We are validating your session and loading the active workspace context.</p>
-      </section>
-    );
+    // The same skeleton the route boundary shows, so the screen goes from
+    // "loading" to "loaded" in one shape instead of flashing a text panel first.
+    return <ScreenSkeleton label="Validating your session and loading the active workspace…" />;
   }
 
   if (!liveModeConfigured) {

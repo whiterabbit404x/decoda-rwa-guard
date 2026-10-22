@@ -149,14 +149,16 @@ function barHeightPct(index: number, total: number): number {
 
 export default function ThreatMonitoringPanel() {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
-  const { authHeaders } = usePilotAuth();
+  const { authHeaders, isAuthenticated } = usePilotAuth();
   const apiUrl = resolveApiUrl();
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [telemetry, setTelemetry] = useState<TelemetryEvent[]>([]);
   const [detections, setDetections] = useState<DetectionRow[]>([]);
-  const [dataLoading, setDataLoading] = useState(false);
+  // Starts true: nothing has been read yet, so no empty state or zero count
+  // may render before the first read settles.
+  const [dataLoading, setDataLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
   // Prefer fine-grained runtime counts/timestamps when available
@@ -176,7 +178,10 @@ export default function ThreatMonitoringPanel() {
   const isSimulatorMode =
     workspaceEvidenceSource === 'simulator' || summary.monitoring_mode === 'simulator';
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
     let cancelled = false;
     setDataLoading(true);
 
@@ -210,7 +215,7 @@ export default function ThreatMonitoringPanel() {
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, authHeaders, runtimeLoading]);
+  }, [apiUrl, authHeaders, isAuthenticated]);
 
   // Pipeline node completion logic per spec
   const assetOk = protectedAssets > 0;

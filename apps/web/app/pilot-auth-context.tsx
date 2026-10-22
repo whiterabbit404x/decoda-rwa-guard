@@ -206,13 +206,33 @@ export async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
   return data as RuntimeConfig;
 }
 
-export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
-  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(UNLOADED_RUNTIME_CONFIG);
-  const [configLoading, setConfigLoading] = useState(true);
+/** Only a config that is actually unusable is an error (see the fetch path below). */
+function unusableRuntimeConfigError(config: RuntimeConfig | undefined): string | null {
+  return config && config.diagnostic && !config.configured ? config.diagnostic : null;
+}
+
+/**
+ * `initialRuntimeConfig` is the runtime config the root layout already resolved
+ * on the server (getBrowserRuntimeConfig). With it, the session restore starts on
+ * the first effect pass instead of after a `/api/runtime-config` round trip --
+ * that request used to sit, strictly serial, in front of `/api/auth/me` on every
+ * document load. Without it (tests, any caller that mounts the provider on its
+ * own) the provider fetches the config exactly as before.
+ */
+export function PilotAuthProvider({
+  children,
+  initialRuntimeConfig,
+}: {
+  children: React.ReactNode;
+  initialRuntimeConfig?: RuntimeConfig;
+}) {
+  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>(initialRuntimeConfig ?? UNLOADED_RUNTIME_CONFIG);
+  const [configLoading, setConfigLoading] = useState(!initialRuntimeConfig);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [user, setUser] = useState<PilotUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => unusableRuntimeConfigError(initialRuntimeConfig));
+  const runtimeConfigFromServer = useRef(Boolean(initialRuntimeConfig));
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
   const sessionRestoreStarted = useRef(false);
 
@@ -341,6 +361,13 @@ export function PilotAuthProvider({ children }: { children: React.ReactNode }) {
   }, [configLoading, fetchCsrfToken]);
 
   useEffect(() => {
+    if (runtimeConfigFromServer.current) {
+      // Arrived with the document. The mark keeps the critical-path timeline
+      // complete: it now records hydration, not a network response.
+      markDashboardPerf('runtime-config.response', { ok: true, source: 'document' });
+      return;
+    }
+
     let active = true;
 
     void fetchRuntimeConfig()

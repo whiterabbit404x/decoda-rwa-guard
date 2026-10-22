@@ -122,15 +122,18 @@ function deriveWorkerHealth(
 }
 
 export function RuntimeSummaryProvider({ children }: { children: React.ReactNode }) {
-  const { authHeaders, isAuthenticated } = usePilotAuth();
+  const { authHeaders, isAuthenticated, user } = usePilotAuth();
   const [summary, setSummary] = useState<WorkspaceMonitoringTruth>(defaultSummary);
   const [runtime, setRuntime] = useState<import('./monitoring-status-contract').WorkspaceMonitoringRuntime | null>(null);
   const [rawPayload, setRawPayload] = useState<import('./monitoring-status-contract').MonitoringRuntimeStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The workspace whose summary is on display, once a load for it has settled.
+  // `undefined` = nothing settled yet.
+  const [settledWorkspace, setSettledWorkspace] = useState<string | null | undefined>(undefined);
+  const workspaceKey = user?.current_workspace?.id ?? user?.current_workspace_id ?? null;
 
   const load = useCallback(async (forceRefresh = false): Promise<void> => {
     if (!isAuthenticated) return;
-    setLoading(true);
+    const loadingFor = workspaceKey;
     try {
       const payload = await fetchRuntimeStatusDeduped(authHeaders(), forceRefresh ? { forceRefresh: true } : undefined);
       setSummary(resolveWorkspaceMonitoringTruth(payload));
@@ -141,9 +144,20 @@ export function RuntimeSummaryProvider({ children }: { children: React.ReactNode
       setRuntime(null);
       setRawPayload(null);
     } finally {
-      setLoading(false);
+      setSettledWorkspace(loadingFor);
     }
-  }, [authHeaders, isAuthenticated]);
+  }, [authHeaders, isAuthenticated, workspaceKey]);
+
+  // `loading` means "no answer for THIS workspace yet" -- not "a request is in
+  // flight". It used to flip back to true on every 90s revalidation and every
+  // refresh(), which (a) hid the global health banner for the length of each
+  // request and (b) re-ran every screen effect keyed on it, so Incidents,
+  // Response Actions, Evidence and Threat Monitoring refetched their own data on
+  // the runtime-status cadence. A revalidation now replaces the summary in
+  // place when it lands. A workspace switch still reads as loading until that
+  // workspace's own summary settles, so one workspace's status is never shown
+  // under another's name.
+  const loading = !isAuthenticated || settledWorkspace === undefined || settledWorkspace !== workspaceKey;
 
   // `refresh` forces a fresh runtime-status fetch, bypassing the freshness cache, so callers
   // (e.g. after activation or a monitored-systems repair) see canonical counts and the global

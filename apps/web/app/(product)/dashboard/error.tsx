@@ -1,37 +1,37 @@
 "use client";
 
+import { ScreenError } from '../../components/screen-states';
+
 type DashboardErrorBoundaryProps = {
+  error: Error & { digest?: string };
   reset: () => void;
 };
 
-export default function DashboardErrorBoundary({
-  reset,
-}: DashboardErrorBoundaryProps) {
+/**
+ * The dashboard's own failure state. It used utility classes from a CSS
+ * framework this app does not ship, so it rendered as unstyled text; it now
+ * shares the product's screen-level failure state. "Retry" re-renders the
+ * screen in place; "Hard reload" reloads the document, for a stale bundle.
+ */
+export default function DashboardErrorBoundary({ error, reset }: DashboardErrorBoundaryProps) {
   const hardReloadDashboard = () => {
     window.location.assign('/dashboard');
   };
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
-      <p className="font-medium text-slate-900">
-        Dashboard unavailable. Please retry.
-      </p>
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={reset}
-          className="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          Retry
-        </button>
-        <button
-          type="button"
-          onClick={hardReloadDashboard}
-          className="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          Hard reload
-        </button>
-      </div>
-    </div>
+    <ScreenError
+      title="Dashboard unavailable"
+      digest={error?.digest}
+      actions={(
+        <>
+          <button type="button" className="btn btn-primary" onClick={reset}>
+            Retry
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={hardReloadDashboard}>
+            Hard reload
+          </button>
+        </>
+      )}
+    />
   );
 }

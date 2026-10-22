@@ -1,4 +1,4 @@
-import { ApiUrlSource, resolveApiConfig } from './api-config';
+import { ApiUrlSource, browserApiUrl, resolveApiConfig } from './api-config';
 import { RuntimeConfig, RuntimeConfigValueSource } from './runtime-config-schema';
 
 function mapApiUrlSource(source: ApiUrlSource): RuntimeConfigValueSource {
@@ -128,4 +128,16 @@ export function getRuntimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeC
       apiTimeoutMs: apiTimeout.source,
     },
   };
+}
+
+/**
+ * The runtime config as the BROWSER receives it: the same facts, with the API
+ * base swapped for the same-origin proxy, so the browser never learns the API
+ * itself. One builder for both readers -- `/api/runtime-config` and the root
+ * layout, which hands it to PilotAuthProvider so the auth bootstrap does not
+ * spend a whole round trip asking for a value the server already knows.
+ */
+export function getBrowserRuntimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
+  const serverConfig = getRuntimeConfig(env);
+  return { ...serverConfig, apiUrl: browserApiUrl(serverConfig.apiUrl) };
 }

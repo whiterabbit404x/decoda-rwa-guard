@@ -129,8 +129,18 @@ function useExecutiveSummary(refreshSignal: string | null | undefined) {
   // Refresh when the live workspace feed signals an update (SSE event or poll),
   // debounced so a burst of events triggers a single refetch. Chart/scroll
   // state is preserved because we mutate state in place rather than remount.
+  //
+  // The feed's FIRST completion is not an update: it is the feed's own initial
+  // snapshot, fetched in parallel with the initial load above. Refetching on it
+  // requested the summary twice on every dashboard load. Later completions (the
+  // poll cadence, an SSE alert event) still refresh exactly as before.
+  const initialFeedSignalSeen = useRef(false);
   useEffect(() => {
     if (refreshSignal == null) return;
+    if (!initialFeedSignalSeen.current) {
+      initialFeedSignalSeen.current = true;
+      return;
+    }
     const timer = setTimeout(() => void load(true), 400);
     return () => clearTimeout(timer);
   }, [refreshSignal, load]);

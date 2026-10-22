@@ -13,7 +13,7 @@ import { PlanStatusProvider } from './plan-status-context';
 import RuntimeBanner from './components/runtime-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
 import ThemeToggle from './theme-toggle';
-import { APP_NAV_GROUPS, APP_NAV_ITEMS } from './product-nav';
+import { breadcrumbsFor } from './shell-breadcrumbs';
 import DecodaSwitcher from './decoda-switcher';
 import { DecodaShieldMark } from './components/brand-mark';
 
@@ -70,35 +70,6 @@ function initials(name: string): string {
     .map((w) => w[0] ?? '')
     .join('')
     .toUpperCase();
-}
-
-/**
- * The current screen's name, for the header.
- *
- * Resolved from the canonical nav list rather than a second hand-written
- * route→title map, so a header title can never disagree with the sidebar
- * label for the same route. Unlisted routes (detail pages, /workspaces,
- * /help) fall back to no title instead of a guess.
- */
-function pageTitleFor(pathname: string): string | null {
-  const exact = APP_NAV_ITEMS.find((item) => item.href === pathname);
-  if (exact) return exact.label;
-  const nested = APP_NAV_ITEMS.find((item) => item.href !== '/dashboard' && pathname.startsWith(item.href + '/'));
-  return nested ? nested.label : null;
-}
-
-/**
- * The sidebar group the current screen sits in ("Monitor", "Investigate &
- * respond" …), shown above the header title. Same canonical source as the
- * sidebar headings, so the two can never disagree; no group, no breadcrumb.
- */
-function navGroupFor(pathname: string): string | null {
-  const item = APP_NAV_ITEMS.find(
-    (entry) => entry.href === pathname || (entry.href !== '/dashboard' && pathname.startsWith(entry.href + '/')),
-  );
-  if (!item) return null;
-  const group = APP_NAV_GROUPS.find((entry) => (entry.hrefs as readonly string[]).includes(item.href));
-  return group ? group.label : null;
 }
 
 // Desktop-only presentation preference: icon rail vs full sidebar. Stored in
@@ -205,8 +176,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
 
   const workspaceName = user?.current_workspace?.name ?? 'Select workspace';
   const userInitials = user?.email ? initials(user.email.split('@')[0] ?? 'U') : 'U';
-  const pageTitle = pageTitleFor(pathname);
-  const navGroup = navGroupFor(pathname);
+  const crumbs = breadcrumbsFor(pathname);
 
   useEffect(() => {
     setSidebarCollapsed(readSidebarCollapsed());
@@ -390,6 +360,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}
         data-mobile-nav={mobileNavOpen ? 'open' : 'closed'}
       >
+        <a className="skipToContent" href="#main">Skip to content</a>
         {/* ── Sidebar ─────────────────────────────────── */}
         <aside className="appSidebar" id="app-sidebar" aria-label="Primary navigation" ref={sidebarRef}>
           <div className="sidebarBrandRow">
@@ -421,16 +392,17 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             <p className="sectionEyebrow">Active workspace</p>
             <p className="sidebarWorkspaceName">{workspaceName}</p>
             <p className="muted sidebarMetaEmail">{user?.email ?? 'Guest mode'}</p>
-            <div className="sidebarMetaLinks">
-              <Link href="/workspaces" prefetch={false}>Switch workspace</Link>
-              {/* Internal staff only, and only because the BACKEND said so. This is
-                  navigation, not authorization: /admin/customers authorizes every
-                  request itself and answers a customer with 403. */}
-              {showsInternalAdminLink(user) ? (
+            {/* One place per control: switching workspace and signing out live in
+                the header (workspace selector and account menu). The internal
+                console link stays here for staff. Internal staff only, and only
+                because the BACKEND said so. This is navigation, not authorization:
+                /admin/customers authorizes every request itself and answers a
+                customer with 403. */}
+            {showsInternalAdminLink(user) ? (
+              <div className="sidebarMetaLinks">
                 <Link href={INTERNAL_ADMIN_HREF} prefetch={false}>{INTERNAL_ADMIN_LABEL}</Link>
-              ) : null}
-              <button type="button" className="sidebarSignOut" onClick={() => void handleSignOut()}>Sign out</button>
-            </div>
+              </div>
+            ) : null}
             <p className="tableMeta sidebarLegal">
               © {new Date().getFullYear()} Decoda ·{' '}
               <Link href="/privacy" prefetch={false}>Privacy</Link> ·{' '}
@@ -480,11 +452,23 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
                 <DecodaShieldMark />
               </Link>
 
-              {pageTitle ? (
-                <div className="shellPageTitle">
-                  {navGroup ? <p className="shellBreadcrumb">{navGroup}</p> : null}
-                  <h1>{pageTitle}</h1>
-                </div>
+              {crumbs.length > 0 ? (
+                <nav className="shellCrumbs" aria-label="Breadcrumb">
+                  <ol>
+                    {crumbs.map((crumb, index) => {
+                      const last = index === crumbs.length - 1;
+                      return (
+                        <li key={`${crumb.label}-${index}`}>
+                          {crumb.href && !last ? (
+                            <Link href={crumb.href} prefetch={false}>{crumb.label}</Link>
+                          ) : (
+                            <span aria-current={last ? 'page' : undefined}>{crumb.label}</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </nav>
               ) : null}
 
               <span className="shellHeaderSpacer" />
@@ -578,7 +562,10 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             <RuntimeBanner />
           </header>
 
-          <main className="appShellPage">{children}</main>
+          {/* Each screen renders its own <main> landmark; the shell's content
+              region is a plain container (and the skip-link target), so a page
+              no longer nests one <main> inside another. */}
+          <div className="appShellPage" id="main" tabIndex={-1}>{children}</div>
         </div>
       </div>
       </PlanStatusProvider>

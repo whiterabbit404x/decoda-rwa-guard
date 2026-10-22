@@ -69,15 +69,20 @@ export function PilotAccessRequired({ state }: { state: Exclude<PilotAccessState
  * An unreadable answer is NOT treated as access: the hook reports the failure
  * and the caller keeps the account out of the product, which is the fail-closed
  * direction.
+ *
+ * `enabled` is false while the answer cannot change what is rendered -- an
+ * account that already holds a workspace membership never sees this gate -- so
+ * members do not pay a request on every page load for a state nobody reads.
+ * Disabled reads as unknown (`null`), never as access.
  */
-export function usePilotAccessState(): { state: PilotAccessState | null; loading: boolean } {
+export function usePilotAccessState(enabled = true): { state: PilotAccessState | null; loading: boolean } {
   const { authHeaders, isAuthenticated } = usePilotAuth();
   const [state, setState] = useState<PilotAccessState | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    if (!isAuthenticated) {
+    if (!isAuthenticated || !enabled) {
       setState(null);
       return;
     }
@@ -110,7 +115,7 @@ export function usePilotAccessState(): { state: PilotAccessState | null; loading
     return () => {
       cancelled = true;
     };
-  }, [authHeaders, isAuthenticated]);
+  }, [authHeaders, enabled, isAuthenticated]);
 
   return { state, loading };
 }

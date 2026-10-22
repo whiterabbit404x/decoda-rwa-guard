@@ -18,7 +18,17 @@ export type AlertStreamCallbacks = {
 };
 
 const SSE_PROXY_PATH = '/api/stream/alerts';
+// First retry after RECONNECT_DELAY_MS, doubling to the ceiling while the stream
+// keeps refusing, and back to the base once a connection is established. A fixed
+// 3s retry against a stream that answers 503 was ~20 requests a minute from every
+// open tab -- the most frequent request the product made -- while the live feed's
+// own polling fallback was already carrying the screen.
 const RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 60_000;
+
+export function alertStreamReconnectDelayMs(attempt: number): number {
+  return Math.min(RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt), MAX_RECONNECT_DELAY_MS);
+}
 
 export function parseSseLine(line: string): { field: string; value: string } | null {
   if (!line) return null;
@@ -47,6 +57,7 @@ export function connectAlertStream(
   const abortController = new AbortController();
   let closed = false;
   let lastEventId: string | undefined;
+  let reconnectAttempt = 0;
 
   async function connectOnce(): Promise<boolean> {
     const requestHeaders: Record<string, string> = {
@@ -76,6 +87,7 @@ export function connectAlertStream(
       return true; // retry
     }
 
+    reconnectAttempt = 0;
     callbacks.onConnected();
     callbacks.onStatusChange('live');
 
@@ -152,8 +164,10 @@ export function connectAlertStream(
       const shouldRetry = await connectOnce();
       if (!shouldRetry || closed) break;
       callbacks.onStatusChange('reconnecting');
+      const delay = alertStreamReconnectDelayMs(reconnectAttempt);
+      reconnectAttempt += 1;
       await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, RECONNECT_DELAY_MS);
+        const t = setTimeout(resolve, delay);
         // Allow clean exit during reconnect delay
         abortController.signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
       });

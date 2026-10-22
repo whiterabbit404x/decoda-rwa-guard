@@ -4,6 +4,7 @@ import { headers } from 'next/headers';
 
 import { PilotAuthProvider } from 'app/pilot-auth-context';
 import { GUARD_SITE_URL } from 'app/public-site-links';
+import { getBrowserRuntimeConfig } from 'app/runtime-config';
 import { ThemeProvider } from 'app/theme-context';
 import { THEME_INIT_SCRIPT } from 'app/theme-script';
 import './styles.css';
@@ -52,7 +53,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body>
         <ThemeProvider>
-          <PilotAuthProvider>{children}</PilotAuthProvider>
+          {/* The runtime config is resolved here, on the server, and handed to the
+              provider with the document: the browser no longer waits a round trip
+              for it before it can ask who is signed in. */}
+          <PilotAuthProvider initialRuntimeConfig={getBrowserRuntimeConfig()}>{children}</PilotAuthProvider>
         </ThemeProvider>
       </body>
     </html>

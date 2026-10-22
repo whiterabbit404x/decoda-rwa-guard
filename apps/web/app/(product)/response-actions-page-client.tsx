@@ -664,7 +664,7 @@ type Blocker = {
 
 export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { apiUrl: string }) {
   const { summary, runtime, loading: runtimeLoading } = useRuntimeSummary();
-  const { authHeaders, refreshCsrfToken } = usePilotAuth();
+  const { authHeaders, isAuthenticated, refreshCsrfToken } = usePilotAuth();
   const searchParams = useSearchParams();
 
   const apiUrl = providedApiUrl || resolveApiUrl();
@@ -711,7 +711,9 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   // (MFA) flow restores the exact filter the operator left, alongside the selected
   // action (action_id) and incident scope (incident_id).
   const [approvalFilter, setApprovalFilter] = useState(searchParams.get('approval') ?? '');
-  const [dataLoading, setDataLoading] = useState(false);
+  // Starts true: until the first read settles there is no answer, and "no
+  // actions" must never be shown for a list that has not been read yet.
+  const [dataLoading, setDataLoading] = useState(true);
   const [liveExecutionAllowed, setLiveExecutionAllowed] = useState(false);
   const [message, setMessage] = useState('');
   // Bumped after any command that mutates canonical state (approve, reject,
@@ -730,7 +732,10 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
     (counts?.open_incidents as number | undefined) ?? summaryAny.active_incidents_count ?? 0;
 
   useEffect(() => {
-    if (runtimeLoading) return;
+    // Gated on the session, not on the runtime summary: this read does not use
+    // the summary, and waiting for it serialized a whole runtime-status round
+    // trip in front of the screen's own data (and re-ran it on every refresh).
+    if (!isAuthenticated) return;
 
     let cancelled = false;
     setDataLoading(true);
@@ -857,7 +862,7 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
   // reloadKey is included so a completed command (approve/reject/simulate/execute)
   // re-fetches the canonical actions + summary.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiUrl, authHeaders, runtimeLoading, incidentIdFilter, actionIdParam, reloadKey]);
+  }, [apiUrl, authHeaders, isAuthenticated, incidentIdFilter, actionIdParam, reloadKey]);
 
   const filteredRecommended = useMemo(() => {
     return recommendedRows.filter((row) => {
@@ -1259,7 +1264,11 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
                 onChange={(value) => setTab(value as 'recommended' | 'history')}
               />
 
-              {activeRows.length === 0 && !dataLoading ? (
+              {activeRows.length === 0 && dataLoading ? (
+                <div className="emptyStatePanel" role="status" aria-busy="true">
+                  <p className="muted">Loading response actions…</p>
+                </div>
+              ) : activeRows.length === 0 ? (
                 <div className="emptyStatePanel sharedEmptyStateBlocker">
                   <h4>No actions match current filters</h4>
                   <p className="muted">Adjust the filters above to see more results.</p>

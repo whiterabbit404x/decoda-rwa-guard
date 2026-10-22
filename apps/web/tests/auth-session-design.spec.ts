@@ -33,6 +33,12 @@ test('credentials are attached by the server, and browsers cannot supply them', 
   expect(proxy.includes('sessionToken: request.cookies.get(SESSION_COOKIE)?.value')).toBeTruthy();
   const credentials = fs.readFileSync('apps/web/app/server-credentials.ts', 'utf8');
   expect(credentials.includes("headers.set('authorization', `Bearer ${credentials.sessionToken}`);")).toBeTruthy();
+  // The route and the root layout share one builder, and it hands the browser the
+  // same-origin proxy rather than the API.
   const runtimeRoute = fs.readFileSync('apps/web/app/api/runtime-config/route.ts', 'utf8');
-  expect(runtimeRoute.includes('browserApiUrl(serverConfig.apiUrl)')).toBeTruthy();
+  expect(runtimeRoute.includes('getBrowserRuntimeConfig()')).toBeTruthy();
+  const rootLayout = fs.readFileSync('apps/web/app/layout.tsx', 'utf8');
+  expect(rootLayout.includes('getBrowserRuntimeConfig()')).toBeTruthy();
+  const runtimeConfig = fs.readFileSync('apps/web/app/runtime-config.ts', 'utf8');
+  expect(runtimeConfig.includes('browserApiUrl(serverConfig.apiUrl)')).toBeTruthy();
 });

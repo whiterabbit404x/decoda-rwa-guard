@@ -43,7 +43,11 @@ test('authenticated route guards unauthenticated and missing-workspace users', a
   expect(guard).toContain('Preparing your workspace…');
   expect(guard).not.toContain('membership_required');
   expect(productLayout).toContain('const cookieStore = await cookies();');
-  expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading>{children}</ProductLayoutLoading>}>');
+  // The Suspense fallback is fail-closed: the shared skeleton, never the screen
+  // itself rendered outside the auth gate.
+  expect(productLayout).toContain('<Suspense fallback={<ProductLayoutLoading />}>');
+  expect(productLayout).not.toContain('<ProductLayoutLoading>{children}</ProductLayoutLoading>');
+  expect(productLayout).toContain('<ScreenSkeleton');
 });
 
 test('dashboard and history expose self-serve onboarding and first-run empty states', async () => {
