@@ -10,6 +10,7 @@ import {
 import { isSuccessRuntimeReason, runtimeReasonMessage } from '../runtime-reason-copy';
 import { realtimeWorkerStatusLine } from '../realtime-coverage-status';
 import { useRuntimeSummary } from '../runtime-summary-context';
+import { deriveBannerState } from '../workspace-monitoring-mode-banner';
 import type { WorkspaceMonitoringTruth } from '../workspace-monitoring-truth';
 
 function formatAge(iso: string | null): string {
@@ -222,11 +223,12 @@ export function runtimeBannerLimitation(
   return reasonMessage(topReason);
 }
 
-export default function RuntimeBanner() {
-  const { summary, loading, nextActionLabel: contextNextActionLabel, reasonMessageForCode } = useRuntimeSummary();
-
-  if (loading) return null;
-
+/**
+ * The runtime verdict every shell surface reads: the strip below, and the
+ * header chip that summarises it. One derivation, so the chip's word and the
+ * strip's "Monitoring" field can never disagree.
+ */
+export function deriveRuntimeVerdict(summary: WorkspaceMonitoringTruth) {
   const topReason = runtimeBannerTopReason(summary);
   // Live/healthy display disabled until telemetry verified
   const healthProvable =
@@ -238,9 +240,74 @@ export default function RuntimeBanner() {
     && hasRealTelemetryBackedChain(summary)
     && !topReason;
 
-  const monitoringValue = deriveMonitoringLabel(summary, healthProvable);
-  const freshnessValue = deriveFreshnessLabel(summary, healthProvable);
-  const confidenceValue = deriveConfidenceLabel(summary, healthProvable);
+  return {
+    healthProvable,
+    monitoringValue: deriveMonitoringLabel(summary, healthProvable),
+    freshnessValue: deriveFreshnessLabel(summary, healthProvable),
+    confidenceValue: deriveConfidenceLabel(summary, healthProvable),
+  };
+}
+
+function ChevronIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+/**
+ * The header's one monitoring control. It states the canonical Monitoring
+ * verdict in words on every screen, toned by runtimeFieldTone (so an unproven
+ * runtime can never read green), and opens the full strip -- every field the
+ * strip has always carried -- on demand. Until the runtime summary has
+ * answered it says so; it never shows a verdict it does not have.
+ */
+export function MonitoringStatusChip({
+  open,
+  onToggle,
+  controlsId,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  controlsId: string;
+}) {
+  const { summary, loading } = useRuntimeSummary();
+  // An unreachable runtime or database is Offline whatever else the summary
+  // says: the verdict strip's OFFLINE (deriveBannerState) outranks the field.
+  const label = loading
+    ? 'Checking…'
+    : deriveBannerState(summary) === 'OFFLINE'
+      ? 'Offline'
+      : deriveRuntimeVerdict(summary).monitoringValue;
+  const tone = loading ? 'neutral' : runtimeFieldTone(label);
+  return (
+    <span className="shellStatusChipWrap" role="status" aria-live="polite">
+      <button
+        type="button"
+        className="shellStatusChip"
+        data-tone={tone}
+        aria-expanded={open}
+        aria-controls={controlsId}
+        aria-label={`Monitoring status: ${label}. ${open ? 'Hide' : 'Show'} details`}
+        onClick={onToggle}
+        data-testid="shell-status-chip"
+      >
+        <span className="shellStatusDot" aria-hidden="true" />
+        <span className="shellStatusKey">Monitoring</span>
+        <span className="shellStatusValue">{label}</span>
+        <ChevronIcon />
+      </button>
+    </span>
+  );
+}
+
+export default function RuntimeBanner() {
+  const { summary, loading, nextActionLabel: contextNextActionLabel, reasonMessageForCode } = useRuntimeSummary();
+
+  if (loading) return null;
+
+  const { healthProvable, monitoringValue, freshnessValue, confidenceValue } = deriveRuntimeVerdict(summary);
 
   const nextActionDisplay = runtimeBannerNextAction(summary, contextNextActionLabel);
   const reasonCopy = runtimeBannerLimitation(summary, reasonMessageForCode);

@@ -9,6 +9,7 @@ import { classifyApiTransportError } from './auth-diagnostics';
 import { isUsableClientApiBase } from './api-config';
 import { followDecodaRefusal } from './decoda-identity-shared';
 import { DataTable, StatusPill, TabStrip, type PillVariant } from './components/ui-primitives';
+import { PageHeader } from './components/page-header';
 import AssetRiskAssessorPanel from './asset-risk-assessor-panel';
 import AssetIntegrityPanel from './asset-integrity-panel';
 import {
@@ -766,17 +767,15 @@ export default function AssetsManager({ apiUrl }: Props) {
     <div className="assetsRegistryLayout">
       <div className="assetsRegistryMain">
         {/* ── Page header ──────────────────────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.25rem', gap: '1rem', flexWrap: 'wrap' }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>Protected Assets</h1>
-            <p style={{ margin: '0.3rem 0 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              AI risk scoring and monitoring coverage for all protected assets.
-            </p>
-          </div>
-          <button type="button" className="btn btn-primary" onClick={() => { setShowAddModal(true); setSubmitError(''); setSuccessMessage(''); }}>
-            Add Asset
-          </button>
-        </div>
+        <PageHeader
+          title="Protected Assets"
+          description="AI risk scoring and monitoring coverage for all protected assets."
+          actions={(
+            <button type="button" className="btn btn-primary" onClick={() => { setShowAddModal(true); setSubmitError(''); setSuccessMessage(''); }}>
+              Add Asset
+            </button>
+          )}
+        />
 
         {/* ── Filters ──────────────────────────────────────────────── */}
         <div className="assetsToolbar">
@@ -931,7 +930,16 @@ export default function AssetsManager({ apiUrl }: Props) {
         )}
       </div>
 
-      {/* ── Right-side AI Asset Risk Assessor panel ──────────────────── */}
+      {/* ── AI Asset Risk Assessor ───────────────────────────────────── */}
+      {/* Below the registry, on demand: the table keeps the full width. The panel
+          stays mounted while closed, so its assessment state and the gap/anomaly
+          filters it drives behave exactly as before. */}
+      <details className="pageDisclosure assetsAssessorDisclosure">
+        <summary className="pageDisclosureSummary">
+          AI asset risk assessor
+          <span className="pageDisclosureHint">Assessment status, reserve coverage, anomalies and monitoring gaps</span>
+        </summary>
+        <div className="pageDisclosureBody">
       <AssetRiskAssessorPanel
         refreshSignal={panelRefresh}
         onRunAssessment={runWorkspaceAssessment}
@@ -942,6 +950,8 @@ export default function AssetsManager({ apiUrl }: Props) {
         onFilterAnomalies={() => updateFilter({ risk_level: 'critical' })}
         onFilterGaps={() => updateFilter({ monitoring_gap: MONITORING_GAP_FILTER })}
       />
+        </div>
+      </details>
 
       {/* ── Details drawer ───────────────────────────────────────────── */}
       {drawerAsset ? (

@@ -18,9 +18,12 @@ test('/incidents route file exists and exports a default page component', () => 
 });
 
 test('page title and subtitle exist', () => {
-  const src = appSource('(product)/incidents/page.tsx');
-  expect(src).toContain('<h1>Incidents</h1>');
-  expect(src).toContain('Investigate alert-driven incidents, evidence, and response progress.');
+  // The panel renders the shared page header, so Create Incident sits beside the title.
+  expect(appSource('(product)/incidents/page.tsx')).toContain('<IncidentsPanel />');
+  const panel = appSource('incidents-panel.tsx');
+  expect(panel).toContain('<PageHeader');
+  expect(panel).toContain('title="Incidents"');
+  expect(panel).toContain('Investigate alert-driven incidents, evidence, and response progress.');
 });
 
 test('search filter exists', () => {
@@ -58,7 +61,8 @@ test('top metric cards exist', () => {
 test('incident table columns exist exactly', () => {
   const panel = appSource('incidents-panel.tsx');
   expect(panel).toContain(
-    "const INCIDENT_TABLE_HEADERS = ['Incident ID', 'Severity', 'Title', 'Asset', 'Status', 'Created', 'Action']",
+    // The short incident ID sits under its title rather than in its own column.
+    "const INCIDENT_TABLE_HEADERS = ['Severity', 'Incident', 'Asset', 'Status', 'Created', 'Action']",
   );
 });
 

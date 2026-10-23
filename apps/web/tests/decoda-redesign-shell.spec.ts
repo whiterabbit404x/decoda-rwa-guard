@@ -301,33 +301,37 @@ function summary(overrides: Record<string, unknown>) {
   };
 }
 
-test.describe('dashboard security posture', () => {
+test.describe('dashboard monitoring status', () => {
   let harness: Harness;
   test.beforeAll(async () => { harness = await startRenderHarness({ bootstrap: DASHBOARD_BOOTSTRAP }); });
   test.afterAll(async () => { await harness?.close(); });
 
+  // The posture strip became one status card; every axis it reported is still
+  // reported separately, straight from the backend facts.
   test('each backend fact is reported on its own axis, unconfirmed never reads as fine', async ({ page }) => {
     await stubSession(page, '/dashboard', { '/api/dashboard/executive-summary': summary({}) });
     await page.goto(harness.url);
-    const posture = page.getByRole('region', { name: 'Security posture' });
-    await expect(posture).toBeVisible();
+    const status = page.getByRole('region', { name: 'Monitoring status' });
+    await expect(status).toBeVisible();
+    await expect(status).toHaveAttribute('data-state', 'degraded');
+    await expect(status.locator('.dashStatusHeadline')).toContainText('Monitoring degraded');
+    await expect(status).toContainText('polling fallback active');
 
-    const item = (label: string) => posture.locator('.dcPostureItem').filter({ hasText: label });
-    await expect(item('Monitoring')).toContainText('Monitoring degraded');
-    await expect(item('Monitoring')).toContainText('polling fallback active');
-    await expect(item('Monitoring')).toHaveAttribute('data-tone', 'warn');
-    await expect(item('Worker heartbeat')).toContainText('Heartbeat current');
-    await expect(item('Worker heartbeat')).toContainText('not proof that telemetry arrived');
-    await expect(item('Ingestion')).toContainText('Ingestion not confirmed');
-    await expect(item('Ingestion')).not.toHaveAttribute('data-tone', 'ok');
+    const fact = (text: string) => status.locator('.dashFact').filter({ hasText: text });
+    await expect(fact('Heartbeat current')).toHaveAttribute('data-ok', 'true');
+    await expect(fact('Heartbeat current')).toHaveAttribute('title', /not proof that telemetry arrived/);
+    await expect(status).toContainText('only telemetry shows monitored data arrived');
+    await expect(fact('Ingestion not confirmed')).toHaveAttribute('data-ok', 'false');
+    await expect(fact('Telemetry stale')).toHaveAttribute('data-ok', 'false');
+    // The browser's own connection is a separate fact, never a monitoring one.
+    await expect(fact('Live updates:')).toHaveCount(1);
   });
 
   test('period activity the backend did not report is "Not reported", never zero', async ({ page }) => {
     await stubSession(page, '/dashboard', { '/api/dashboard/executive-summary': summary({}) });
     await page.goto(harness.url);
-    const activity = page.locator('.dcPostureItem').filter({ hasText: 'Last 24 hours' });
-    await expect(activity).toContainText('Not reported');
-    await expect(activity.locator('.dcActivityValue')).toHaveCount(0);
+    const activity = page.locator('.dashActivity');
+    await expect(activity).toHaveText('Last 24 hours: Not reported');
   });
 
   test('reported period activity renders the backend counts', async ({ page }) => {
@@ -337,8 +341,7 @@ test.describe('dashboard security posture', () => {
       }),
     });
     await page.goto(harness.url);
-    const values = page.locator('.dcPostureItem').filter({ hasText: 'Last 24 hours' }).locator('.dcActivityValue');
-    await expect(values).toHaveText(['7', '2', '1']);
+    await expect(page.locator('.dashActivity')).toHaveText('Last 24 hours: 7 alerts created · 2 incidents opened · 1 resolved');
   });
 
   test('offline monitoring is never toned as healthy', async ({ page }) => {
@@ -346,10 +349,12 @@ test.describe('dashboard security posture', () => {
       '/api/dashboard/executive-summary': summary({ monitoring_state: { state: 'something-unexpected' } }),
     });
     await page.goto(harness.url);
-    const monitoring = page.locator('.dcPostureItem').filter({ hasText: 'Monitoring' }).first();
-    await expect(monitoring).toContainText('Monitoring offline');
-    await expect(monitoring).toHaveAttribute('data-tone', 'bad');
-    await expect(page.locator('.dcPostureItem').filter({ hasText: 'Worker heartbeat' })).toContainText('Heartbeat not confirmed');
+    const status = page.getByRole('region', { name: 'Monitoring status' });
+    await expect(status.locator('.dashStatusHeadline')).toContainText('Monitoring offline');
+    await expect(status).toHaveAttribute('data-state', 'offline');
+    await expect(status.locator('.dashFact').filter({ hasText: 'Heartbeat not confirmed' })).toHaveAttribute('data-ok', 'false');
+    // Not live: the screen offers the way to fix it.
+    await expect(status.getByRole('link', { name: 'Set up monitoring' })).toHaveAttribute('href', '/monitoring-sources');
   });
 });
 

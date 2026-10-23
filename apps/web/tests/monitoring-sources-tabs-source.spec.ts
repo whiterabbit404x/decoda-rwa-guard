@@ -17,9 +17,10 @@ test('page title "Monitoring Sources" exists', () => {
   expect(pageSource).toContain('Monitoring Sources');
 });
 
-test('subtitle matches the Screen-4 spec', () => {
+test('subtitle says what the screen is for, in the shared page header', () => {
+  expect(pageSource).toContain('<PageHeader');
   expect(pageSource).toContain(
-    'Continuously monitor provider health, ingestion coverage, routing status, and telemetry reliability.',
+    'The systems Guard watches for each protected asset, and whether their data is arriving.',
   );
 });
 
@@ -41,11 +42,11 @@ test('selected tab is persisted to the URL query string', () => {
 });
 
 test('Monitoring Targets table has the required Screen-4 columns', () => {
-  for (const col of [
-    'Target / System', 'Network', 'Source Provider', 'Role', 'Status', 'Health Score',
-    'P95 Latency', 'Block Lag', 'Error Rate', 'Last Event', 'Last Heartbeat', 'Routing', 'Actions',
-  ]) {
-    expect(pageSource).toContain(col);
+  // Seven columns a person scans; provider, role and the latency / lag / error /
+  // heartbeat evidence are on each source's detail drawer (Details).
+  expect(pageSource).toContain("'Target / System', 'Network', 'Status', 'Health Score', 'Last Event', 'Routing', 'Actions',");
+  for (const removed of ["'P95 Latency'", "'Block Lag'", "'Error Rate'", "'Last Heartbeat'", "'Source Provider'"]) {
+    expect(pageSource).not.toContain(removed);
   }
 });
 
@@ -77,7 +78,10 @@ test('search, filters, sorting and pagination are implemented', () => {
 test('live connection status reflects SSE with polling fallback', () => {
   expect(pageSource).toContain('/api/stream/sources');
   expect(pageSource).toContain("streamStatus === 'live'");
-  expect(pageSource).toContain('Live updates are reconnecting. Data is temporarily refreshed by polling.');
+  // The page's own live-update channel is a fact about this page, stated in the
+  // header meta line -- never mixed into provider or ingestion health.
+  expect(pageSource).toContain("refreshed by polling while live updates reconnect");
+  expect(pageSource).toContain('<StatusPill label={streamPill.label} variant={streamPill.variant} />');
 });
 
 test('page never shows Healthy without live evidence', () => {

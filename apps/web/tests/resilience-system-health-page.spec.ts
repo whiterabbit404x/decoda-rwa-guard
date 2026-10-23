@@ -47,7 +47,9 @@ const allComponentSources = [
 // ── Page shell ──────────────────────────────────────────────────────────────
 
 test('/system-health renders the System Health screen', () => {
-  expect(pageSource).toContain('<h1>System Health</h1>');
+  // The shared page header renders the one <h1>.
+  expect(pageSource).toContain('<PageHeader');
+  expect(pageSource).toContain('title="System Health"');
   expect(pageSource).toContain(
     'Live operational status for Decoda RWA Guard infrastructure, monitoring workers,',
   );
@@ -295,17 +297,22 @@ test('system health shows API + web build SHAs, missing reads "unknown" (never f
   expect(pageSource).toContain('frontendCommit');
 });
 
-test('Deployment Version section is rendered near the top and ALWAYS, not gated on backend health', () => {
+test('Deployment Version section is never hidden when the API cannot report', () => {
   // The section must be present...
   expect(pageSource).toContain('<DeploymentVersionSection');
   expect(pageSource).toContain("import { DeploymentVersionSection } from './_components/deployment-version-section'");
-  // ...and rendered OUTSIDE the `healthResult.ok ? (...)` branch so the web build SHA
-  // stays visible even when the API health endpoint is unreachable (never hidden).
-  const sectionIndex = pageSource.indexOf('<DeploymentVersionSection');
+  // ...and, with the health endpoint unreachable (no hero to carry the SHAs), it
+  // leads the page ahead of the verdict, so the web build SHA stays visible.
+  const leadIndex = pageSource.indexOf('{!healthResult.ok && (\n        <DeploymentVersionSection');
   const conditionalIndex = pageSource.indexOf('{healthResult.ok ? (');
-  expect(sectionIndex).toBeGreaterThan(-1);
+  expect(leadIndex).toBeGreaterThan(-1);
   expect(conditionalIndex).toBeGreaterThan(-1);
-  expect(sectionIndex).toBeLessThan(conditionalIndex);
+  expect(leadIndex).toBeLessThan(conditionalIndex);
+  // With the endpoint healthy, the hero shows both SHAs and the full section is in
+  // the "Deployment and API reference" disclosure -- every case renders it.
+  expect(heroSource).toContain("web {frontendCommit ?? 'unknown'}");
+  expect(pageSource).toContain('{healthResult.ok && (\n            <DeploymentVersionSection');
+  expect(pageSource).toContain('Deployment and API reference');
   // The page feeds it the real web (build-info) and API (health snapshot) commits.
   expect(pageSource).toContain('webCommit={webCommit}');
   expect(pageSource).toContain('apiCommit={apiCommit}');

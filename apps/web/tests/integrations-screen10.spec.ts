@@ -31,8 +31,9 @@ test('fmtLatency renders a real measured latency in ms', () => {
 });
 
 test('integrations title and subtitle exist', () => {
-  expect(src).toContain('>Integrations</h1>');
-  expect(src).toContain('Operational control plane for every external dependency Decoda relies on');
+  expect(src).toContain('<PageHeader');
+  expect(src).toContain('title="Integrations"');
+  expect(src).toContain('Every external dependency Decoda relies on');
 });
 
 test('Run Health Check and Add Provider actions exist', () => {

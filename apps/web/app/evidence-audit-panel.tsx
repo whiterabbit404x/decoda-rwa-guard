@@ -6,12 +6,12 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Key
 
 import {
   EmptyStateBlocker,
-  MetricTile,
   StatusPill,
   TableShell,
   TabStrip,
   type PillVariant,
 } from './components/ui-primitives';
+import { StatRow } from './components/page-header';
 import { usePilotAuth } from './pilot-auth-context';
 import {
   evidenceDetailReducer,
@@ -1898,26 +1898,23 @@ export default function EvidenceAuditPanel() {
       {/* ── Metric row ──────────────────────────────────────────── */}
       {/* Four tiles on desktop, two per row on phones (a fixed four-column
           inline grid pushed the page 100px+ sideways at 390px). */}
-      <div className="evidenceMetricRow">
-        <MetricTile label="Evidence Packages" value={metrics?.total_packages ?? packages.length} />
-        <MetricTile
-          label="Audit Events"
-          value={auditEventsDisplay}
-          meta={auditCapped ? 'Latest 500 shown' : 'total events'}
-        />
-        <MetricTile
-          label="Export Ready"
-          value={exportReadyCount}
-          meta={
-            readyForVerificationCount > 0
+      <StatRow
+        label="Evidence summary"
+        items={[
+          { label: 'Evidence Packages', value: metrics?.total_packages ?? packages.length },
+          { label: 'Audit Events', value: auditEventsDisplay, meta: auditCapped ? 'Latest 500 shown' : 'total events' },
+          {
+            label: 'Export Ready',
+            value: exportReadyCount,
+            meta: readyForVerificationCount > 0
               ? `${readyForVerificationCount} awaiting verification`
               : exportReadyCount > 0
                 ? 'verified packages'
-                : 'none verified'
-          }
-        />
-        <MetricTile label="Retention Status" value={retentionStatus} />
-      </div>
+                : 'none verified',
+          },
+          { label: 'Retention Status', value: retentionStatus },
+        ]}
+      />
 
       {/* ── Tab strip ───────────────────────────────────────────── */}
       <TabStrip

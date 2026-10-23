@@ -83,7 +83,12 @@ test('sidebar has exactly 12 nav items', () => {
 test('app-shell renders RuntimeBanner component', () => {
   const shell = read('app-shell.tsx');
   expect(shell).toContain('RuntimeBanner');
-  expect(shell).toContain("import RuntimeBanner from './components/runtime-banner'");
+  expect(shell).toContain("import RuntimeBanner, { MonitoringStatusChip } from './components/runtime-banner'");
+  // The readings open from the header chip; the chip is in the header bar on
+  // every screen and states the canonical verdict.
+  expect(shell).toContain('<MonitoringStatusChip');
+  expect(shell).toContain('<RuntimeBanner />');
+  expect(shell).toContain('hidden={!statusOpen}');
 });
 
 test('runtime banner shows all required fields', () => {

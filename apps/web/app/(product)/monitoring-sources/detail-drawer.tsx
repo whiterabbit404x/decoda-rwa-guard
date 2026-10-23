@@ -13,6 +13,36 @@ import {
   type SourceRow,
 } from './source-types';
 
+// P95 latency cell: truthful about sample sufficiency and recency. Only SUCCESSFUL
+// samples count. 0 successful => "No successful samples"; 1–19 => "Insufficient
+// samples"; 20+ => the calculated P95, labelled "historical" when its freshest sample
+// is old or the provider is failing now — never a failed call's elapsed time.
+export function p95LatencyCell(source: SourceRow) {
+  const status = (source.p95_status ?? '').trim().toLowerCase();
+  const count = source.p95_sample_count ?? 0;
+  if (status === 'no_successful_samples' || (status === '' && source.p95_latency_ms == null && count === 0 && !source.p95_insufficient && source.median_latency_ms == null)) {
+    return <span className="muted" title="No successful provider samples in the window">No successful samples</span>;
+  }
+  if (status === 'insufficient_samples' || source.p95_insufficient) {
+    return (
+      <span className="muted" title={`P95 needs 20+ successful samples (${count} so far)`}>
+        Insufficient samples
+      </span>
+    );
+  }
+  if (source.p95_latency_ms == null) {
+    return <span className="muted">—</span>;
+  }
+  if (source.p95_is_historical) {
+    return (
+      <span title={`Historical P95 from ${count} successful samples${source.p95_last_sample_at ? ` (last ${fmtRelative(source.p95_last_sample_at)})` : ''}; provider not verified live now`}>
+        {fmtLatency(source.p95_latency_ms)} <span className="msrcTag">historical</span>
+      </span>
+    );
+  }
+  return <span>{fmtLatency(source.p95_latency_ms)}</span>;
+}
+
 function Field({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
     <div className="msrcField">
@@ -145,6 +175,7 @@ export function SourceDetailDrawer({
         {/* The value is the MEDIAN sample (median_latency_ms); P95 with its sample
             sufficiency rules lives in the table's P95 Latency column. */}
         <Field label="Median latency" value={source.median_latency_ms == null ? NOT_MEASURED : fmtLatency(source.median_latency_ms)} />
+        <Field label="P95 latency" value={p95LatencyCell(source)} />
         <Field label="Error rate" value={source.error_rate == null ? NOT_MEASURED : `${(source.error_rate * 100).toFixed(2)}%`} />
         <Field label="Timeout rate" value={source.timeout_rate == null ? NOT_MEASURED : `${(source.timeout_rate * 100).toFixed(2)}%`} />
         <Field label="Block lag" value={source.block_lag == null ? NOT_MEASURED : String(source.block_lag)} />

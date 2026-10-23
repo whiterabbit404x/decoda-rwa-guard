@@ -39,9 +39,13 @@ test('product route contracts keep required IA labels, page copy, tables, and tr
   const monitoringSourcesPage = productSource('monitoring-sources/page.tsx');
   expect(monitoringSourcesPage).toContain('Monitoring Targets');
   expect(monitoringSourcesPage).toContain('Monitored Systems');
-  // Screen-4 target columns (rendered from the TARGET_HEADERS array via TableShell).
-  ['Target / System', 'Network', 'Source Provider', 'Role', 'Status', 'Health Score', 'P95 Latency', 'Block Lag', 'Error Rate', 'Last Event', 'Last Heartbeat', 'Routing', 'Actions']
+  // Screen-4 target columns (rendered from the TARGET_HEADERS array via TableShell):
+  // the seven a person scans. The per-source evidence moved to the detail drawer.
+  ['Target / System', 'Network', 'Status', 'Health Score', 'Last Event', 'Routing', 'Actions']
     .forEach((label) => expect(monitoringSourcesPage).toContain(label));
+  const sourceDrawer = productSource('monitoring-sources/detail-drawer.tsx');
+  ['Configured provider', 'Source type', 'P95 latency', 'Block lag', 'Error rate', 'Last heartbeat', 'Last poll']
+    .forEach((label) => expect(sourceDrawer).toContain(`label="${label}"`));
   ['System', 'Type', 'Environment', 'Provider', 'Status', 'Availability', 'Response Time', 'Last Successful Check', 'Last Failure', 'Current Route', 'Actions']
     .forEach((label) => expect(monitoringSourcesPage).toContain(label));
 

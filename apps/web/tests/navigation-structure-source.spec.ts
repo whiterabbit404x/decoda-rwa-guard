@@ -48,7 +48,7 @@ test('navigation source contract keeps dashboard anchor stable and clickable', a
   const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'app-shell.tsx'), 'utf8');
   const styles = fs.readFileSync(path.join(__dirname, '..', 'app', 'styles.css'), 'utf8');
 
-  expect(nav).toContain("<nav className=\"appNav\" aria-label=\"Product navigation\">");
+  expect(nav).toMatch(/<nav\s+className="appNav"\s+aria-label="Product navigation"/);
   expect(nav).toContain('href={item.href}');
   expect(nav).toContain('className={isActive ? \'active\' : \'\'}');
   expect(nav).toContain('<span className="appNavLabel">{item.label}</span>');

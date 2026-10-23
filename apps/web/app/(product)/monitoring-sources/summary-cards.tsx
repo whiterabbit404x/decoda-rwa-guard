@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 
 import { AnimatedNumber } from '../../components/motion';
 import { StatusPill, type PillVariant } from '../../components/ui-primitives';
+import { StatRow, type StatItem } from '../../components/page-header';
 import { fmtPercent, fmtRelative, type SourceSummary } from './source-types';
 
 // Five top summary cards. Every value comes from the backend `summary` object.
@@ -146,4 +147,75 @@ export function SummaryCards({ summary, loading }: { summary: SourceSummary | nu
       </Card>
     </div>
   );
+}
+
+/**
+ * The same canonical summary as SummaryCards, as one row of figures: what a
+ * person needs at a glance (are sources reporting, is live telemetry arriving,
+ * what is routed, does the agent need a decision). The per-source evidence --
+ * latency, block lag, error rate, heartbeats -- lives in each source's detail
+ * drawer. Nothing missing is shown as fine: no sources reads "No sources", no
+ * live evidence reads "—", and only a measured share is coloured.
+ */
+export function SummaryFigures({ summary, loading }: { summary: SourceSummary | null; loading: boolean }) {
+  if (loading && !summary) {
+    return (
+      <div className="statRow" aria-busy="true" aria-label="Source summary">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="statRowItem execSkeletonCard dashSkeletonFigure" />
+        ))}
+      </div>
+    );
+  }
+  if (!summary) {
+    return (
+      <p className="statusLine msrcNotice">
+        Source summary is temporarily unavailable. Deterministic monitoring remains active.
+      </p>
+    );
+  }
+  const sh = summary.source_health;
+  const ar = summary.active_routes;
+  const tc = summary.telemetry_coverage;
+  const oh = summary.oracle_heartbeats;
+  const aa = summary.agent_activity;
+  const tone = (pct: number | null, warnAt: number) => (pct == null ? undefined : pct >= 90 ? undefined : pct >= warnAt ? 'warning' as const : 'danger' as const);
+  const items: StatItem[] = [
+    {
+      label: 'Sources Healthy',
+      value: sh.total === 0 ? 'No sources' : <><AnimatedNumber value={sh.healthy} /><span className="statRowUnit">/{sh.total}</span></>,
+      meta: sh.health_pct == null
+        ? 'No live health evidence'
+        : `${fmtPercent(sh.health_pct)} overall health${sh.quiet ? ` · ${sh.quiet} live, no recent events` : ''}`,
+      tone: tone(sh.health_pct, 70),
+    },
+    {
+      label: 'Live Telemetry Coverage',
+      value: tc.coverage_pct == null ? '—' : <AnimatedNumber value={tc.coverage_pct} format={fmtPercent} />,
+      meta: `${tc.fresh}/${tc.configured ?? tc.eligible} target(s) with fresh live evidence${tc.stale > 0 ? ` · ${tc.stale} stale` : ''}`,
+      tone: tone(tc.coverage_pct, 60),
+    },
+    {
+      label: 'Active Routes',
+      value: <AnimatedNumber value={ar.primary} />,
+      meta: `${ar.primary} primary · ${ar.fallback} fallback`,
+    },
+    {
+      label: 'Agent',
+      value: aa.approvals_required
+        ? <AnimatedNumber value={aa.approvals_required} />
+        : aa.autonomous_actions_24h == null ? '—' : <AnimatedNumber value={aa.autonomous_actions_24h} />,
+      meta: aa.approvals_required ? 'decision(s) need approval' : 'autonomous action(s) in 24h · No approvals pending',
+      tone: aa.approvals_required ? 'warning' : undefined,
+    },
+  ];
+  if (oh.total > 0) {
+    items.push({
+      label: 'Oracle Heartbeats',
+      value: <><AnimatedNumber value={oh.healthy} /><span className="statRowUnit">/{oh.total}</span></>,
+      meta: oh.missed > 0 ? `${oh.missed} missed heartbeat(s)` : `${oh.delayed} delayed · No missed heartbeats`,
+      tone: oh.missed > 0 ? 'danger' : oh.delayed > 0 ? 'warning' : undefined,
+    });
+  }
+  return <StatRow label="Source summary" items={items} />;
 }

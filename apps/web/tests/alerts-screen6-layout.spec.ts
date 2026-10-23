@@ -3,7 +3,7 @@
  *
  * Two layers:
  *   1. Real-browser layout tests. A faithful slice of the app shell
- *      (sidebar + content + .alertsSplit + the .alertsTableShell table)
+ *      (sidebar + content + .alertsStack + the .alertsTableShell table)
  *      is rendered with the *actual* app CSS injected, then measured at
  *      several viewport widths. These assert the behaviour the follow-up
  *      is about: no horizontal scrollbar at desktop widths, the Cluster
@@ -82,8 +82,16 @@ function pageHtml(rows: Row[]): string {
         <div class="productShellContent">
           <main class="productPage">
             <div style="max-width:1680px;width:100%">
-              <div class="alertsSplit">
-                <main style="min-width:0">
+              <div class="alertsStack">
+                <aside class="dataCard sharedSurfaceCard alertsAgent">
+                  <div class="alertsAgentHead"><div class="alertsAgentHeading">
+                    <p class="eyebrow alertsAgentEyebrow">Autonomous Agent</p>
+                    <h3 class="alertsAgentTitle">AI Alert Triage Agent</h3>
+                  </div></div>
+                  <p class="alertsAgentSummary">Grouped 12 related alerts into 3 clusters.</p>
+                  <div class="buttonRow alertsAgentActions"><button class="btn btn-primary">Run Triage</button></div>
+                </aside>
+                <div class="alertsMain">
                   <div class="tableWrap sharedTableShell tableCompact alertsTableShell">
                     <table>
                       <thead><tr>
@@ -92,12 +100,7 @@ function pageHtml(rows: Row[]): string {
                       <tbody>${body}</tbody>
                     </table>
                   </div>
-                </main>
-                <aside class="dataCard sharedSurfaceCard" style="padding:1.15rem">
-                  <p class="eyebrow">Autonomous Agent</p>
-                  <h3>AI Alert Triage Agent</h3>
-                  <p>Grouped 12 related alerts into 3 clusters.</p>
-                </aside>
+                </div>
               </div>
             </div>
           </main>
@@ -130,8 +133,8 @@ async function measure(page: import('@playwright/test').Page) {
     const de = document.documentElement;
     const wrap = document.querySelector('.tableWrap') as HTMLElement;
     const table = document.querySelector('.alertsTableShell table') as HTMLElement;
-    const split = document.querySelector('.alertsSplit') as HTMLElement;
-    const main = split.querySelector(':scope > main') as HTMLElement;
+    const split = document.querySelector('.alertsStack') as HTMLElement;
+    const main = split.querySelector(':scope > .alertsMain') as HTMLElement;
     const panel = split.querySelector(':scope > aside') as HTMLElement;
     const headers = Array.from(document.querySelectorAll('.alertsTableShell thead th')) as HTMLElement[];
     const clusterHeader = headers[headers.length - 1];
@@ -146,20 +149,22 @@ async function measure(page: import('@playwright/test').Page) {
       wrapScrollWidth: wrap.scrollWidth,
       headerCount: headers.length,
       clusterVisible: clusterRect.right <= wrapRect.right + 1 && clusterRect.width > 0,
-      sideBySide: panelRect.left >= mainRect.right - 2,
-      stacked: panelRect.top >= mainRect.bottom - 2,
+      // The triage bar sits above the queue, and the table spans the content width.
+      panelAbove: panelRect.bottom <= mainRect.top + 2,
+      tableFullWidth: Math.abs(wrapRect.width - split.getBoundingClientRect().width) <= 2,
     };
   });
 }
 
 /* ───────────────────────────── 1. Layout (browser) ─────────────────────── */
 
-test('desktop: no horizontal overflow at the side-by-side breakpoint (1360px)', async ({ page }) => {
+test('desktop: the table takes the full width under the triage bar (1360px)', async ({ page }) => {
   await page.setViewportSize({ width: 1360, height: 900 });
   await page.setContent(pageHtml(REALISTIC_ROWS));
   const m = await measure(page);
   expect(m.headerCount).toBe(6);
-  expect(m.sideBySide).toBe(true);              // table sits beside the AI panel
+  expect(m.panelAbove).toBe(true);               // triage bar above the queue
+  expect(m.tableFullWidth).toBe(true);           // no side rail narrowing the table
   expect(m.pageOverflow).toBeLessThanOrEqual(1); // no page-level horizontal scrollbar
   expect(m.wrapOverflow).toBeLessThanOrEqual(1); // the table fits — no inner scrollbar
   expect(m.clusterVisible).toBe(true);           // Cluster column fully visible
@@ -169,17 +174,19 @@ test('desktop: no horizontal overflow at a common laptop width (1440px)', async 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.setContent(pageHtml(REALISTIC_ROWS));
   const m = await measure(page);
-  expect(m.sideBySide).toBe(true);
+  expect(m.panelAbove).toBe(true);
+  expect(m.tableFullWidth).toBe(true);
   expect(m.pageOverflow).toBeLessThanOrEqual(1);
   expect(m.wrapOverflow).toBeLessThanOrEqual(1);
   expect(m.clusterVisible).toBe(true);
 });
 
-test('desktop: table keeps full width and does not overflow when the panel stacks (1280px)', async ({ page }) => {
+test('desktop: table keeps full width and does not overflow at 1280px', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.setContent(pageHtml(REALISTIC_ROWS));
   const m = await measure(page);
-  expect(m.stacked).toBe(true);                  // panel drops below the table
+  expect(m.panelAbove).toBe(true);
+  expect(m.tableFullWidth).toBe(true);
   expect(m.pageOverflow).toBeLessThanOrEqual(1);
   expect(m.wrapOverflow).toBeLessThanOrEqual(1);
   expect(m.clusterVisible).toBe(true);
@@ -241,12 +248,11 @@ function read(rel: string): string {
   return fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8');
 }
 
-test('styles.css defines the responsive split and the fixed-layout alerts table', () => {
+test('styles.css defines the one-column stack and the fixed-layout alerts table', () => {
   const css = read('app/styles.css');
-  expect(css).toContain('.alertsSplit');
-  // Stacks by default; side-by-side only above the derived desktop breakpoint.
-  expect(css).toContain('@media (min-width: 1360px)');
-  expect(css).toContain('grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr)');
+  // One column at every width: the triage agent is a bar above the queue.
+  expect(css).toMatch(/\.alertsStack \{\s*display: grid;/);
+  expect(css).toContain('.alertsStack .alertsAgent.dataCard {');
   // Fixed table sizing with a min-width floor that preserves narrow scrolling.
   expect(css).toMatch(/\.alertsTableShell table\s*\{[^}]*table-layout:\s*fixed/);
   expect(css).toMatch(/\.alertsTableShell table\s*\{[^}]*min-width:\s*720px/);
@@ -254,9 +260,11 @@ test('styles.css defines the responsive split and the fixed-layout alerts table'
   expect(css).toContain('overflow-wrap: anywhere');
 });
 
-test('alerts-screen wires the responsive split + fixed-layout table and wraps free text', () => {
+test('alerts-screen wires the stack + fixed-layout table and wraps free text', () => {
   const screen = read('app/alerts-screen.tsx');
-  expect(screen).toContain('className="alertsSplit"');
+  expect(screen).toContain('className="alertsStack"');
+  // The triage bar renders before the queue.
+  expect(screen.indexOf('<TriagePanel')).toBeLessThan(screen.indexOf('className="alertsMain"'));
   expect(screen).toContain('className="alertsTableShell"');
   // The old fixed-width nowrap/ellipsis title clamp is gone (title now wraps).
   expect(screen).not.toContain("maxWidth: '320px'");
