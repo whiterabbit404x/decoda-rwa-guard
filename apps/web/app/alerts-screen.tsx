@@ -216,12 +216,22 @@ function AlertsScreenInner() {
 
   return (
     <div className="alertsScreen">
-      {/* Two-column split (~75% alerts, ~25% triage agent) on wide desktops;
-          stacks to one column below 1360px so the table keeps the full
-          main-content width. Sizing lives in .alertsSplit (styles.css). */}
-      <div className="alertsSplit">
+      {/* One column: the triage agent is a compact bar above the queue (its
+          Run Triage is the screen's primary action), and the alert table keeps
+          the full content width at every size. */}
+      <div className="alertsStack">
+        {/* ── AI Alert Triage Agent bar ──────────────────────────────── */}
+        <TriagePanel
+          triage={triage}
+          loading={loading && !summary}
+          runningTriage={runningTriage}
+          triageMessage={triageMessage}
+          onRunTriage={runTriage}
+          onReviewClusters={() => setDrawerOpen(true)}
+        />
+
         {/* ── Main panel ─────────────────────────────────────────────── */}
-        <main className="alertsMain">
+        <div className="alertsMain">
           <div className="alertsQueue">
             {/* Severity tabs with real counts (from the same read model as the rows). */}
             <div className="alertsQueueHead">
@@ -342,17 +352,7 @@ function AlertsScreenInner() {
               </div>
             ) : null}
           </div>
-        </main>
-
-        {/* ── AI Alert Triage Agent panel ────────────────────────────── */}
-        <TriagePanel
-          triage={triage}
-          loading={loading && !summary}
-          runningTriage={runningTriage}
-          triageMessage={triageMessage}
-          onRunTriage={runTriage}
-          onReviewClusters={() => setDrawerOpen(true)}
-        />
+        </div>
       </div>
 
       {drawerOpen ? (

@@ -79,9 +79,9 @@ test('a non-numeric counter is rejected, never coerced into a number', () => {
 test('the KPI row renders backend counters and fails closed when they are missing', () => {
   const panel = appSource('incidents-panel.tsx');
   expect(panel).toContain("`${apiUrl}/incidents/summary`");
-  expect(panel).toContain('QueueCounterTile');
-  // The tile shows an em dash + a reason when the count is not known.
-  expect(panel).toContain("value={known ? value : '—'}");
+  expect(panel).toContain('function queueCounterItem');
+  // The figure shows an em dash + a reason when the count is not known.
+  expect(panel).toContain("value: known ? value : '—'");
   expect(panel).toContain("'Count unavailable'");
   // Every tile carries the definition behind its number.
   for (const meta of ['Not resolved or closed', 'Critical severity, still open',

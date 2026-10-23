@@ -120,6 +120,18 @@ function stateLabel(state: BannerState): string {
 export { deriveBannerState, compactReason, workerStatusBannerLine, stateLabel };
 export type { BannerState };
 
+/**
+ * Renders its children (the verdict strip) only while the canonical runtime truth
+ * says OFFLINE -- the runtime or its database is unreachable. A critical state is
+ * never folded behind the header's monitoring chip: it stays a visible strip on
+ * every screen, exactly as before. Degraded and setup states live in the chip.
+ */
+export function OfflineVerdictStrip({ children }: { children: React.ReactNode }) {
+  const { summary: truth, loading } = useRuntimeSummary();
+  if (loading || deriveBannerState(truth) !== 'OFFLINE') return null;
+  return <>{children}</>;
+}
+
 export default function WorkspaceMonitoringModeBanner({ apiUrl: _apiUrl }: { apiUrl: string | null }) {
   const { summary: truth, loading } = useRuntimeSummary();
   if (loading) return null;

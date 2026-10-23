@@ -6,6 +6,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { usePilotAuth } from './pilot-auth-context';
 import { markDashboardPerf } from './dashboard-perf';
 import { AnimatedNumber } from './components/motion';
+import { PageHeader, StatRow, type StatItem } from './components/page-header';
 import type { useLiveWorkspaceFeed } from './use-live-workspace-feed';
 import {
   StatusPill,
@@ -18,11 +19,9 @@ import {
   EXECUTIVE_SUMMARY_ENDPOINT,
   formatAgeSeconds,
   formatAssetValue,
-  formatDelta,
   formatRelativeTime,
   healthStatusVariant,
   mapExecutiveSummary,
-  monitoringStateVariant,
   riskBandVariant,
   connectionStatusFromStream,
   CONNECTION_STATUS_LABELS,
@@ -32,7 +31,6 @@ import {
   RISK_BAND_LABELS,
   TELEMETRY_FRESHNESS_LABELS,
   type ExecutiveSummary,
-  type ExecutiveBrief,
   type EvidenceFreshness,
   type RecentAlert,
   type RiskDriver,
@@ -165,22 +163,28 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
     markDashboardPerf('dashboard.skeleton.dismissed', { outcome: data ? 'ready' : status });
   }, [skeletonVisible, status, data]);
 
+  // The one primary action: the backend's own top recommended focus (derived
+  // from canonical alerts, incidents and coverage), never a frontend guess.
+  const primaryFocus = data?.executive_brief.recommended_focus[0] ?? data?.ai_copilot.recommended_focus[0] ?? null;
+
   return (
     <main className="container productPage dashboardExecPage">
-      <div className="dashboardPageHeader dashboardExecHeader">
-        <div>
-          <h1 className="dashboardPageTitle">Dashboard</h1>
-          <p className="dashboardPageSubtitle">
-            Executive summary of protected assets, monitoring coverage, alerts, incidents, and system health.
-          </p>
-        </div>
-        <div className="dashboardExecHeaderActions">
-          <MonitoringStatusIndicators data={data} streamStatus={streamStatus} />
-          <button type="button" className="btn btn-ghost execRefreshBtn" onClick={() => reload()} disabled={refreshing}>
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="Protected assets, monitoring coverage, alerts, incidents and system health for this workspace."
+        actions={(
+          <>
+            <button type="button" className="btn btn-ghost execRefreshBtn" onClick={() => reload()} disabled={refreshing}>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+            {primaryFocus ? (
+              <Link href={destinationRoute(primaryFocus.destination)} prefetch={false} className="btn btn-primary" data-testid="dashboard-primary-action">
+                {primaryFocus.title}
+              </Link>
+            ) : null}
+          </>
+        )}
+      />
 
       {status === 'loading' && !data ? <LoadingSkeleton /> : null}
 
@@ -195,95 +199,143 @@ export default function DashboardExecutiveSummary({ liveFeed }: Props) {
               <strong>Showing last known data.</strong> Live refresh failed: {error}.
             </div>
           ) : null}
-          <FreshnessBanner data={data} />
+
+          <MonitoringStatusCard data={data} streamStatus={streamStatus} />
+
+          <StatRow label="Key figures" items={keyFigures(data)} />
           <CoverageCaveatBanner data={data} />
 
-          <SecurityPostureStrip data={data} />
-
-          <div className="execMetricRow execMetricRowScreen2">
-            <ExecutiveBriefCard brief={data.executive_brief} onOpen={() => setBriefOpen(true)} />
-            <div className="execMetricCluster">
-              <TotalAssetValueCard data={data} />
-              <MetricCard
-                label="Open Incidents"
-                value={String(data.metrics.open_incident_count)}
-                numeric={data.metrics.open_incident_count}
-                meta={data.metrics.critical_or_high_incident_count > 0 ? `${data.metrics.critical_or_high_incident_count} critical/high` : 'None critical'}
-                delta={formatDelta(data.metrics.deltas.open_incident_count)}
-                valueVariant={data.metrics.open_incident_count > 0 ? 'warning' : undefined}
-                href="/incidents"
-              />
-              <MetricCard
-                label="Active Alerts"
-                value={String(data.metrics.active_alert_count)}
-                numeric={data.metrics.active_alert_count}
-                meta={activeAlertsMeta(data)}
-                delta={formatDelta(data.metrics.deltas.active_alert_count)}
-                valueVariant={data.metrics.active_alert_count > 0 ? 'danger' : undefined}
-                href="/alerts"
-              />
-              <RiskScoreCard data={data} />
-              <SystemHealthCard data={data} />
-            </div>
+          <div className="dashGrid">
+            <RecentAlertsCard alerts={data.recent_alerts} />
+            <ExecutiveBriefCard data={data} onOpen={() => setBriefOpen(true)} />
           </div>
 
-          <div className="execMainGrid execMainGridScreen2">
-            <div className="execMainColumn">
-              <RiskTrendChart trend={data.risk_trend} available={data.trend_available} partial={data.trend_partial} />
-              <RecentAlertsCard alerts={data.recent_alerts} />
-            </div>
-            <CoPilotPanel data={data} onOpenBrief={() => setBriefOpen(true)} />
-          </div>
-
-          <BottomMetricsRow data={data} />
+          {data.trend_available ? (
+            <RiskTrendChart trend={data.risk_trend} available={data.trend_available} partial={data.trend_partial} />
+          ) : null}
         </>
       ) : null}
 
       {briefOpen && data ? (
-        <BriefDrawer brief={data.executive_brief} onClose={() => setBriefOpen(false)} />
+        <BriefDrawer data={data} onClose={() => setBriefOpen(false)} />
       ) : null}
     </main>
   );
 }
 
-/* ── Status indicators: monitoring vs telemetry vs transport ──── */
+/* ── Key figures ─────────────────────────────────────────────── */
 
-// Three independent axes, deliberately kept separate so an open event channel
-// is never mistaken for live monitoring:
-//   1. Monitoring status  — operational truth from backend evidence.
-//   2. Telemetry freshness — is the underlying data current?
-//   3. Connection          — is the browser/SSE transport attached?
-// "Live monitoring" is driven ONLY by data.monitoring_state.state === 'live';
-// streamStatus can be 'live' (SSE connected) while monitoring is degraded.
-function MonitoringStatusIndicators({
-  data,
-  streamStatus,
-}: {
-  data: ExecutiveSummary | null;
-  streamStatus: string;
-}) {
+// Four figures, each the way into the list it counts. Colour marks a count
+// that needs someone; a zero is never painted as healthy.
+function keyFigures(data: ExecutiveSummary): StatItem[] {
+  const m = data.metrics;
+  const value = m.total_asset_value_usd;
+  return [
+    {
+      label: 'Open Incidents',
+      value: <AnimatedNumber value={m.open_incident_count} />,
+      meta: m.critical_or_high_incident_count > 0 ? `${m.critical_or_high_incident_count} critical/high` : 'None critical',
+      tone: m.open_incident_count > 0 ? 'warning' : undefined,
+      href: '/incidents',
+      testId: 'figure-open-incidents',
+    },
+    {
+      label: 'Active Alerts',
+      value: <AnimatedNumber value={m.active_alert_count} />,
+      meta: activeAlertsMeta(data),
+      tone: m.active_alert_count > 0 ? 'danger' : undefined,
+      href: '/alerts',
+      testId: 'figure-active-alerts',
+    },
+    {
+      label: 'Monitored Assets',
+      value: <AnimatedNumber value={m.monitored_asset_count} />,
+      // A missing valuation reads "Not available" (formatAssetValue), never $0.
+      meta: value == null
+        ? `${m.active_monitor_count} active monitor${m.active_monitor_count === 1 ? '' : 's'}`
+        : `Total Asset Value ${formatAssetValue(value)}`,
+      href: '/assets',
+      testId: 'figure-assets',
+    },
+    {
+      label: 'Risk Score',
+      value: (
+        <>
+          <AnimatedNumber value={m.risk_score} />
+          <span className="statRowUnit">/100</span>
+        </>
+      ),
+      meta: <StatusPill label={RISK_BAND_LABELS[m.risk_band]} variant={riskBandVariant(m.risk_band)} />,
+      testId: 'figure-risk',
+    },
+  ];
+}
+
+/* ── Monitoring status ───────────────────────────────────────── */
+
+// The dashboard's first answer: is this workspace being monitored, and what is
+// the next step. Three evidence axes stay separate and are read straight from
+// the backend's monitoring facts -- heartbeat proves the worker is alive,
+// ingestion that the pipeline processed, telemetry that monitored data arrived
+// -- and the browser's own connection is a fourth fact, never a monitoring one.
+// A missing fact reads "not confirmed", never fine.
+function MonitoringStatusCard({ data, streamStatus }: { data: ExecutiveSummary; streamStatus: string }) {
+  const monitoring = data.monitoring_state;
   const connection = connectionStatusFromStream(streamStatus);
+  const activity = data.activity;
+  // Period movement is shown only when the backend reported a period; an
+  // older payload without one must not render as "0 opened".
+  const activityReported = activity.period_start != null;
+  const live = monitoring.state === 'live';
+  const health = data.metrics.system_health_status;
   return (
-    <div className="execStatusCluster" role="status" aria-label="Monitoring status">
-      {data ? (
-        <span
-          className="execStatusPill execStatusPill--monitoring"
-          data-state={data.monitoring_state.state}
-          title={data.monitoring_state.reason}
-        >
-          <span className="execStatusDot" aria-hidden="true" />
-          {MONITORING_STATUS_LABELS[data.monitoring_state.state]}
-        </span>
-      ) : null}
-      {data ? (
-        <span className="execStatusPill execStatusPill--telemetry" data-freshness={data.data_freshness.status}>
-          {TELEMETRY_FRESHNESS_LABELS[data.data_freshness.status]}
-        </span>
-      ) : null}
-      <span className="execStatusPill execStatusPill--connection" data-connection={connection}>
-        {CONNECTION_STATUS_LABELS[connection]}
-      </span>
-    </div>
+    <section className="dashStatus" data-state={monitoring.state} aria-label="Monitoring status">
+      <div className="dashStatusMain">
+        <p className="dashStatusHeadline">
+          <span className="dashStatusDot" aria-hidden="true" />
+          {MONITORING_STATUS_LABELS[monitoring.state]}
+        </p>
+        <p className="dashStatusReason">{monitoring.reason || freshnessSentence(data)}</p>
+        {monitoring.reason ? <p className="dashStatusFreshness">{freshnessSentence(data)}</p> : null}
+        <ul className="dashFacts" aria-label="Monitoring evidence">
+          <li className="dashFact" data-ok={data.data_freshness.status === 'fresh' ? 'true' : 'false'}>
+            {TELEMETRY_FRESHNESS_LABELS[data.data_freshness.status]}
+          </li>
+          <li className="dashFact" data-ok={monitoring.workers_fresh ? 'true' : 'false'} title="Worker liveness only — not proof that telemetry arrived.">
+            {monitoring.workers_fresh ? 'Heartbeat current' : 'Heartbeat not confirmed'}
+          </li>
+          <li className="dashFact" data-ok={monitoring.ingestion_healthy ? 'true' : 'false'} title="Telemetry pipeline processing, as reported by the backend.">
+            {monitoring.ingestion_healthy ? 'Ingestion healthy' : 'Ingestion not confirmed'}
+          </li>
+          <li className="dashFact dashFact--transport" data-connection={connection}>
+            Live updates: {CONNECTION_STATUS_LABELS[connection]}
+          </li>
+          <li className="dashFact dashFact--transport">
+            System health: {HEALTH_STATUS_LABELS[health]}
+          </li>
+        </ul>
+        <p className="dashActivity">
+          {activityReported ? (
+            <>
+              Last 24 hours: {activity.alerts_created_during_period} alert{activity.alerts_created_during_period === 1 ? '' : 's'} created
+              {' · '}{activity.incidents_opened_during_period} incident{activity.incidents_opened_during_period === 1 ? '' : 's'} opened
+              {' · '}{activity.incidents_resolved_during_period} resolved
+            </>
+          ) : 'Last 24 hours: Not reported'}
+        </p>
+        <p className="dashFactNote">Heartbeat shows the worker is alive; only telemetry shows monitored data arrived.</p>
+      </div>
+      <div className="dashStatusActions">
+        {live ? null : (
+          <Link href="/monitoring-sources" prefetch={false} className="btn btn-secondary">
+            Set up monitoring
+          </Link>
+        )}
+        <Link href="/system-health" prefetch={false} className="dashStatusLink">
+          {live ? 'View system health' : 'Diagnose'}
+        </Link>
+      </div>
+    </section>
   );
 }
 
@@ -301,258 +353,15 @@ function CoverageCaveatBanner({ data }: { data: ExecutiveSummary }) {
   );
 }
 
-/* ── Freshness / stale banner ─────────────────────────────────── */
+/* ── Telemetry freshness ──────────────────────────────────────── */
 
-function FreshnessBanner({ data }: { data: ExecutiveSummary }) {
+// Telemetry freshness in one sentence. Fresh telemetry says when it last
+// arrived; stale and missing telemetry say so plainly.
+function freshnessSentence(data: ExecutiveSummary): string {
   const { status, latest_event_at } = data.data_freshness;
-  if (status === 'fresh') return null;
-  const isUnavailable = status === 'unavailable';
-  return (
-    <div className={`execFreshnessBanner${isUnavailable ? ' execFreshnessBanner--unavailable' : ' execFreshnessBanner--stale'}`} role="status">
-      <strong>{isUnavailable ? 'Telemetry unavailable.' : 'Telemetry is stale.'}</strong>{' '}
-      {isUnavailable
-        ? 'No verified telemetry has been received from any monitored system.'
-        : `Last verified event ${formatRelativeTime(latest_event_at)}. Metrics reflect the last received data.`}
-    </div>
-  );
-}
-
-/* ── Security posture ─────────────────────────────────────────── */
-
-// Separate evidence axes, each read straight from the backend's monitoring
-// facts — never inferred from one another, and never from the browser's own
-// connection. Heartbeat proves the worker is alive; it says nothing about
-// whether telemetry arrived, which the Telemetry pill and banner report. A
-// missing fact reads as "not confirmed", never as fine.
-type PostureTone = 'ok' | 'warn' | 'bad' | 'neutral';
-
-function PostureIcon({ kind }: { kind: 'monitoring' | 'heartbeat' | 'ingestion' | 'activity' }) {
-  const common = {
-    width: 16,
-    height: 16,
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.9,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-    'aria-hidden': true,
-  };
-  if (kind === 'monitoring') {
-    return (
-      <svg {...common}>
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-        <path d="M9 12l2 2 4-4" />
-      </svg>
-    );
-  }
-  if (kind === 'heartbeat') {
-    return (
-      <svg {...common}>
-        <path d="M3 12h4l2-5 4 10 2-5h6" />
-      </svg>
-    );
-  }
-  if (kind === 'ingestion') {
-    return (
-      <svg {...common}>
-        <ellipse cx="12" cy="5" rx="8" ry="3" />
-        <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
-        <path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
-      </svg>
-    );
-  }
-  return (
-    <svg {...common}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </svg>
-  );
-}
-
-function PostureItem({
-  kind,
-  label,
-  value,
-  meta,
-  tone,
-  children,
-}: {
-  kind: 'monitoring' | 'heartbeat' | 'ingestion' | 'activity';
-  label: string;
-  value?: string;
-  meta?: string;
-  tone: PostureTone;
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className="dcPostureItem" data-tone={tone}>
-      <span className="dcPostureIcon">
-        <PostureIcon kind={kind} />
-      </span>
-      <div className="dcPostureBody">
-        <p className="dcPostureLabel">{label}</p>
-        {value ? <p className="dcPostureValue">{value}</p> : null}
-        {meta ? <p className="dcPostureMeta">{meta}</p> : null}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SecurityPostureStrip({ data }: { data: ExecutiveSummary }) {
-  const monitoring = data.monitoring_state;
-  const monitoringTone: PostureTone = monitoring.state === 'live' ? 'ok' : monitoring.state === 'degraded' ? 'warn' : 'bad';
-  const activity = data.activity;
-  // Period movement is shown only when the backend reported a period; an
-  // older payload without one must not render as "0 opened".
-  const activityReported = activity.period_start != null;
-
-  return (
-    <section className="dcPosture" aria-label="Security posture">
-      <PostureItem
-        kind="monitoring"
-        label="Monitoring"
-        value={MONITORING_STATUS_LABELS[monitoring.state]}
-        meta={monitoring.reason || undefined}
-        tone={monitoringTone}
-      />
-      <PostureItem
-        kind="heartbeat"
-        label="Worker heartbeat"
-        value={monitoring.workers_fresh ? 'Heartbeat current' : 'Heartbeat not confirmed'}
-        meta="Worker liveness only — not proof that telemetry arrived."
-        tone={monitoring.workers_fresh ? 'ok' : 'warn'}
-      />
-      <PostureItem
-        kind="ingestion"
-        label="Ingestion"
-        value={monitoring.ingestion_healthy ? 'Ingestion healthy' : 'Ingestion not confirmed'}
-        meta="Telemetry pipeline processing, as reported by the backend."
-        tone={monitoring.ingestion_healthy ? 'ok' : 'warn'}
-      />
-      <PostureItem kind="activity" label="Last 24 hours" tone="neutral" value={activityReported ? undefined : 'Not reported'}>
-        {activityReported ? (
-          <div className="dcActivity">
-            <span className="dcActivityCell">
-              <span className="dcActivityValue"><AnimatedNumber value={activity.alerts_created_during_period} /></span>
-              <span className="dcActivityLabel">Alerts created</span>
-            </span>
-            <span className="dcActivityCell">
-              <span className="dcActivityValue"><AnimatedNumber value={activity.incidents_opened_during_period} /></span>
-              <span className="dcActivityLabel">Incidents opened</span>
-            </span>
-            <span className="dcActivityCell">
-              <span className="dcActivityValue"><AnimatedNumber value={activity.incidents_resolved_during_period} /></span>
-              <span className="dcActivityLabel">Resolved</span>
-            </span>
-          </div>
-        ) : null}
-      </PostureItem>
-    </section>
-  );
-}
-
-/* ── Metric cards ─────────────────────────────────────────────── */
-
-function MetricCard({
-  label,
-  value,
-  numeric,
-  meta,
-  delta,
-  valueVariant,
-  href,
-}: {
-  label: string;
-  value: string;
-  /** The same figure as `value`, when it is a count: a refresh that changes
-   *  it shows the new backend value at once with a short settle cue. */
-  numeric?: number;
-  meta?: string;
-  delta?: { text: string; tone: 'up' | 'down' | 'flat' };
-  valueVariant?: 'danger' | 'warning' | 'success';
-  href?: string;
-}) {
-  const body = (
-    <article className="execMetricCard dataCard" data-metric-label={label}>
-      <p className="execMetricLabel">{label}</p>
-      <p className={`execMetricValue${valueVariant ? ` execMetricValue--${valueVariant}` : ''}`}>
-        {numeric != null ? <AnimatedNumber value={numeric} /> : value}
-      </p>
-      <div className="execMetricFootRow">
-        {meta ? <span className="execMetricMeta">{meta}</span> : <span />}
-        {delta && delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
-      </div>
-    </article>
-  );
-  return href ? (
-    <Link href={href} prefetch={false} className="execMetricLink">
-      {body}
-    </Link>
-  ) : (
-    body
-  );
-}
-
-function TotalAssetValueCard({ data }: { data: ExecutiveSummary }) {
-  const value = data.metrics.total_asset_value_usd;
-  const unavailable = value == null;
-  return (
-    <Link href="/assets" prefetch={false} className="execMetricLink">
-      <article className="execMetricCard dataCard" data-metric-label="Total Asset Value">
-        <p className="execMetricLabel">Total Asset Value</p>
-        <p className={`execMetricValue${unavailable ? ' execMetricValue--muted' : ''}`}>{formatAssetValue(value)}</p>
-        <div className="execMetricFootRow">
-          <span className="execMetricMeta">
-            {data.metrics.monitored_asset_count} monitored asset{data.metrics.monitored_asset_count === 1 ? '' : 's'}
-          </span>
-        </div>
-      </article>
-    </Link>
-  );
-}
-
-function RiskScoreCard({ data }: { data: ExecutiveSummary }) {
-  const { risk_score, risk_band, deltas } = data.metrics;
-  const delta = formatDelta(deltas.risk_score);
-  return (
-    <article className="execMetricCard execMetricCardScore dataCard" data-metric-label="Risk Score">
-      <p className="execMetricLabel">Risk Score</p>
-      <p className="execMetricValue">
-        <AnimatedNumber value={risk_score} />
-        <span className="execMetricValueUnit">/100</span>
-      </p>
-      <div className="execMetricFootRow">
-        <StatusPill label={RISK_BAND_LABELS[risk_band]} variant={riskBandVariant(risk_band)} />
-        {delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
-      </div>
-    </article>
-  );
-}
-
-function SystemHealthCard({ data }: { data: ExecutiveSummary }) {
-  const status = data.metrics.system_health_status;
-  const score = data.metrics.system_health_score;
-  const delta = formatDelta(data.metrics.deltas.system_health_score);
-  // Truthfulness: the label is derived solely from the backend's deterministic
-  // status. "Healthy" only ever appears when status === 'healthy'; an
-  // unconfigured workspace reads "Not configured", never a green 100.
-  return (
-    <Link href="/system-health" prefetch={false} className="execMetricLink">
-      <article className="execMetricCard execMetricCardHealth dataCard" data-metric-label="System Health">
-        <p className="execMetricLabel">System Health</p>
-        <p className="execMetricValue">
-          {status === 'not_configured' ? '—' : <AnimatedNumber value={score} />}
-          {status === 'not_configured' ? null : <span className="execMetricValueUnit">/100</span>}
-        </p>
-        <div className="execMetricFootRow">
-          <StatusPill label={HEALTH_STATUS_LABELS[status]} variant={healthStatusVariant(status)} />
-          {delta.text ? <span className={`execMetricDelta execMetricDelta--${delta.tone}`}>{delta.text}</span> : null}
-        </div>
-      </article>
-    </Link>
-  );
+  if (status === 'fresh') return `Telemetry fresh — last verified event ${formatRelativeTime(latest_event_at)}.`;
+  if (status === 'unavailable') return 'Telemetry unavailable. No verified telemetry has been received from any monitored system.';
+  return `Telemetry is stale. Last verified event ${formatRelativeTime(latest_event_at)}. Metrics reflect the last received data.`;
 }
 
 /* ── Executive Brief card ─────────────────────────────────────── */
@@ -571,36 +380,42 @@ function EvidenceFreshnessLine({ evidence }: { evidence: EvidenceFreshness }) {
   );
 }
 
-function ExecutiveBriefCard({ brief, onOpen }: { brief: ExecutiveBrief; onOpen: () => void }) {
+function ExecutiveBriefCard({ data, onOpen }: { data: ExecutiveSummary; onOpen: () => void }) {
+  const brief = data.executive_brief;
   const isAi = brief.generation_mode === 'ai';
-  const focus = brief.recommended_focus[0];
+  const focus = brief.recommended_focus.length > 0 ? brief.recommended_focus : data.ai_copilot.recommended_focus;
   const evidence = brief.evidence;
   return (
-    <article className="execBriefCard dataCard" aria-label="Executive Brief">
-      <div className="execBriefHeader">
-        <div>
-          <p className="sectionEyebrow">Executive Brief</p>
-          <h2 className="execBriefHeadline">{brief.headline || 'Operational summary'}</h2>
-        </div>
+    <article className="dashCard dashBrief" aria-label="Executive Brief">
+      <div className="dashCardHead">
+        <h2 className="dashCardTitle">Executive Brief</h2>
         <StatusPill label={isAi ? 'AI generated' : 'Deterministic'} variant={isAi ? 'info' : 'neutral'} />
       </div>
-      <p className="execBriefMeta">
-        {brief.period_start ? 'Last 24 hours' : 'Current period'} · Generated {formatRelativeTime(evidence.generated_at)}
-      </p>
-      <p className="execBriefSummary">{brief.summary || 'No summary available for this period.'}</p>
-      {focus ? (
-        <p className="execBriefFocus">
-          <span className="execBriefFocusLabel">Focus:</span> {focus.title}
-        </p>
+      <p className="dashBriefHeadline">{brief.headline || 'Operational summary'}</p>
+      <p className="dashBriefSummary">{brief.summary || 'No summary available for this period.'}</p>
+      {focus.length > 0 ? (
+        <div className="dashFocus">
+          <h3 className="dashFocusTitle">Recommended Focus</h3>
+          <ul className="dashFocusList">
+            {focus.slice(0, 3).map((item, index) => (
+              <li key={`${item.destination}-${index}`}>
+                <Link href={destinationRoute(item.destination)} prefetch={false} className="dashFocusLink">
+                  {item.title}
+                </Link>
+                <span className="dashFocusReason">{item.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       <EvidenceFreshnessLine evidence={evidence} />
-      <div className="execBriefFooter">
+      <div className="dashBriefFooter">
         {/* Confidence is the deterministic, monitoring-derived value — never the
             LLM's self-reported number. */}
         <span className="execBriefConfidence" data-confidence={evidence.data_confidence} title={evidence.data_confidence_reason}>
-          Confidence: {DATA_CONFIDENCE_LABELS[evidence.data_confidence]}
+          Confidence: {DATA_CONFIDENCE_LABELS[evidence.data_confidence]} · Generated {formatRelativeTime(evidence.generated_at)}
         </span>
-        <button type="button" className="btn btn-secondary execBriefBtn" onClick={onOpen}>
+        <button type="button" className="btn btn-secondary dashBriefBtn" onClick={onOpen}>
           View Full AI Summary
         </button>
       </div>
@@ -718,141 +533,39 @@ function TrendSvg({ points }: { points: RiskTrendPoint[] }) {
 
 function RecentAlertsCard({ alerts }: { alerts: RecentAlert[] }) {
   return (
-    <section className="execSectionCard dataCard" aria-label="Recent Alerts">
-      <div className="execSectionHeader">
-        <div>
-          <p className="sectionEyebrow">Alerts</p>
-          <h2 className="execSectionTitle">Recent Alerts</h2>
-        </div>
-        <Link href="/alerts" prefetch={false} className="execSeeAllLink">
+    <section className="dashCard dashAlerts" aria-label="Recent Alerts">
+      <div className="dashCardHead">
+        <h2 className="dashCardTitle">Recent Alerts</h2>
+        <Link href="/alerts" prefetch={false} className="dashCardLink">
           View all alerts
         </Link>
       </div>
       {alerts.length === 0 ? (
-        <div className="execEmptyState">
-          <EmptyStateBlocker
-            title="No active alerts"
-            body="No alerts are in an active state. When telemetry produces a detection, alerts will appear here."
-            ctaHref="/alerts"
-            ctaLabel="Go to Alerts"
-          />
-        </div>
+        <EmptyStateBlocker
+          title="No active alerts"
+          body="No alerts are in an active state. When telemetry produces a detection, alerts will appear here."
+          ctaHref="/alerts"
+          ctaLabel="Go to Alerts"
+        />
       ) : (
-        <div className="execAlertList">
+        <ul className="dashAlertList">
           {alerts.map((alert) => (
-            <Link key={alert.id} href={alert.url} prefetch={false} className="execAlertRow execAlertRowLink">
-              <div className="execAlertMeta">
+            <li key={alert.id}>
+              <Link href={alert.url} prefetch={false} className="dashAlertRow execAlertRowLink">
                 <StatusPill label={alert.severity} variant={statusVariantFromSeverity(alert.severity)} />
-                <span className="execAlertTitle">{alert.title}</span>
-              </div>
-              <div className="execAlertRight">
-                {alert.asset ? <span className="execAlertAsset">{alert.asset}</span> : null}
-                <span className="execAlertTime">{formatRelativeTime(alert.occurred_at)}</span>
+                <span className="dashAlertTitle">{alert.title}</span>
+                <span className="dashAlertTime">{formatRelativeTime(alert.occurred_at)}</span>
                 <StatusPill label={alert.status} variant={statusVariantFromStatus(alert.status)} />
-              </div>
-            </Link>
+              </Link>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </section>
   );
 }
 
-/* ── Bottom metrics ───────────────────────────────────────────── */
-
-function BottomMetricsRow({ data }: { data: ExecutiveSummary }) {
-  const uptime = data.metrics.uptime_30d_percent;
-  return (
-    <div className="execBottomMetricsRow">
-      <BottomMetric label="Monitored Assets" value={String(data.metrics.monitored_asset_count)} numeric={data.metrics.monitored_asset_count} href="/assets" />
-      <BottomMetric label="Active Monitors" value={String(data.metrics.active_monitor_count)} numeric={data.metrics.active_monitor_count} href="/monitoring-sources" />
-      <BottomMetric label="Data Sources" value={String(data.metrics.data_source_count)} numeric={data.metrics.data_source_count} href="/monitoring-sources" />
-      <BottomMetric
-        label="30-day Uptime"
-        value={uptime == null ? 'Not available' : `${uptime.toFixed(2)}%`}
-        href="/system-health"
-        muted={uptime == null}
-      />
-    </div>
-  );
-}
-
-function BottomMetric({ label, value, numeric, href, muted }: { label: string; value: string; numeric?: number; href: string; muted?: boolean }) {
-  return (
-    <Link href={href} prefetch={false} className="execBottomMetric dataCard">
-      <span className="execBottomMetricLabel">{label}</span>
-      <span className={`execBottomMetricValue${muted ? ' execBottomMetricValue--muted' : ''}`}>
-        {numeric != null ? <AnimatedNumber value={numeric} /> : value}
-      </span>
-    </Link>
-  );
-}
-
-/* ── AI Dashboard Co-Pilot panel ──────────────────────────────── */
-
-function CoPilotPanel({ data, onOpenBrief }: { data: ExecutiveSummary; onOpenBrief: () => void }) {
-  const { top_risk_drivers, system_health_insights, recommended_focus, generation_mode } = data.ai_copilot;
-  return (
-    <aside className="execCopilotPanel dataCard" aria-label="AI Dashboard Co-Pilot">
-      <div className="execSectionHeader">
-        <div>
-          <p className="sectionEyebrow">Co-Pilot</p>
-          <h2 className="execSectionTitle">AI Dashboard Co-Pilot</h2>
-        </div>
-        <StatusPill label={generation_mode === 'ai' ? 'AI' : 'Deterministic'} variant={generation_mode === 'ai' ? 'info' : 'neutral'} />
-      </div>
-      <p className="execCopilotGenerated">Generated {formatRelativeTime(data.ai_copilot.generated_at)}</p>
-
-      <div className="execCopilotSection">
-        <h3 className="execCopilotSubhead">Top Risk Drivers</h3>
-        {top_risk_drivers.length === 0 ? (
-          <p className="execCopilotEmpty muted">No material risk drivers in the current data.</p>
-        ) : (
-          <ul className="execDriverList">
-            {top_risk_drivers.map((driver) => (
-              <DriverRow key={driver.key} driver={driver} />
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="execCopilotSection">
-        <h3 className="execCopilotSubhead">System Health Insights</h3>
-        {system_health_insights.length === 0 ? (
-          <p className="execCopilotEmpty muted">All required health checks are passing.</p>
-        ) : (
-          <ul className="execInsightList">
-            {system_health_insights.map((insight, index) => (
-              <InsightRow key={`${insight.source_type}-${insight.source_id}-${index}`} insight={insight} />
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <div className="execCopilotSection">
-        <h3 className="execCopilotSubhead">Recommended Focus</h3>
-        {recommended_focus.length === 0 ? (
-          <p className="execCopilotEmpty muted">No action required right now.</p>
-        ) : (
-          <ul className="execFocusList">
-            {recommended_focus.map((focus, index) => (
-              <li key={`${focus.destination}-${index}`} className="execFocusItem">
-                <Link href={destinationRoute(focus.destination)} prefetch={false} className="execFocusLink">
-                  {focus.title}
-                </Link>
-                <span className="execFocusReason muted">{focus.reason}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <button type="button" className="btn btn-ghost execCopilotFullBtn" onClick={onOpenBrief}>
-        View Full AI Insights
-      </button>
-    </aside>
-  );
-}
+/* ── Co-Pilot detail (rendered in the full summary drawer) ────── */
 
 function DriverRow({ driver }: { driver: RiskDriver }) {
   return (
@@ -912,7 +625,10 @@ function insightSourceLink(insight: HealthInsight): string | null {
 
 /* ── Full Brief drawer ────────────────────────────────────────── */
 
-function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () => void }) {
+function BriefDrawer({ data, onClose }: { data: ExecutiveSummary; onClose: () => void }) {
+  const brief = data.executive_brief;
+  const { top_risk_drivers, system_health_insights } = data.ai_copilot;
+  const uptime = data.metrics.uptime_30d_percent;
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -1002,6 +718,53 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
           )}
         </section>
 
+        <section className="execDrawerSection" aria-label="AI Dashboard Co-Pilot">
+          <h3 className="execDrawerSubhead">Top Risk Drivers</h3>
+          {top_risk_drivers.length === 0 ? (
+            <p className="muted">No material risk drivers in the current data.</p>
+          ) : (
+            <ul className="execDriverList">
+              {top_risk_drivers.map((driver) => (
+                <DriverRow key={driver.key} driver={driver} />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="execDrawerSection">
+          <h3 className="execDrawerSubhead">System Health Insights</h3>
+          {system_health_insights.length === 0 ? (
+            <p className="muted">All required health checks are passing.</p>
+          ) : (
+            <ul className="execInsightList">
+              {system_health_insights.map((insight, index) => (
+                <InsightRow key={`${insight.source_type}-${insight.source_id}-${index}`} insight={insight} />
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="execDrawerSection">
+          <h3 className="execDrawerSubhead">Coverage</h3>
+          <dl className="dashCoverageList">
+            <div><dt>Monitored Assets</dt><dd>{data.metrics.monitored_asset_count}</dd></div>
+            <div><dt>Active Monitors</dt><dd>{data.metrics.active_monitor_count}</dd></div>
+            <div><dt>Data Sources</dt><dd>{data.metrics.data_source_count}</dd></div>
+            <div><dt>Total Asset Value</dt><dd>{formatAssetValue(data.metrics.total_asset_value_usd)}</dd></div>
+            <div><dt>30-day Uptime</dt><dd>{uptime == null ? 'Not available' : `${uptime.toFixed(2)}%`}</dd></div>
+            <div>
+              <dt>System Health</dt>
+              <dd>
+                {data.metrics.system_health_status === 'not_configured' ? '—' : `${data.metrics.system_health_score}/100 `}
+                <StatusPill label={HEALTH_STATUS_LABELS[data.metrics.system_health_status]} variant={healthStatusVariant(data.metrics.system_health_status)} />
+              </dd>
+            </div>
+          </dl>
+          {!data.trend_available ? (
+            <p className="muted">Historical trend not available yet — risk history builds from real dashboard snapshots, and no synthetic history is shown.</p>
+          ) : null}
+        </section>
+
         {brief.citations.length > 0 ? (
           <section className="execDrawerSection">
             <h3 className="execDrawerSubhead">Evidence References</h3>
@@ -1032,22 +795,15 @@ function BriefDrawer({ brief, onClose }: { brief: ExecutiveBrief; onClose: () =>
 function LoadingSkeleton() {
   return (
     <div className="execSkeleton" aria-hidden="true">
-      <div className="dcPosture">
+      <div className="dashStatus execSkeletonCard dashSkeletonStatus" />
+      <div className="statRow">
         {Array.from({ length: 4 }).map((_, index) => (
-          <div key={index} className="dcPostureItem execSkeletonCard dcSkeletonPosture" />
+          <div key={index} className="statRowItem execSkeletonCard dashSkeletonFigure" />
         ))}
       </div>
-      <div className="execMetricRow execMetricRowScreen2">
-        <div className="execBriefCard dataCard execSkeletonCard execSkeletonBrief" />
-        <div className="execMetricCluster">
-          {Array.from({ length: 5 }).map((_, index) => (
-            <div key={index} className="execMetricCard dataCard execSkeletonCard" />
-          ))}
-        </div>
-      </div>
-      <div className="execMainGrid execMainGridScreen2">
-        <div className="execSectionCard dataCard execSkeletonChart" />
-        <div className="execSectionCard dataCard execSkeletonPanel" />
+      <div className="dashGrid">
+        <div className="dashCard execSkeletonCard dashSkeletonPanel" />
+        <div className="dashCard execSkeletonCard dashSkeletonPanel" />
       </div>
     </div>
   );

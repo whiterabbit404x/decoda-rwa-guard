@@ -6,12 +6,12 @@ import type { ReactNode } from 'react';
 
 import {
   EmptyStateBlocker,
-  MetricTile,
   StatusPill,
   TableShell,
   TabStrip,
 } from '../components/ui-primitives';
 import { usePilotAuth } from '../pilot-auth-context';
+import { PageHeader, StatRow } from '../components/page-header';
 import { DecodaProductsPanel } from './decoda-products-panel';
 import { IntegrationGatewayAgentPanel } from './integration-gateway-agent-panel';
 import {
@@ -106,7 +106,6 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
   const [actionError, setActionError] = useState('');
   const [healthCheckBusy, setHealthCheckBusy] = useState(false);
   const [recBusyId, setRecBusyId] = useState<string | null>(null);
-  const [mobileAgentOpen, setMobileAgentOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<ProviderRow | null>(null);
 
   // GET-only load (spec §24): reads canonical state + persisted recommendations. A
@@ -223,48 +222,45 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
           warning in the app shell. */}
 
       {/* ── Header ─────────────────────────────────────────── */}
-      <div className="listHeader" style={{ marginBottom: '1rem', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: '1.45rem', fontWeight: 700 }}>Integrations</h1>
-          <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.9rem', maxWidth: 640 }}>
-            Operational control plane for every external dependency Decoda relies on — provider
-            health, API credentials, outbound webhooks, and connection risk.
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          {data?.last_scan?.completed_at ? (
-            <span title={fmtExact(data.last_scan.completed_at)} style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-              Last scan {fmtRelative(data.last_scan.completed_at)}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: '0.8rem' }}
-            disabled={healthCheckBusy || !canManage}
-            title={canManage ? undefined : 'Requires the Manage Integrations permission'}
-            onClick={() => void handleRunHealthCheck()}
-          >
-            {healthCheckBusy ? 'Running…' : 'Run Health Check'}
-          </button>
-          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary" style={{ fontSize: '0.8rem' }}>
-            Add Provider
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title="Integrations"
+        description="Every external dependency Decoda relies on — provider health, API credentials, outbound webhooks, and connection risk."
+        meta={data?.last_scan?.completed_at ? (
+          <span title={fmtExact(data.last_scan.completed_at)}>Last scan {fmtRelative(data.last_scan.completed_at)}</span>
+        ) : null}
+        actions={(
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={healthCheckBusy || !canManage}
+              title={canManage ? undefined : 'Requires the Manage Integrations permission'}
+              onClick={() => void handleRunHealthCheck()}
+            >
+              {healthCheckBusy ? 'Running…' : 'Run Health Check'}
+            </button>
+            <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary">
+              Add Provider
+            </Link>
+          </>
+        )}
+      />
 
       {loadError ? <p className="statusLine" style={{ color: 'var(--danger-fg)' }}>{loadError}</p> : null}
       {actionError ? <p className="statusLine" style={{ color: 'var(--danger-fg)', fontSize: '0.85rem' }}>{actionError}</p> : null}
       {actionMsg ? <p className="statusLine" style={{ color: 'var(--success-fg)', fontSize: '0.85rem' }}>{actionMsg}</p> : null}
 
       {/* ── Summary metrics (derived from canonical data §4) ── */}
-      <div className="metricRow" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
-        <MetricTile label="Total Integrations" value={loading && !summary ? '—' : summary?.total_integrations ?? 0} meta={`${providers.length} provider(s)`} />
-        <MetricTile label="Healthy" value={loading && !summary ? '—' : summary?.healthy ?? 0} meta="Providers" />
-        <MetricTile label="Degraded" value={loading && !summary ? '—' : summary?.degraded ?? 0} meta={summary && summary.degraded > 0 ? 'Needs attention' : 'Providers'} />
-        <MetricTile label="Disconnected" value={loading && !summary ? '—' : summary?.disconnected ?? 0} meta={summary && summary.disconnected > 0 ? 'Failover required' : 'Providers'} />
-        <MetricTile label="Recommendations" value={loading && !summary ? '—' : summary?.recommendations ?? 0} meta="Open" />
-      </div>
+      <StatRow
+        label="Integration summary"
+        items={[
+          { label: 'Total Integrations', value: loading && !summary ? '—' : summary?.total_integrations ?? 0, meta: `${providers.length} provider(s)` },
+          { label: 'Healthy', value: loading && !summary ? '—' : summary?.healthy ?? 0, meta: 'Providers' },
+          { label: 'Degraded', value: loading && !summary ? '—' : summary?.degraded ?? 0, meta: summary && summary.degraded > 0 ? 'Needs attention' : 'Providers', tone: summary && summary.degraded > 0 ? 'warning' : undefined },
+          { label: 'Disconnected', value: loading && !summary ? '—' : summary?.disconnected ?? 0, meta: summary && summary.disconnected > 0 ? 'Failover required' : 'Providers', tone: summary && summary.disconnected > 0 ? 'danger' : undefined },
+          { label: 'Recommendations', value: loading && !summary ? '—' : summary?.recommendations ?? 0, meta: 'Open' },
+        ]}
+      />
 
       <DecodaProductsPanel />
 
@@ -388,30 +384,18 @@ export default function IntegrationsPageClient(_props?: { apiUrl?: string }) {
           ) : null}
         </div>
 
-        {/* ── Right rail (desktop) ──────────────────────────── */}
-        <aside style={{ flex: '0 1 320px', minWidth: '280px' }} className="integrationAgentRail">
-          {agentPanel}
-        </aside>
       </div>
 
-      {/* ── Mobile agent drawer toggle ────────────────────── */}
-      <button
-        type="button"
-        className="btn btn-primary integrationAgentMobileToggle"
-        onClick={() => setMobileAgentOpen(true)}
-        style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 40, display: 'none' }}
-      >
-        Agent
-      </button>
-      {mobileAgentOpen ? (
-        <div role="dialog" aria-modal="true" aria-label="Integration Gateway Agent" style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" aria-label="Close" onClick={() => setMobileAgentOpen(false)} style={{ position: 'absolute', inset: 0, background: 'var(--scrim)', border: 'none' }} />
-          <div style={{ position: 'relative', width: 'min(360px, 100%)', height: '100%', overflowY: 'auto', background: 'var(--bg-surface)', padding: '1rem' }}>
-            <button type="button" className="btn btn-secondary" style={{ marginBottom: '0.75rem', fontSize: '0.75rem' }} onClick={() => setMobileAgentOpen(false)}>Close</button>
-            {agentPanel}
-          </div>
-        </div>
-      ) : null}
+      {/* ── Integration gateway agent ─────────────────────── */}
+      {/* The agent's evaluation of external dependencies, on demand below the
+          providers rather than in a rail beside them. */}
+      <details className="pageDisclosure integrationAgentDisclosure">
+        <summary className="pageDisclosureSummary">
+          Integration gateway agent
+          <span className="pageDisclosureHint">Dependency health evaluation and recommendations</span>
+        </summary>
+        <div className="pageDisclosureBody">{agentPanel}</div>
+      </details>
 
       {selectedProvider ? (
         <ProviderDetailDrawer provider={selectedProvider} onClose={() => setSelectedProvider(null)} />

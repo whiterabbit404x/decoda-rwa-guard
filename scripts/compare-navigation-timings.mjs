@@ -38,11 +38,11 @@ export function compare(before, after) {
   lines.push('');
   lines.push('### Sidebar navigation');
   lines.push('');
-  lines.push('| screen | URL commit | ready | data settled | API requests |');
-  lines.push('|---|---:|---:|---:|---:|');
+  lines.push('| screen | click feedback | URL commit | ready | data settled | API requests |');
+  lines.push('|---|---:|---:|---:|---:|---:|');
   for (const a of after.sidebarSummary) {
     const b = before.sidebarSummary.find((row) => row.route === a.route) ?? {};
-    lines.push(`| ${a.route} | ${cell(b.urlCommit, a.urlCommit)} | ${cell(b.ready, a.ready)} | ${cell(b.settled, a.settled)} | ${cell(b.api, a.api)} |`);
+    lines.push(`| ${a.route} | ${cell(b.feedback, a.feedback)} | ${cell(b.urlCommit, a.urlCommit)} | ${cell(b.ready, a.ready)} | ${cell(b.settled, a.settled)} | ${cell(b.api, a.api)} |`);
   }
   const steadyBefore = Array.isArray(before.steady) ? before.steady : [before.steady];
   const steadyAfter = Array.isArray(after.steady) ? after.steady : [after.steady];

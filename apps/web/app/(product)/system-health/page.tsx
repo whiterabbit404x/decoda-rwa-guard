@@ -16,6 +16,7 @@ import { HealthTimeline } from './_components/health-timeline';
 import { ProviderHealthCards } from './_components/provider-health-cards';
 import { ReliabilitySnapshot } from './_components/reliability-snapshot';
 import { StatusOverviewPanel } from './_components/status-overview-panel';
+import { PageHeader } from '../../components/page-header';
 
 export const dynamic = 'force-dynamic';
 export const fetchCache = 'force-no-store';
@@ -99,34 +100,30 @@ export default async function SystemHealthPage() {
 
   return (
     <main className="productPage shPage">
-      <RuntimeSummaryPanel />
-
-      <section className="hero compactHero shPageHero">
-        <div>
-          <p className="eyebrow">Status &amp; operations</p>
-          <h1>System Health</h1>
-          <p className="lede">
-            Live operational status for Decoda RWA Guard infrastructure, monitoring workers,
-            RPC connectivity, telemetry ingestion, and alert delivery.
-          </p>
-        </div>
-        {/* Server-rendered markup: layout lives in classes, never inline style props,
-            which the production CSP (style-src 'self' 'nonce-…') would block. */}
-        <div className="shPageHeroActions">
-          <a href="/system-health" className="secondaryCta shRefreshCta">
+      {/* Server-rendered markup: layout lives in classes, never inline style props,
+          which the production CSP (style-src 'self' 'nonce-…') would block. */}
+      <PageHeader
+        title="System Health"
+        description="Live operational status for Decoda RWA Guard infrastructure, monitoring workers, RPC connectivity, telemetry ingestion, and alert delivery."
+        actions={(
+          <a href="/system-health" className="btn btn-secondary shRefreshCta">
             Refresh Health
           </a>
-        </div>
-      </section>
-
-      {/* Always rendered — outside the backend-health branch below — so the web build
-          SHA stays visible even when the API health endpoint is unreachable. */}
-      <DeploymentVersionSection
-        webCommit={webCommit}
-        apiCommit={apiCommit}
-        webBuildTime={webBuildTime}
-        apiDeployTime={apiDeployTime}
+        )}
       />
+
+      {/* With the health endpoint unreachable there is no hero to carry the build
+          SHAs, so the Deployment Version section leads the page: the web SHA is
+          never hidden when the API cannot report. Otherwise the hero shows both
+          SHAs and the full section sits in "Deployment and API reference". */}
+      {!healthResult.ok && (
+        <DeploymentVersionSection
+          webCommit={webCommit}
+          apiCommit={apiCommit}
+          webBuildTime={webBuildTime}
+          apiDeployTime={apiDeployTime}
+        />
+      )}
 
       {/* The overall verdict leads the page: an operator reads "is it healthy, and
           if not, what do I do" before any supporting depth. An unreachable health
@@ -147,44 +144,77 @@ export default async function SystemHealthPage() {
       )}
 
       {/* Screen 12 headline: Self-Healing Reliability Agent (summary cards,
-          system components, operational diagnosis, autonomous status). The
-          detailed panels below remain as supporting depth. */}
+          system components, operational diagnosis, autonomous status). */}
       <ReliabilityAgentSection result={reliabilityResult} />
 
+      {endpointReachable && <HealthSummaryCards components={components} />}
+
+      {/* Supporting depth, one click away. Every panel below is rendered exactly as
+          before -- the runtime summary, live chain monitoring, operational overview,
+          monitoring status, reliability snapshot and provider health -- inside
+          native <details>, which needs no script and no inline style. */}
+      <details className="pageDisclosure shDetails">
+        <summary className="pageDisclosureSummary">
+          Monitoring runtime detail
+          <span className="pageDisclosureHint">Runtime summary, live chain monitoring, workers, providers and reliability</span>
+        </summary>
+        <div className="pageDisclosureBody shDetailsBody">
+          <RuntimeSummaryPanel />
+          {endpointReachable && (
+            <>
+              <LiveChainMonitoringPanel chainMonitoring={chainMonitoring} />
+              <OperationalOverview components={components} />
+            </>
+          )}
+          <div className="twoColumnSection shTwoColumn">
+            <StatusOverviewPanel
+              truth={truth}
+              presentation={presentation}
+              isOperational={isOperational}
+              isOffline={isOffline}
+              summaryMissing={summaryMissing}
+              reportingSystems={reportingSystems}
+              monitoredSystems={monitoredSystems}
+              hasHeartbeat={hasHeartbeat}
+              hasTelemetry={hasTelemetry}
+            />
+            <ReliabilitySnapshot reliability={reliability} truth={truth} />
+          </div>
+          <ProviderHealthCards
+            providers={providers}
+            reportingSystems={reportingSystems}
+            monitoredSystems={monitoredSystems}
+            truth={truth}
+          />
+        </div>
+      </details>
+
       {endpointReachable && (
-        <>
-          <HealthSummaryCards components={components} />
-
-          <LiveChainMonitoringPanel chainMonitoring={chainMonitoring} />
-
-          <OperationalOverview components={components} />
-        </>
+        <details className="pageDisclosure shDetails">
+          <summary className="pageDisclosureSummary">
+            Health timeline
+            <span className="pageDisclosureHint">Recent health events</span>
+          </summary>
+          <div className="pageDisclosureBody shDetailsBody">
+            <HealthTimeline events={events} />
+          </div>
+        </details>
       )}
 
-      <div className="twoColumnSection shTwoColumn">
-        <StatusOverviewPanel
-          truth={truth}
-          presentation={presentation}
-          isOperational={isOperational}
-          isOffline={isOffline}
-          summaryMissing={summaryMissing}
-          reportingSystems={reportingSystems}
-          monitoredSystems={monitoredSystems}
-          hasHeartbeat={hasHeartbeat}
-          hasTelemetry={hasTelemetry}
-        />
-        <ReliabilitySnapshot reliability={reliability} truth={truth} />
-      </div>
-
-      {endpointReachable && <HealthTimeline events={events} />}
-
-      <ProviderHealthCards
-        providers={providers}
-        reportingSystems={reportingSystems}
-        monitoredSystems={monitoredSystems}
-        truth={truth}
-      />
-
+      <details className="pageDisclosure shDetails">
+        <summary className="pageDisclosureSummary">
+          Deployment and API reference
+          <span className="pageDisclosureHint">Web and API build versions, API schema and docs</span>
+        </summary>
+        <div className="pageDisclosureBody shDetailsBody">
+          {healthResult.ok && (
+            <DeploymentVersionSection
+              webCommit={webCommit}
+              apiCommit={apiCommit}
+              webBuildTime={webBuildTime}
+              apiDeployTime={apiDeployTime}
+            />
+          )}
       <section className="dataCard shApiDocs">
         <div>
           <p className="sectionEyebrow">Integration</p>
@@ -220,6 +250,8 @@ export default async function SystemHealthPage() {
           </a>
         </div>
       </section>
+        </div>
+      </details>
     </main>
   );
 }

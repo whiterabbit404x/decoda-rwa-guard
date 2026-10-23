@@ -27,6 +27,9 @@
  *   api       number of /api/* requests the load issued.
  *   dup       requests for an identical path+query issued more than once in the
  *             same load -- the duplicate-fetch signal.
+ *   feedback  (sidebar only) click to the first frame in which the clicked
+ *             sidebar item shows the selected state -- the moment the click
+ *             visibly registered. Sampled on requestAnimationFrame.
  *   commit    (sidebar only) click to URL change. Each sidebar click follows a
  *             --hover-ms pointer rest on the link (default 100ms), the way a
  *             person clicks; the clock starts at the click, not the hover.
@@ -325,14 +328,35 @@ async function sidebarNavigation(context, args, routes) {
     const clickAt = await page.evaluate((sel) => {
       const at = performance.now();
       if (window.__navCapture) window.__navCapture.lastLoadingAt = null;
+      window.__navFeedbackAt = null;
+      // First frame in which the clicked item reads as selected. The link is
+      // re-queried each frame: a re-render may replace the element.
+      const check = () => {
+        const current = document.querySelector(sel);
+        if (current && current.classList.contains('active')) {
+          window.__navFeedbackAt = performance.now();
+          return;
+        }
+        if (performance.now() - at < 30_000) requestAnimationFrame(check);
+      };
       document.querySelector(sel).click();
+      requestAnimationFrame(check);
       return at;
     }, selector);
     await page.waitForURL((url) => url.pathname === route || url.pathname.startsWith(`${route}/`), { timeout: args.timeoutMs }).catch(() => null);
     const urlCommitMs = await page.evaluate((at) => performance.now() - at, clickAt);
+    await page.waitForFunction(() => window.__navFeedbackAt !== null, null, { timeout: args.timeoutMs }).catch(() => null);
+    const feedbackMs = await page.evaluate((at) => (window.__navFeedbackAt === null ? null : window.__navFeedbackAt - at), clickAt);
     const quiet = await waitForQuiet(page, tracker, args.quietMs, args.timeoutMs);
     const window = await readWindow(page, clickAt);
-    results.push({ route, from: previous, quiet, urlCommitMs: Number(urlCommitMs.toFixed(1)), ...summarise(window) });
+    results.push({
+      route,
+      from: previous,
+      quiet,
+      feedbackMs: feedbackMs === null ? null : Number(feedbackMs.toFixed(1)),
+      urlCommitMs: Number(urlCommitMs.toFixed(1)),
+      ...summarise(window),
+    });
     previous = route;
   }
   await page.close();
@@ -377,10 +401,10 @@ function renderMarkdown(report) {
   lines.push('');
   lines.push('## Sidebar navigation (client-side, from the previous screen)');
   lines.push('');
-  lines.push('| route | url commit | ready | settled | api | dup |');
-  lines.push('|---|---:|---:|---:|---:|---:|');
+  lines.push('| route | feedback | url commit | ready | settled | api | dup |');
+  lines.push('|---|---:|---:|---:|---:|---:|---:|');
   for (const row of report.sidebarSummary) {
-    lines.push(`| ${row.route} | ${row.urlCommit ?? '—'} | ${row.ready ?? '—'} | ${row.settled ?? '—'} | ${row.api ?? '—'} | ${row.dup ?? '—'} |`);
+    lines.push(`| ${row.route} | ${row.feedback ?? '—'} | ${row.urlCommit ?? '—'} | ${row.ready ?? '—'} | ${row.settled ?? '—'} | ${row.api ?? '—'} | ${row.dup ?? '—'} |`);
   }
   lines.push('');
   for (const steady of report.steady) {
@@ -428,7 +452,7 @@ async function main() {
       const runs = await sidebarNavigation(context, args, args.routes);
       for (const run of runs) {
         sidebar.push({ load: i + 1, ...run });
-        process.stdout.write(`nav ${run.route} #${i + 1}: commit=${run.urlCommitMs} ready=${run.readyMs} settled=${run.settledMs} api=${run.apiCount} dup=${run.duplicateCount}\n`);
+        process.stdout.write(`nav ${run.route} #${i + 1}: feedback=${run.feedbackMs} commit=${run.urlCommitMs} ready=${run.readyMs} settled=${run.settledMs} api=${run.apiCount} dup=${run.duplicateCount}\n`);
       }
     }
 
@@ -459,6 +483,7 @@ async function main() {
       const rows = sidebar.filter((l) => l.route === route && !l.error);
       return {
         route,
+        feedback: median(rows.map((r) => r.feedbackMs)),
         urlCommit: median(rows.map((r) => r.urlCommitMs)),
         ready: median(rows.map((r) => r.readyMs)),
         settled: median(rows.map((r) => r.settledMs)),

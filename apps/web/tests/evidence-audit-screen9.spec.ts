@@ -68,12 +68,13 @@ test('4b: button disables only for explicit denial / unresolved permission / sub
 
 /* ── 5. Top metric cards ────────────────────────────────────────── */
 
-test('5: all four metric cards are present', () => {
+test('5: all four summary figures are present', () => {
   const source = read(PANEL);
-  expect(source).toContain('"Evidence Packages"');
-  expect(source).toContain('"Audit Events"');
-  expect(source).toContain('"Export Ready"');
-  expect(source).toContain('"Retention Status"');
+  expect(source).toContain('<StatRow');
+  expect(source).toContain("label: 'Evidence Packages'");
+  expect(source).toContain("label: 'Audit Events'");
+  expect(source).toContain("label: 'Export Ready'");
+  expect(source).toContain("label: 'Retention Status'");
 });
 
 /* ── 6. Tabs ────────────────────────────────────────────────────── */
@@ -465,14 +466,13 @@ test('summary: Evidence Packages card counts server-authoritative total', () => 
   const source = read(PANEL);
   // The metric tile value must come from the backend metrics (or packages.length
   // fallback) — never a hard-coded number.
-  expect(source).toContain('label="Evidence Packages"');
-  expect(source).toContain('metrics?.total_packages ?? packages.length');
+  expect(source).toContain("{ label: 'Evidence Packages', value: metrics?.total_packages ?? packages.length }");
 });
 
 test('summary: Export Ready card counts canonical export-ready packages, not all rows', () => {
   const source = read(PANEL);
-  expect(source).toContain('label="Export Ready"');
-  expect(source).toContain('value={exportReadyCount}');
+  expect(source).toContain("label: 'Export Ready'");
+  expect(source).toContain('value: exportReadyCount,');
   // exportReadyCount prefers the backend canonical predicate, not "any completed".
   expect(source).toContain('metrics?.export_ready');
 });
@@ -482,7 +482,7 @@ test('summary: Retention Status is backend-derived, never hardcoded to Compliant
   // Retention comes from the API response; the old package-existence heuristic is gone.
   expect(source).toContain('setRetentionStatus(');
   expect(source).toContain('p.retention_status');
-  expect(source).toContain('label="Retention Status" value={retentionStatus}');
+  expect(source).toContain("{ label: 'Retention Status', value: retentionStatus }");
   // Never derives "Compliant" from package existence in the client.
   expect(source).not.toContain("exportReadyCount > 0 ? 'Compliant'");
 });

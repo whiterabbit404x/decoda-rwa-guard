@@ -93,10 +93,47 @@ Tokens: `--ease-out`, `--ease-in-out`, `--ease-spring`, `--dur-fast` (120ms),
   Decoda shield geometry in brand tokens. Replace its paths with the canonical
   asset from decodasecurity.com when that file is added to the repository.
 
+## Page hierarchy
+
+Every product screen has the same shape (Decoda Assets' idiom; see
+`docs/SCREEN_SIMPLIFICATION.md` for the before/after):
+
+1. **Page header** — `PageHeader` (`app/components/page-header.tsx`): one `<h1>`,
+   one line saying what the screen is for, and its actions with the primary one
+   last and filled. A primary action always does something: where an action
+   starts elsewhere (a response action is recommended from an incident) it is a
+   link there, never a disabled button that looks like one.
+2. **Key figures** — `StatRow`: one framed row of backend-reported figures, each
+   with its own definition beside it and, where it counts a list, a link to it.
+   Tones only mark a count that needs someone (`danger`, `warning`); a figure is
+   never painted green, and an unknown count reads `—` with its reason.
+3. **The screen's own work** — the list or table, at full content width.
+4. **Technical depth on demand** — agent panels, per-source evidence, runtime
+   readings and deployment detail sit behind a native `<details>`
+   (`.pageDisclosure`), a row's detail drawer, or the header's monitoring chip.
+   They are still rendered (state and effects unchanged), so nothing a screen
+   showed is lost — only moved off the first screen.
+
+The shell header carries the canonical Monitoring verdict as one chip
+(`MonitoringStatusChip`, toned by `runtimeFieldTone`, so it can never read green
+without proof). Its readings — heartbeat, poll and telemetry as three separate
+ages, workers, limitation, next action — and the degraded verdict with its
+Diagnose link open below the header on demand.
+
+Sidebar navigation responds on the click: the target item is highlighted, a thin
+bar runs under the header and the outgoing screen steps back until the route
+commits; `aria-current` keeps naming the page actually shown. Sidebar links fully
+prefetch every screen whose page segment carries no data (`SERVER_DATA_ROUTES`
+in `app-navigation.tsx` lists the exceptions — System Health renders backend data
+on the server and is never prefetched). Prefetch arms 1.2s after the shell mounts,
+or when the pointer or focus reaches the sidebar, so it never competes with a
+screen's first reads.
+
 ## Adding UI
 
-- Reach for `app/components/ui-primitives.tsx` first (SurfaceCard, MetricTile,
-  StatusPill, TableShell, EmptyStateBlocker, TabStrip, Button, Select).
+- Reach for `app/components/page-header.tsx` (PageHeader, StatRow) and
+  `app/components/ui-primitives.tsx` (StatusPill, TableShell, EmptyStateBlocker,
+  TabStrip, Button, Select) first.
 - Use classes rather than `style={{…}}` (see the note at the top on why).
 - Every visible control must do something; disabled and loading states must look
   different (`.btn:disabled` is flat and inert, `.btn[data-loading]` keeps colour

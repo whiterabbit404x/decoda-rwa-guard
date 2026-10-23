@@ -6,7 +6,6 @@ import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   EmptyStateBlocker,
-  MetricTile,
   StatusPill,
   TableShell,
   type PillVariant,
@@ -32,6 +31,7 @@ import {
   type IncidentQueueCounts,
   type WorkflowProgress,
 } from './incident-forensics-presentation';
+import { PageHeader, StatRow, type StatItem } from './components/page-header';
 import { usePilotAuth } from './pilot-auth-context';
 import { useRuntimeSummary } from './runtime-summary-context';
 import { useIncidentEvidence, type IncidentEvidenceResponse } from './use-incident-forensics';
@@ -264,7 +264,7 @@ function firstEscalatableAlert(rows: AlertRow[]): AlertRow | null {
 
 /* ── Constants ──────────────────────────────────────────────────── */
 
-const INCIDENT_TABLE_HEADERS = ['Incident ID', 'Severity', 'Title', 'Asset', 'Status', 'Created', 'Action'];
+const INCIDENT_TABLE_HEADERS = ['Severity', 'Incident', 'Asset', 'Status', 'Created', 'Action'];
 
 // One page of recent alerts is scanned for an escalation candidate. The previous limit=1
 // probe could only answer "do alerts exist?"; it could not tell an already-escalated alert
@@ -454,10 +454,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
         }
         if (!cancelled) {
           setIncidents(merged);
+          // Only a deep link pre-opens a case file. Otherwise the queue opens at
+          // full width and a case file opens when a row is chosen.
           if (initialSelectedId && merged.some((r) => r.id === initialSelectedId)) {
             setSelectedId(initialSelectedId);
-          } else if (!selectedId && merged.length > 0) {
-            setSelectedId(merged[0].id);
           }
         }
       } finally {
@@ -676,20 +676,39 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
   const blocker = dataLoading ? null : getBlocker();
 
   return (
-    <section className="featureSection">
-      {/* ── Metric row ──────────────────────────────────────────── */}
-      {/* Canonical, workspace-wide counters from the backend. Each tile states its
+    <section className="featureSection incidentsScreen">
+      <PageHeader
+        title="Incidents"
+        description="Investigate alert-driven incidents, evidence, and response progress."
+        actions={(
+          /* Create Incident runs the canonical alert-escalation path (POST /alerts/{id}/escalate).
+             It is disabled ONLY when the workflow prerequisite is genuinely absent — no alert is
+             left to escalate — never unconditionally. RBAC still lives on the backend; a denied
+             request surfaces its reason below instead of being pre-empted here, because workspace
+             role permissions are DB-overridable and cannot be inferred client-side. */
+          <button type="button" className="btn btn-primary incidentsCreateButton" data-testid="create-incident"
+            disabled={creatingIncident || !escalatableAlert}
+            title={escalatableAlert
+              ? `Open an incident from the latest un-escalated alert (${escalatableAlert.title ?? escalatableAlert.id})`
+              : 'No alert is available to escalate. Incidents are created from alerts — open an alert first.'}
+            onClick={() => void handleCreateIncident()}>
+            {creatingIncident ? 'Creating…' : 'Create Incident'}
+          </button>
+        )}
+      />
+
+      {/* ── Queue figures ───────────────────────────────────────── */}
+      {/* Canonical, workspace-wide counters from the backend. Each figure states its
           own definition, so the number and the label can never drift apart. */}
-      <div className="incidentsQueueCounters">
-        <QueueCounterTile label="Open Incidents" value={queueCounts?.open_incidents}
-          load={queueCountsLoad} meta="Not resolved or closed" />
-        <QueueCounterTile label="Critical Incidents" value={queueCounts?.critical_incidents}
-          load={queueCountsLoad} meta="Critical severity, still open" />
-        <QueueCounterTile label="In Investigation" value={queueCounts?.in_investigation}
-          load={queueCountsLoad} meta="Status: investigating" />
-        <QueueCounterTile label="Awaiting Response" value={queueCounts?.awaiting_response}
-          load={queueCountsLoad} meta="Awaiting a response decision" />
-      </div>
+      <StatRow
+        label="Incident queue"
+        items={[
+          queueCounterItem('Open Incidents', queueCounts?.open_incidents, queueCountsLoad, 'Not resolved or closed', 'warning'),
+          queueCounterItem('Critical Incidents', queueCounts?.critical_incidents, queueCountsLoad, 'Critical severity, still open', 'danger'),
+          queueCounterItem('In Investigation', queueCounts?.in_investigation, queueCountsLoad, 'Status: investigating'),
+          queueCounterItem('Awaiting Response', queueCounts?.awaiting_response, queueCountsLoad, 'Awaiting a response decision'),
+        ]}
+      />
 
       {/* ── Filter bar ──────────────────────────────────────────── */}
       <div className="buttonRow incidentsFilterBar">
@@ -712,21 +731,12 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
           <option value="closed">Closed</option>
           <option value="suppressed">Suppressed</option>
         </select>
-        <input placeholder="Assignee user ID..." value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}
-          className="incidentsAssigneeInput" aria-label="Assignee filter" />
-        {/* Create Incident runs the canonical alert-escalation path (POST /alerts/{id}/escalate).
-            It is disabled ONLY when the workflow prerequisite is genuinely absent — no alert is
-            left to escalate — never unconditionally. RBAC still lives on the backend; a denied
-            request surfaces its reason below instead of being pre-empted here, because workspace
-            role permissions are DB-overridable and cannot be inferred client-side. */}
-        <button type="button" className="btn btn-primary incidentsCreateButton" data-testid="create-incident"
-          disabled={creatingIncident || !escalatableAlert}
-          title={escalatableAlert
-            ? `Open an incident from the latest un-escalated alert (${escalatableAlert.title ?? escalatableAlert.id})`
-            : 'No alert is available to escalate. Incidents are created from alerts — open an alert first.'}
-          onClick={() => void handleCreateIncident()}>
-          {creatingIncident ? 'Creating…' : 'Create Incident'}
-        </button>
+        {/* The assignee filter takes a raw user ID: kept, one click away. */}
+        <details className="incidentsMoreFilters" open={assigneeFilter ? true : undefined}>
+          <summary className="incidentsMoreFiltersSummary">More filters</summary>
+          <input placeholder="Assignee user ID..." value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}
+            className="incidentsAssigneeInput" aria-label="Assignee filter" />
+        </details>
       </div>
 
       {/* The backend's own refusal (403 PERMISSION_DENIED, suppressed alert, …) is shown
@@ -761,12 +771,10 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
                     <tr key={incident.id} onClick={() => setSelectedId(incident.id)}
                       className={isSelected ? 'incidentsQueueRow incidentsQueueRow-selected' : 'incidentsQueueRow'}
                       data-selected={isSelected ? 'true' : undefined}>
-                      <td className="incidentsCellId" title={incident.id}>
-                        {incident.id}
-                      </td>
                       <td><StatusPill label={sev.label} variant={sev.variant} /></td>
                       <td className="incidentsCellTitle" title={incident.title ?? undefined}>
-                        {incident.title ?? '-'}
+                        <span className="incidentsRowTitle">{incident.title ?? '-'}</span>
+                        <span className="incidentsCellId incidentsRowId" title={incident.id}>{incident.id.slice(0, 8)}</span>
                       </td>
                       <td className="incidentsCellAsset" title={incidentAsset(incident)}>{incidentAsset(incident)}</td>
                       <td><StatusPill label={st.label} variant={st.variant} /></td>
@@ -806,6 +814,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
               onRecommend={handleRecommend}
               recommending={recommending}
               recommendError={recommendError}
+              onClose={() => setSelectedId('')}
             />
           )}
         </div>
@@ -831,7 +840,7 @@ export default function IncidentsPanel({ initialSelectedId }: { initialSelectedI
    read as a verdict (CLAUDE.md: no data must not be shown as safe). */
 function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
   responseActions, responseLoad, investigation, investigationLoad,
-  workspaceEvidenceSource, onRecommend, recommending, recommendError }: {
+  workspaceEvidenceSource, onRecommend, recommending, recommendError, onClose }: {
   incident: IncidentRow;
   incidentEvidence: IncidentEvidenceResponse | null;
   incidentEvidenceLoad: ForensicLoadState;
@@ -843,6 +852,7 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
   onRecommend: () => void;
   recommending: boolean;
   recommendError: string;
+  onClose?: () => void;
 }) {
   const sev = severityPill(incident.severity);
   const st  = incidentStatusPill(incidentStatus(incident));
@@ -888,7 +898,14 @@ function IncidentDetailPanel({ incident, incidentEvidence, incidentEvidenceLoad,
       <div className="caseFileHeader">
         <div className="caseFileHeaderRow">
           <p className="caseFileEyebrow">Case File</p>
-          <StatusPill label={sev.label} variant={sev.variant} />
+          <span className="caseFileHeaderActions">
+            <StatusPill label={sev.label} variant={sev.variant} />
+            {onClose ? (
+              <button type="button" className="btn btn-ghost caseFileClose" onClick={onClose} aria-label="Close case file" data-testid="close-case-file">
+                ✕
+              </button>
+            ) : null}
+          </span>
         </div>
         <h4 className="caseFileTitle">{incident.title ?? 'Untitled Incident'}</h4>
         <div className="caseFileMeta">
@@ -1063,22 +1080,25 @@ function CompactWorkflowProgress({ progress, load }: {
   );
 }
 
-/* ── Queue counter tile ──────────────────────────────────────────── */
-// A KPI tile that fails closed. While the canonical count is loading, or when the
-// backend could not supply it, the tile shows "—" and says why — it NEVER renders a
+/* ── Queue counter figure ────────────────────────────────────────── */
+// A queue figure that fails closed. While the canonical count is loading, or when the
+// backend could not supply it, the figure shows "—" and says why — it NEVER renders a
 // zero, because a zero on this row is a claim ("nothing is open") that missing data
 // does not support (CLAUDE.md: no data must not be shown as safe).
-function QueueCounterTile({ label, value, load, meta }: {
-  label: string; value: number | undefined; load: 'idle' | 'loading' | 'ready' | 'error'; meta: string;
-}) {
+function queueCounterItem(
+  label: string,
+  value: number | undefined,
+  load: 'idle' | 'loading' | 'ready' | 'error',
+  meta: string,
+  toneWhenNonZero?: 'danger' | 'warning',
+): StatItem {
   const known = load === 'ready' && typeof value === 'number';
-  return (
-    <MetricTile
-      label={label}
-      value={known ? value : '—'}
-      meta={known ? meta : load === 'error' ? 'Count unavailable' : 'Loading…'}
-    />
-  );
+  return {
+    label,
+    value: known ? value : '—',
+    meta: known ? meta : load === 'error' ? 'Count unavailable' : 'Loading…',
+    tone: known && value > 0 ? toneWhenNonZero : undefined,
+  };
 }
 
 /* ── Forensic field fallback ─────────────────────────────────────── */

@@ -7,12 +7,21 @@ const DATA_PATH = path.join(__dirname, '../app/dashboard-executive-summary-data.
 const HYDRATOR_PATH = path.join(__dirname, '../app/dashboard-live-hydrator.tsx');
 const ROUTE_PATH = path.join(__dirname, '../app/api/dashboard/executive-summary/route.ts');
 const STYLES_PATH = path.join(__dirname, '../app/styles.css');
+const PAGE_HEADER_PATH = path.join(__dirname, '../app/components/page-header.tsx');
 
 function readSource(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts', () => {
+/**
+ * The Dashboard follows the shared page hierarchy (Decoda Assets' idiom): a page
+ * header with ONE primary action, the monitoring status card, a row of four key
+ * figures, then Recent Alerts beside the Executive Brief. The detail that used to
+ * sit on the first screen -- risk drivers, health insights, coverage counts,
+ * uptime, system health score -- lives in the full-summary drawer. These
+ * contracts pin both the hierarchy and every truthfulness rule it carries.
+ */
+test.describe('Dashboard (Screen 2) — source-level contracts', () => {
   test('dashboard route renders DashboardExecutiveSummary via hydrator', () => {
     const hydrator = readSource(HYDRATOR_PATH);
     expect(hydrator).toContain("import DashboardExecutiveSummary from './dashboard-executive-summary'");
@@ -20,102 +29,122 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(hydrator).not.toContain('DashboardPageContent');
   });
 
-  test('page title is Dashboard and subtitle covers assets/monitoring/alerts/incidents/health', () => {
+  test('page header: title, one line of purpose, Refresh and one primary action', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('>Dashboard<');
-    expect(source).toContain('protected assets');
-    expect(source).toContain('monitoring coverage');
-    expect(source).toContain('alerts');
-    expect(source).toContain('incidents');
-    expect(source).toContain('system health');
+    expect(source).toContain('<PageHeader');
+    expect(source).toContain('title="Dashboard"');
+    expect(source).toContain('Protected assets, monitoring coverage, alerts, incidents and system health');
+    expect(source).toContain('execRefreshBtn');
+    // The primary action is the backend's own top recommended focus -- never a
+    // frontend guess -- and it resolves to a real route.
+    expect(source).toContain('data?.executive_brief.recommended_focus[0] ?? data?.ai_copilot.recommended_focus[0] ?? null');
+    expect(source).toContain('href={destinationRoute(primaryFocus.destination)}');
+    expect(source).toContain('data-testid="dashboard-primary-action"');
+    expect(readSource(PAGE_HEADER_PATH)).toContain('<h1 className="pageHeadTitle">{title}</h1>');
   });
 
-  test('top summary areas exist: Executive Brief, Total Asset Value, Open Incidents, Active Alerts, Risk Score, System Health', () => {
+  test('first screen holds the status card, four key figures, recent alerts and the brief', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('Executive Brief');
-    expect(source).toContain('Total Asset Value');
-    expect(source).toContain('"Open Incidents"');
-    expect(source).toContain('"Active Alerts"');
-    expect(source).toContain('Risk Score');
-    expect(source).toContain('System Health');
+    expect(source).toContain('<MonitoringStatusCard data={data} streamStatus={streamStatus} />');
+    expect(source).toContain('<StatRow label="Key figures" items={keyFigures(data)} />');
+    for (const label of ["label: 'Open Incidents'", "label: 'Active Alerts'", "label: 'Monitored Assets'", "label: 'Risk Score'"]) {
+      expect(source).toContain(label);
+    }
+    expect(source).toContain('<RecentAlertsCard alerts={data.recent_alerts} />');
+    expect(source).toContain('<ExecutiveBriefCard data={data} onOpen={() => setBriefOpen(true)} />');
+    // The removed first-screen panels stay removed.
+    for (const removed of ['function SecurityPostureStrip', 'function BottomMetricsRow', 'function CoPilotPanel', 'function MonitoringStatusIndicators', 'execMetricCluster']) {
+      expect(source).not.toContain(removed);
+    }
   });
 
-  test('Executive Brief card shows AI-generated indicator, confidence and View Full AI Summary', () => {
+  test('figures link to the list they count; a count is never painted healthy', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain("href: '/incidents'");
+    expect(source).toContain("href: '/alerts'");
+    expect(source).toContain("href: '/assets'");
+    // Only "needs someone" tones; no success tone on a figure.
+    expect(source).toContain("tone: m.open_incident_count > 0 ? 'warning' : undefined");
+    expect(source).toContain("tone: m.active_alert_count > 0 ? 'danger' : undefined");
+    expect(source).not.toMatch(/tone: '?success/);
+    const header = readSource(PAGE_HEADER_PATH);
+    expect(header).toContain("export type StatTone = 'danger' | 'warning' | 'info' | 'neutral';");
+    expect(header).toContain("data-tone={item.tone ?? 'neutral'}");
+  });
+
+  test('total asset value renders Not available for null, not $0', () => {
+    const data = readSource(DATA_PATH);
+    expect(data).toContain("if (value == null) return 'Not available';");
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('formatAssetValue(value)');
+    expect(source).toContain('formatAssetValue(data.metrics.total_asset_value_usd)');
+  });
+
+  // Monitoring vs telemetry vs heartbeat vs ingestion vs the browser's connection:
+  // separate facts, read straight from the backend, never collapsed into one.
+  test('status card keeps every evidence axis separate and gates Live on backend state', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('MONITORING_STATUS_LABELS[monitoring.state]');
+    expect(source).toContain('TELEMETRY_FRESHNESS_LABELS[data.data_freshness.status]');
+    expect(source).toContain("monitoring.workers_fresh ? 'Heartbeat current' : 'Heartbeat not confirmed'");
+    expect(source).toContain("monitoring.ingestion_healthy ? 'Ingestion healthy' : 'Ingestion not confirmed'");
+    expect(source).toContain('Live updates: {CONNECTION_STATUS_LABELS[connection]}');
+    expect(source).toContain('connectionStatusFromStream(streamStatus)');
+    expect(source).toContain('HEALTH_STATUS_LABELS[health]');
+    // The SSE transport never drives a monitoring label.
+    expect(source).not.toContain("streamStatus === 'live' ? 'Live' : 'Reconnecting'");
+    expect(source).not.toContain("streamStatus === 'live' ? 'Live monitoring'");
+    // Not live: the way to fix it is offered; live: no setup call-to-action.
+    expect(source).toContain('Set up monitoring');
+    expect(source).toContain("{live ? 'View system health' : 'Diagnose'}");
+    // Period movement only when the backend reported a period.
+    expect(source).toContain('const activityReported = activity.period_start != null;');
+  });
+
+  test('the status rail fails closed: offline is red, nothing unknown reads fine', () => {
+    const css = readSource(STYLES_PATH);
+    expect(css).toContain(".dashStatus[data-state='offline'] { border-left-color: var(--danger-fg); }");
+    expect(css).toContain(".dashStatus[data-state='live'] { border-left-color: var(--success-fg); }");
+    expect(css).toContain(".dashFact[data-ok='false']");
+    const data = readSource(DATA_PATH);
+    // Anything other than an explicit live/degraded is offline.
+    expect(data).toContain("return v === 'live' || v === 'degraded' ? v : 'offline';");
+  });
+
+  test('freshness is stated in words for fresh, stale and missing telemetry', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('function freshnessSentence');
+    expect(source).toContain('Telemetry unavailable. No verified telemetry has been received from any monitored system.');
+    expect(source).toContain('Telemetry is stale. Last verified event');
+  });
+
+  test('zero-alert wording is coverage-aware and drops "All clear"', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).not.toContain('All clear');
+    expect(source).toContain('function activeAlertsMeta');
+    expect(source).toContain('No active alerts detected');
+    expect(source).toContain("'No active alerts'");
+    expect(source).toContain('function CoverageCaveatBanner');
+    expect(source).toContain('zero alerts does not confirm absence of threats');
+    expect(source).toContain('<CoverageCaveatBanner data={data} />');
+  });
+
+  test('executive brief: evidence freshness, deterministic confidence, generation mode', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('aria-label="Executive Brief"');
     expect(source).toContain('View Full AI Summary');
     expect(source).toContain("brief.generation_mode === 'ai'");
-    expect(source).toContain('Confidence');
-  });
-
-  test('Risk Trend, Recent Alerts, and AI Dashboard Co-Pilot sections exist', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('aria-label="Risk Trend"');
-    expect(source).toContain('Risk Trend — Last 7 Days');
-    expect(source).toContain('aria-label="Recent Alerts"');
-    expect(source).toContain('View all alerts');
-    expect(source).toContain('aria-label="AI Dashboard Co-Pilot"');
-    expect(source).toContain('Top Risk Drivers');
-    expect(source).toContain('System Health Insights');
-    expect(source).toContain('Recommended Focus');
-    expect(source).toContain('View Full AI Insights');
-  });
-
-  test('bottom metrics exist: Monitored Assets, Active Monitors, Data Sources, 30-day Uptime', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('Monitored Assets');
-    expect(source).toContain('Active Monitors');
-    expect(source).toContain('Data Sources');
-    expect(source).toContain('30-day Uptime');
-  });
-
-  // Required frontend test 1: loading skeleton renders.
-  test('loading skeleton is rendered while loading with no data', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('function LoadingSkeleton');
-    expect(source).toContain("status === 'loading' && !data ? <LoadingSkeleton />");
-  });
-
-  // Required frontend test 4: empty states contain no fabricated data.
-  test('empty and no-trend states are explicit and non-fabricated', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('Historical trend not available yet');
-    expect(source).toContain('no synthetic history is shown');
-    expect(source).toContain('No active alerts');
-    expect(source).toContain('EmptyStateBlocker');
-  });
-
-  // Required frontend test 7: AI generation mode + timestamp render.
-  test('brief generation mode and generated timestamp render', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain("isAi ? 'AI generated' : 'Deterministic'");
-    // Generation time renders from the evidence block (distinct from evidence age).
-    expect(source).toContain('formatRelativeTime(evidence.generated_at)');
     expect(source).toContain("isAi ? 'AI generated' : 'Deterministic fallback'");
-  });
-
-  // Required frontend test 8: stale-data warning renders.
-  test('freshness/stale warning renders for non-fresh data', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('function FreshnessBanner');
-    expect(source).toContain("if (status === 'fresh') return null;");
-    expect(source).toContain('Telemetry is stale.');
-    expect(source).toContain('Telemetry unavailable.');
-  });
-
-  // Required frontend test 9: Co-Pilot insights render source links.
-  test('co-pilot health insights render deep-link sources', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('function insightSourceLink');
-    expect(source).toContain('View source');
-    expect(source).toContain("case 'monitoring_target':");
-    expect(source).toContain('/monitoring-sources');
-  });
-
-  test('recent alert rows link to the individual alert record', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('href={alert.url}');
-    expect(source).toContain('execAlertRowLink');
+    expect(source).toContain('function EvidenceFreshnessLine');
+    expect(source).toContain('Data current through');
+    expect(source).toContain('formatAgeSeconds(evidence.telemetry_age_seconds)');
+    expect(source).toContain('DATA_CONFIDENCE_LABELS[evidence.data_confidence]');
+    expect(source).toContain('formatRelativeTime(evidence.generated_at)');
+    expect(source).not.toContain("brief.confidence >= 0.7 ? 'High'");
+    // Recommended focus sits in the brief, each item a real route.
+    expect(source).toContain('Recommended Focus');
+    expect(source).toContain('href={destinationRoute(item.destination)}');
   });
 
   test('recommended focus destinations map only to real routes (no broken links)', () => {
@@ -127,44 +156,72 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(source).toContain("assets: '/assets'");
   });
 
-  // Truthfulness: System Health label is derived only from the deterministic
-  // backend status; "Healthy" never appears unless status === 'healthy', and an
-  // unconfigured workspace shows "Not configured", never a green 100.
+  test('recent alert rows link to the individual alert record', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('aria-label="Recent Alerts"');
+    expect(source).toContain('View all alerts');
+    expect(source).toContain('href={alert.url}');
+    expect(source).toContain('execAlertRowLink');
+    expect(source).toContain('title="No active alerts"');
+  });
+
+  test('the full summary drawer carries the co-pilot detail and coverage', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
+    expect(source).toContain('aria-label="AI Dashboard Co-Pilot"');
+    expect(source).toContain('Top Risk Drivers');
+    expect(source).toContain('System Health Insights');
+    expect(source).toContain('top_risk_drivers.map');
+    expect(source).toContain('system_health_insights.map');
+    for (const label of ['Monitored Assets', 'Active Monitors', 'Data Sources', 'Total Asset Value', '30-day Uptime', 'System Health']) {
+      expect(source).toContain(`<dt>${label}</dt>`);
+    }
+    // Insight sources deep-link to the record behind them.
+    expect(source).toContain('function insightSourceLink');
+    expect(source).toContain('View source');
+    expect(source).toContain("case 'monitoring_target':");
+  });
+
   test('system health label is truth-derived, never fake healthy', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('HEALTH_STATUS_LABELS[status]');
-    expect(source).toContain("status === 'not_configured'");
+    expect(source).toContain("data.metrics.system_health_status === 'not_configured' ? '—'");
     const data = readSource(DATA_PATH);
     expect(data).toContain("healthy: 'Healthy'");
     expect(data).toContain("not_configured: 'Not configured'");
-    // The only healthy label mapping is keyed on the literal 'healthy' status.
     expect(data).not.toContain("degraded: 'Healthy'");
   });
 
-  // Truthfulness: a null valuation is "Not available", never $0.
-  test('total asset value renders Not available for null, not $0', () => {
-    const data = readSource(DATA_PATH);
-    expect(data).toContain("if (value == null) return 'Not available';");
+  test('risk trend draws only from real snapshots and is omitted until it exists', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('formatAssetValue(value)');
-    expect(source).toContain('monitored asset');
+    expect(source).toContain('{data.trend_available ? (');
+    expect(source).toContain('const points = trend.filter((p) => p.captured_at);');
+    expect(source).toContain('const hasEnough = available && points.length >= 2;');
+    expect(source).toContain('{hasEnough && partial ? <StatusPill label="Partial data"');
+    // Its absence is still stated, in the drawer, without inventing history.
+    expect(source).toContain('Historical trend not available yet');
+    expect(source).toContain('no synthetic history is shown');
+    const data = readSource(DATA_PATH);
+    expect(data).toContain('trend_partial: boolean');
+    expect(data).toContain('captured_date: string | null');
   });
 
-  test('metrics never fabricate values — Top Risk Drivers come from backend contributions', () => {
+  test('loading and error states', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
-    // Drivers/insights are read straight from ai_copilot (backend deterministic
-    // contributions), never invented client-side.
-    expect(source).toContain('= data.ai_copilot;');
-    expect(source).toContain('top_risk_drivers.map');
-    expect(source).toContain('system_health_insights.map');
+    expect(source).toContain('function LoadingSkeleton');
+    expect(source).toContain("status === 'loading' && !data ? <LoadingSkeleton />");
+    expect(source).toContain('Dashboard temporarily unavailable');
+    expect(source).toContain('Showing last known data.');
+  });
+
+  test('metrics never fabricate values', () => {
+    const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).not.toContain('Math.random');
+    expect(source).toContain('= data.ai_copilot;');
   });
 
   test('real-time refresh is wired to the live workspace feed (SSE/poll)', () => {
     const source = readSource(EXEC_SUMMARY_PATH);
     expect(source).toContain('liveFeed?.lastFetchCompletedAt');
     expect(source).toContain('refreshSignal');
-    // Debounced refetch preserves chart/scroll state (no remount).
     expect(source).toContain('setTimeout(() => void load(true)');
   });
 
@@ -173,20 +230,6 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(route).toContain('/ops/dashboard/executive-summary');
     expect(route).toContain("'authorization', 'x-workspace-id', 'x-csrf-token', 'cookie'");
     expect(route).toContain('normalizeWorkspaceHeaderValue');
-  });
-
-  test('CSS defines Screen 2 layout + responsive breakpoints without horizontal overflow', () => {
-    const css = readSource(STYLES_PATH);
-    expect(css).toContain('.execMetricRow');
-    expect(css).toContain('.execMetricRowScreen2');
-    expect(css).toContain('.execBriefCard');
-    expect(css).toContain('.execCopilotPanel');
-    expect(css).toContain('.execTrendChart');
-    expect(css).toContain('.execBottomMetricsRow');
-    expect(css).toContain('.execDrawer');
-    // Required frontend test 10: mobile layout does not overflow.
-    expect(css).toContain('@media (max-width: 720px)');
-    expect(css).toContain('overflow-x: auto');
   });
 
   test('defensive coercers guard every mapped field', () => {
@@ -198,118 +241,12 @@ test.describe('Dashboard Executive Summary (Screen 2) — source-level contracts
     expect(data).toContain('export function mapExecutiveSummary');
   });
 
-  // Issue 2: "Live monitoring" is derived from backend monitoring evidence, not
-  // the SSE transport. The header exposes three separate axes.
-  test('monitoring status is separate from SSE transport; Live gated on backend state', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    // The operational badge reads the backend monitoring_state, never streamStatus.
-    expect(source).toContain('MONITORING_STATUS_LABELS[data.monitoring_state.state]');
-    expect(source).toContain('function MonitoringStatusIndicators');
-    // Three distinct axes are rendered.
-    expect(source).toContain('execStatusPill--monitoring');
-    expect(source).toContain('execStatusPill--telemetry');
-    expect(source).toContain('execStatusPill--connection');
-    expect(source).toContain('connectionStatusFromStream(streamStatus)');
-    // The old collapsed transport-as-LIVE indicator is gone: SSE 'live' must not
-    // drive a "Live" monitoring label.
-    expect(source).not.toContain("streamStatus === 'live' ? 'Live' : 'Reconnecting'");
-    // "Live monitoring" text only ever comes from the label map, never a stream check.
-    expect(source).not.toContain("streamStatus === 'live' ? 'Live monitoring'");
-  });
-
-  // Issue 3: zero alerts never reads "All clear"; degraded coverage adds a caveat.
-  test('zero-alert wording is coverage-aware and drops "All clear"', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).not.toContain('All clear');
-    expect(source).toContain('function activeAlertsMeta');
-    expect(source).toContain('No active alerts detected');
-    expect(source).toContain("'No active alerts'");
-    expect(source).toContain('function CoverageCaveatBanner');
-    expect(source).toContain('zero alerts does not confirm absence of threats');
-  });
-
-  // Issue 4: Executive Brief distinguishes generation time from evidence freshness
-  // and uses the deterministic (non-LLM) confidence.
-  test('executive brief renders evidence freshness + deterministic confidence', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('function EvidenceFreshnessLine');
-    expect(source).toContain('Generated {formatRelativeTime(evidence.generated_at)}');
-    expect(source).toContain('Data current through');
-    expect(source).toContain('formatAgeSeconds(evidence.telemetry_age_seconds)');
-    // Confidence badge is driven by evidence.data_confidence, not brief.confidence.
-    expect(source).toContain('DATA_CONFIDENCE_LABELS[evidence.data_confidence]');
-    expect(source).not.toContain("brief.confidence >= 0.7 ? 'High'");
-    const data = readSource(DATA_PATH);
-    expect(data).toContain('export type EvidenceFreshness');
-    expect(data).toContain('data_current_through');
-    expect(data).toContain('telemetry_age_seconds');
-  });
-
-  // Issue 5: corrected top-card layout — brief wider, five cards equal height in
-  // a wrap-filling cluster, no stretched blank area, responsive preserved.
-  test('top-card layout uses the corrected shared cluster classes', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    expect(source).toContain('execMetricCluster');
+  test('CSS: one-column stack below 1100px, figures two-up on phones, drawer kept', () => {
     const css = readSource(STYLES_PATH);
-    expect(css).toContain('.execMetricCluster');
-    // Equal-height cards within a row; cluster fills the final row (no empty cell).
-    expect(css).toContain('.execMetricCluster .execMetricCard { height: 100%; }');
-    expect(css).toContain('flex-wrap: wrap');
-    // Brief stays wider than the metric cluster.
-    expect(css).toContain('grid-template-columns: minmax(280px, 1.15fr) minmax(0, 2fr)');
-    // Mobile stacks the cluster cards without horizontal overflow.
-    expect(css).toContain('flex-basis: 100%');
-  });
-
-  // Risk Trend: availability + partial state derive from REAL snapshot counts;
-  // no synthetic dates or forward-filled scores are produced client-side.
-  test('risk trend availability and partial state use real snapshot counts', () => {
-    const source = readSource(EXEC_SUMMARY_PATH);
-    // At least two real, timestamped points are required before a line is drawn.
-    expect(source).toContain('const points = trend.filter((p) => p.captured_at);');
-    expect(source).toContain('const hasEnough = available && points.length >= 2;');
-    // "Partial data" is gated on the backend-derived partial flag (not a client
-    // guess), and only when there is enough real history to draw.
-    expect(source).toContain('{hasEnough && partial ? <StatusPill label="Partial data"');
-    expect(source).toContain('partial={data.trend_partial}');
-    // The empty state stays explicit and non-fabricated.
-    expect(source).toContain('Historical trend not available yet');
-    expect(source).toContain('no synthetic history is shown');
-    // Data layer carries the real per-day timestamp + coverage flags.
-    const data = readSource(DATA_PATH);
-    expect(data).toContain('trend_partial: boolean');
-    expect(data).toContain('trend_days_covered: number');
-    expect(data).toContain('captured_date: string | null');
-  });
-
-  // Readability: Screen 2 enforces per-category minimum font sizes without
-  // globally reducing the root font or scaling the whole dashboard.
-  test('Screen 2 enforces minimum readable font sizes', () => {
-    const css = readSource(STYLES_PATH);
-    // Metric values >= 20px.
-    expect(css).toContain('font-size: max(2rem, 20px)');
-    expect(css).toContain('font-size: max(1.35rem, 20px)');
-    // Card titles / labels >= 12px.
-    expect(css).toContain('font-size: max(0.78rem, 12px)');
-    expect(css).toContain('font-size: max(1rem, 12px)');
-    // Operational labels & timestamps >= 11px.
-    expect(css).toContain('font-size: max(0.72rem, 11px)');
-    // The two previously sub-spec sizes are fixed (status pill was ~10.9px, the
-    // chart axis label was 9px). Scope the pill check to its own rule.
-    const statusPillRule = css.slice(css.indexOf('.execStatusPill {'), css.indexOf('.execStatusPill {') + 400);
-    expect(statusPillRule).toContain('font-size: max(0.72rem, 11px);');
-    expect(statusPillRule).not.toContain('0.68rem');
-    expect(css).toContain('.execTrendAxisLabel { fill: var(--text-muted); font-size: 11px; }');
-    // Root font size is NOT globally reduced to force density.
-    expect(css).not.toContain('html { font-size:');
-    expect(css).not.toMatch(/body\s*\{[^}]*font-size/);
-  });
-
-  // Issue 2/3 truthfulness: status axis styling exists for all three axes.
-  test('CSS defines the three separate status axes', () => {
-    const css = readSource(STYLES_PATH);
-    expect(css).toContain('.execStatusCluster');
-    expect(css).toContain(".execStatusPill--monitoring[data-state='live']");
+    expect(css).toContain('.dashGrid');
+    expect(css).toMatch(/@media \(max-width: 1100px\) \{\s*\.dashGrid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    expect(css).toMatch(/@media \(max-width: 640px\) \{\s*\.statRow \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
+    expect(css).toContain('.execDrawer');
     expect(css).toContain('.execCoverageCaveat');
     expect(css).toContain('.execBriefEvidence');
   });

@@ -117,6 +117,10 @@ the document. On top of that critical path:
 - **Hover/focus intent prefetch** (`router.prefetch(href, { kind: 'full' })`):
   Next 16 does not reuse a full prefetch for these `force-dynamic` routes — the
   click issued two fresh RSC requests anyway. More requests, no faster.
+  *Follow-up (`docs/SCREEN_SIMPLIFICATION.md`)*: a `<Link prefetch>` full prefetch
+  **is** reused on click. The sidebar now prefetches every data-free screen once
+  the screen's own first reads have had the network, and sidebar navigation
+  commits in 19–38ms instead of 171–206ms at 150ms RTT.
 - **A group-level `(product)/loading.tsx`** (Assets has one): the URL committed
   earlier, but React holds a revealed Suspense fallback for ~300ms, and Guard's
   screens only start fetching after they mount, so the throttle landed on the

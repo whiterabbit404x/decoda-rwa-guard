@@ -10,7 +10,8 @@ import { INTERNAL_ADMIN_HREF, INTERNAL_ADMIN_LABEL, showsInternalAdminLink } fro
 import { usePilotAuth } from 'app/pilot-auth-context';
 import PlanBadge from './plan-badge';
 import { PlanStatusProvider } from './plan-status-context';
-import RuntimeBanner from './components/runtime-banner';
+import RuntimeBanner, { MonitoringStatusChip } from './components/runtime-banner';
+import { OfflineVerdictStrip } from './workspace-monitoring-mode-banner';
 import { RuntimeSummaryProvider } from './runtime-summary-context';
 import ThemeToggle from './theme-toggle';
 import { breadcrumbsFor } from './shell-breadcrumbs';
@@ -169,6 +170,13 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
   const userChipRef = useRef<HTMLButtonElement | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // The monitoring details panel: closed by default, so a screen opens on its
+  // own content. The header chip states the verdict on every screen either way.
+  const [statusOpen, setStatusOpen] = useState(false);
+  // Immediate navigation feedback: the sidebar item a click is heading to is
+  // highlighted, and a thin progress bar runs, from the click until the route
+  // commits. It changes no data and no access -- only what the click shows.
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
   const mobileNavButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileNavCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -232,7 +240,34 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
   useEffect(() => {
     setUserMenuOpen(false);
     setMobileNavOpen(false);
+    setStatusOpen(false);
+    setPendingHref(null);
   }, [pathname]);
+
+  // A navigation that never commits (an error page, a cancelled transition)
+  // must not leave the indicator running.
+  useEffect(() => {
+    if (!pendingHref) return;
+    const timer = window.setTimeout(() => setPendingHref(null), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [pendingHref]);
+
+  function handleNavAttempt(targetHref: string, plainClick: boolean) {
+    recordNavAttempt(targetHref);
+    if (plainClick && targetHref !== pathname) setPendingHref(targetHref);
+  }
+
+  // Escape closes the monitoring details and returns focus to its chip.
+  useEffect(() => {
+    if (!statusOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      setStatusOpen(false);
+      document.querySelector<HTMLButtonElement>('[data-testid="shell-status-chip"]')?.focus();
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [statusOpen]);
 
   // Mobile navigation drawer: a modal surface. Focus moves in and is kept
   // in (Tab wraps; the page behind is inert), Escape closes it and hands
@@ -359,6 +394,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
         className="appShellFrame"
         data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}
         data-mobile-nav={mobileNavOpen ? 'open' : 'closed'}
+        data-nav-pending={pendingHref ? 'true' : undefined}
       >
         <a className="skipToContent" href="#main">Skip to content</a>
         {/* ── Sidebar ─────────────────────────────────── */}
@@ -383,7 +419,7 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
             </button>
           </div>
 
-          <AppNavigation currentPath={pathname} onNavAttempt={recordNavAttempt} />
+          <AppNavigation currentPath={pathname} pendingPath={pendingHref} onNavAttempt={handleNavAttempt} />
 
           <span className="sidebarSpacer" />
           <hr className="sidebarDivider" />
@@ -474,6 +510,15 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
               <span className="shellHeaderSpacer" />
 
               <div className="shellHeaderActions">
+                {/* The canonical monitoring verdict, in words, on every screen. Its
+                    evidence (heartbeat, poll, telemetry, workers, limitation) opens
+                    below the header on demand instead of occupying two rows above
+                    every screen's own content. */}
+                <MonitoringStatusChip
+                  open={statusOpen}
+                  onToggle={() => setStatusOpen((open) => !open)}
+                  controlsId="shell-status-panel"
+                />
                 {/* Shared Decoda identity: products + organization switcher (renders only for a Decoda session). */}
                 <DecodaSwitcher />
                 <Link href="/workspaces" className="shellWorkspaceSelector" prefetch={false} aria-label="Switch workspace">
@@ -552,14 +597,25 @@ export default function AppShell({ children, topBanner }: { children: React.Reac
               </div>
             </div>
 
-            {/* Compact global health warning — a full-width strip that only appears
-                when the canonical runtime truth says monitoring is degraded. It is
-                placed on its own row (not inside the header bar) so it never overlaps
-                the workspace selector or user/account controls. */}
-            {topBanner}
-
-            {/* Runtime banner: compact monitoring strip */}
-            <RuntimeBanner />
+            {/* Monitoring details, opened from the header chip: the verdict strip
+                (degraded states only, with its Diagnose link) and the evidence strip.
+                Nothing in them is dropped or reworded -- they are one click away
+                rather than two permanent rows above every screen. */}
+            {/* Offline is critical: its verdict strip stays on every screen. */}
+            {statusOpen ? null : <OfflineVerdictStrip>{topBanner}</OfflineVerdictStrip>}
+            <div
+              className="shellStatusPanel"
+              id="shell-status-panel"
+              hidden={!statusOpen}
+              data-testid="shell-status-panel"
+            >
+              {statusOpen ? (
+                <>
+                  {topBanner}
+                  <RuntimeBanner />
+                </>
+              ) : null}
+            </div>
           </header>
 
           {/* Each screen renders its own <main> landmark; the shell's content

@@ -23369,3 +23369,811 @@ tbody tr.alertsRow[data-selected="true"] > td:first-child {
 .screenError p {
   margin: 0;
 }
+
+/* ═══ Decoda simplified product layer — begin ═══════════════════════════
+   One page hierarchy for every product screen, in the Decoda Assets idiom:
+   a page header (title, one line of purpose, the primary action), a compact
+   row of key figures, then the screen's own work list. Technical evidence
+   stays reachable -- behind the header's monitoring chip, a row's detail
+   drawer, or a "details" disclosure -- instead of occupying the first screen.
+   Tokens only; nothing here changes what a status means, only where it sits. */
+
+/* --- Header monitoring chip + details panel ---------------------------- */
+.shellStatusChipWrap {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.shellStatusChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.shellStatusChip:hover { border-color: var(--border-accent); }
+.shellStatusChip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.shellStatusChip svg { transition: transform var(--dur-fast) var(--ease-out); }
+.shellStatusChip[aria-expanded='true'] svg { transform: rotate(180deg); }
+
+.shellStatusDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 999px;
+  background: var(--neutral-fg);
+}
+
+.shellStatusKey { color: var(--text-muted); font-weight: 500; }
+.shellStatusValue { color: var(--text-primary); font-weight: 650; }
+
+/* Tone comes from runtimeFieldTone: only a proven-live verdict is green, an
+   absence stays grey. The words state the condition; colour only repeats it. */
+.shellStatusChip[data-tone='positive'] { border-color: var(--success-bdr); }
+.shellStatusChip[data-tone='positive'] .shellStatusDot { background: var(--success-fg); }
+.shellStatusChip[data-tone='caution'] { border-color: var(--warning-bdr); background: var(--warning-bg); }
+.shellStatusChip[data-tone='caution'] .shellStatusDot { background: var(--warning-fg); }
+.shellStatusChip[data-tone='caution'] .shellStatusValue { color: var(--warning-fg); }
+.shellStatusChip[data-tone='critical'] { border-color: var(--danger-bdr); background: var(--danger-bg); }
+.shellStatusChip[data-tone='critical'] .shellStatusDot { background: var(--danger-fg); }
+.shellStatusChip[data-tone='critical'] .shellStatusValue { color: var(--danger-fg); }
+
+.shellStatusPanel {
+  padding: 0.6rem 0 0.4rem;
+  border-top: 1px solid var(--border);
+}
+
+.shellStatusPanel[hidden] { display: none; }
+
+.shellStatusPanel .globalHealthWarning { margin-bottom: 0.25rem; }
+.shellStatusPanel .runtimeBanner { border-top: 0; }
+
+@media (max-width: 900px) {
+  .shellStatusKey { display: none; }
+}
+
+/* --- Page header ------------------------------------------------------- */
+.pageHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin: 0 0 1.25rem;
+}
+
+/* Pages that already space their children with a flex gap. */
+.dashboardExecPage > .pageHead,
+.msrcPage > .pageHead { margin-bottom: 0; }
+
+.pageHeadText {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 46rem;
+}
+
+.pageHeadTitle {
+  margin: 0;
+  font-size: clamp(1.45rem, 1.15rem + 0.8vw, 1.8rem);
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.pageHeadLede {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.93rem;
+  line-height: 1.5;
+}
+
+.pageHeadMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.pageHeadActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* --- Key figures row --------------------------------------------------- */
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+
+.statRowItem {
+  display: grid;
+  align-content: start;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.85rem 1.1rem;
+  border-left: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+
+.statRowItem:first-child { border-left: 0; }
+
+.statRowItem--link { transition: background-color var(--dur-fast) var(--ease-out); }
+.statRowItem--link:hover { background: var(--bg-hover); }
+.statRowItem--link:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.statRowLabel {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.statRowValue {
+  color: var(--text-primary);
+  font-size: 1.55rem;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.statRowValue[data-tone='danger'] { color: var(--danger-fg); }
+.statRowValue[data-tone='warning'] { color: var(--warning-fg); }
+.statRowValue[data-tone='info'] { color: var(--info-fg); }
+
+.statRowUnit {
+  margin-left: 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.statRowMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .statRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .statRowItem:nth-child(odd) { border-left: 0; }
+  .statRowItem:nth-child(n + 3) { border-top: 1px solid var(--border); }
+}
+
+/* --- Screen: dashboard -------------------------------------------------- */
+.dashboardExecPage { gap: 1.25rem; }
+
+.dashStatus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--neutral-fg);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Fail-closed: anything the backend did not call live or degraded reads as
+   offline (mapMonitoringStatus), so the rail is red, never grey-as-fine. */
+.dashStatus[data-state='live'] { border-left-color: var(--success-fg); }
+.dashStatus[data-state='degraded'] { border-left-color: var(--warning-fg); }
+.dashStatus[data-state='offline'] { border-left-color: var(--danger-fg); }
+
+.dashStatusMain {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1 1 28rem;
+}
+
+.dashStatusHeadline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.dashStatusDot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--neutral-fg);
+}
+
+.dashStatus[data-state='live'] .dashStatusDot { background: var(--success-fg); }
+.dashStatus[data-state='degraded'] .dashStatusDot { background: var(--warning-fg); }
+.dashStatus[data-state='offline'] .dashStatusDot { background: var(--danger-fg); }
+
+.dashStatusReason,
+.dashStatusFreshness,
+.dashActivity {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.dashActivity { color: var(--text-muted); font-size: 0.8rem; }
+
+.dashFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashFact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--neutral-bdr);
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* An evidence fact the backend did not confirm is a caution, never neutral-as-fine;
+   a confirmed one is green only because the backend said so. */
+.dashFact[data-ok='true'] { border-color: var(--success-bdr); background: var(--success-bg); color: var(--success-fg); }
+.dashFact[data-ok='false'] { border-color: var(--warning-bdr); background: var(--warning-bg); color: var(--warning-fg); }
+.dashFact--transport { font-weight: 500; }
+
+.dashStatusActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.dashStatusLink,
+.dashCardLink {
+  color: var(--text-accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dashStatusLink:hover,
+.dashCardLink:hover { text-decoration: underline; }
+
+.dashGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .dashGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.dashCard {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.dashCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dashCardTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.dashAlertList {
+  display: grid;
+  margin: 0 -0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.dashAlertRow {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.5rem;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  text-decoration: none;
+}
+
+.dashAlertList li + li .dashAlertRow { border-top: 1px solid var(--border); border-radius: 0; }
+.dashAlertRow:hover { background: var(--bg-hover); }
+.dashAlertRow:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+.dashAlertTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  font-weight: 550;
+}
+
+.dashAlertTime {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashBriefHeadline {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.dashBriefSummary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dashFocus { display: grid; gap: 0.4rem; }
+
+.dashFocusTitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.dashFocusList {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashFocusList li { display: grid; gap: 0.05rem; }
+
+.dashFocusLink {
+  color: var(--text-accent);
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dashFocusLink:hover { text-decoration: underline; }
+
+.dashFocusReason {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.dashBriefFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.dashBrief .execBriefEvidence { margin: 0; }
+
+.dashCoverageList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem 1rem;
+  margin: 0 0 0.5rem;
+}
+
+.dashCoverageList dt {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashCoverageList dd {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.1rem 0 0;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashSkeletonStatus { min-height: 8rem; }
+.dashSkeletonFigure { min-height: 5.5rem; border-radius: 0; }
+.dashSkeletonPanel { min-height: 16rem; }
+
+/* --- Disclosure: technical detail on demand ----------------------------- */
+.pageDisclosure {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+}
+
+.pageDisclosureSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  padding: 0.85rem 1.1rem;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pageDisclosureSummary::-webkit-details-marker { display: none; }
+
+.pageDisclosureSummary::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.15rem;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-fast) var(--ease-out);
+  align-self: center;
+}
+
+.pageDisclosure[open] > .pageDisclosureSummary::before { transform: rotate(45deg); }
+.pageDisclosureSummary:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--radius-lg); }
+
+.pageDisclosureHint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.pageDisclosureBody {
+  padding: 0 1.1rem 1.1rem;
+}
+
+/* --- Screen: monitoring sources ------------------------------------------ */
+@container msrc-layout (min-width: 1240px) {
+  .msrcLayoutGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.msrcPage .msrcConn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.msrcMoreFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.msrcMoreFiltersSummary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.msrcMoreFiltersSummary::-webkit-details-marker { display: none; }
+.msrcMoreFilters[open] > .msrcMoreFiltersSummary { border-color: var(--border-accent); color: var(--text-accent); }
+
+.msrcAgentDisclosure .msrcAgent {
+  display: block;
+  columns: 3 17rem;
+  column-gap: 0.75rem;
+}
+
+.msrcAgentDisclosure .msrcAgentCard {
+  break-inside: avoid;
+  margin-bottom: 0.75rem;
+}
+
+/* --- Screen: alerts ---------------------------------------------------- */
+.alertsStack {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.alertsStack .alertsMain { min-width: 0; }
+
+/* The triage agent as a bar: identity on the left, its verdict and facts in
+   the middle, Review / Run on the right. Every element the card carried is
+   still rendered; only the arrangement changes. */
+.alertsStack .alertsAgent.dataCard {
+  position: static;
+  display: grid;
+  grid-template-columns: minmax(12rem, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem 1.25rem;
+  padding: 0.85rem 1.1rem;
+}
+
+.alertsStack .alertsAgentHead { grid-column: 1; grid-row: 1 / span 3; margin: 0; align-self: start; }
+.alertsStack .alertsAgentEyebrow.eyebrow { font-size: 0.62rem; }
+.alertsStack .alertsAgentTitle { font-size: 0.95rem; }
+.alertsStack .alertsAgentPills { grid-column: 2; margin: 0; }
+.alertsStack .alertsAgentSummary { grid-column: 2; margin: 0; font-size: 0.85rem; }
+
+.alertsStack .alertsAgentFacts {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 1.25rem;
+  margin: 0;
+  border: 0;
+  background: none;
+}
+
+.alertsStack .alertsAgentFact,
+.alertsStack .alertsAgentFact + .alertsAgentFact {
+  justify-content: flex-start;
+  gap: 0.35rem;
+  padding: 0;
+  border: 0;
+}
+
+.alertsStack .alertsAgentFact dd { text-align: left; }
+
+.alertsStack .alertsAgentActions {
+  grid-column: 3;
+  grid-row: 1 / span 3;
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+.alertsStack .alertsAgentNotice,
+.alertsStack .alertsAgentRec,
+.alertsStack .alertsAgentEmpty,
+.alertsStack .alertsAgentHint,
+.alertsStack .alertsAgentMessage,
+.alertsStack .alertsAgentLoading {
+  grid-column: 2 / -1;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .alertsStack .alertsAgent.dataCard { grid-template-columns: minmax(0, 1fr); }
+  .alertsStack .alertsAgent.dataCard > * { grid-column: 1; grid-row: auto; }
+  .alertsStack .alertsAgentActions { flex-wrap: wrap; }
+}
+
+/* --- Screen: incidents ------------------------------------------------- */
+.incidentsScreen > .statRow { margin-bottom: 1rem; }
+
+.incidentsScreen .incidentsCellTitle {
+  max-width: none;
+  min-width: 14rem;
+  white-space: normal;
+}
+
+.incidentsRowTitle {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 34rem;
+}
+
+.incidentsScreen .incidentsRowId {
+  display: block;
+  margin-top: 0.1rem;
+  font-weight: 400;
+}
+
+.incidentsMoreFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.incidentsMoreFiltersSummary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.incidentsMoreFiltersSummary::-webkit-details-marker { display: none; }
+.incidentsMoreFilters[open] > .incidentsMoreFiltersSummary { border-color: var(--border-accent); color: var(--text-accent); }
+
+.caseFileHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.caseFileClose {
+  min-height: 1.75rem;
+  padding: 0 0.5rem;
+  font-size: 0.8rem;
+}
+
+.dashAlertRow > :first-child { justify-self: start; }
+
+/* --- Screen: assets ------------------------------------------------------ */
+.assetsRegistryLayout {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
+}
+
+.assetsAssessorDisclosure .assessorPanel {
+  border-top: 0;
+  box-shadow: none;
+  border: 0;
+  padding: 0;
+  background: none;
+}
+
+/* Full width below the registry: the assessor's sections sit side by side. */
+.assetsAssessorDisclosure .assessorPanel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem 1.5rem;
+  align-items: start;
+}
+
+.assetsAssessorDisclosure .assessorHeader { grid-column: 1 / -1; }
+
+/* --- Screen: threat monitoring ------------------------------------------- */
+/* The four window figures read as one row of figures, like every other
+   screen's: one frame, dividers between figures, no per-figure icon. */
+.tmPage .tmKpiRow {
+  gap: 0;
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+
+.tmPage .tmKpiRow > .tmKpi {
+  min-height: 0;
+  padding: 0.85rem 1.1rem;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.tmPage .tmKpiRow > .tmKpi:first-child { border-left: 0; }
+.tmPage .tmKpiIcon { display: none; }
+.tmPage .tmKpi .metricValue { font-size: 1.55rem; }
+
+/* Figures rows inside the older section wrappers keep the section rhythm. */
+.featureSection > .statRow,
+.productPage > .statRow { margin-bottom: 1.25rem; }
+/* A section that opens with the page header starts where every other screen's
+   header does. */
+.productShellContent .productPage > .featureSection:first-child:has(> .pageHead:first-child) { margin-top: 0; }
+
+/* --- Screen: system health ------------------------------------------------ */
+.shDetailsBody {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.shPage > .shDetails { margin-top: 1.25rem; }
+
+/* --- Immediate navigation feedback ----------------------------------------
+   From the click until the route commits: the target sidebar item is already
+   highlighted (app-navigation.tsx), a thin bar runs under the header, and the
+   outgoing screen steps back. Loading indicator, so it may loop; reduced
+   motion collapses it with every other animation. */
+.appShellFrame[data-nav-pending='true'] .appShellTop::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background-image: linear-gradient(90deg, transparent, var(--accent-solid), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: dcNavLoading 0.9s var(--ease-in-out) infinite;
+  pointer-events: none;
+}
+
+.appShellFrame[data-nav-pending='true'] .appShellPage {
+  opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease-out) 60ms;
+}
+
+@keyframes dcNavLoading {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+/* The header's meta line wraps on a phone instead of widening the page. */
+.pageHeadText { flex: 1 1 20rem; }
+.pageHeadMeta > * { min-width: 0; max-width: 100%; }
+.msrcPage .pageHeadMeta .msrcRefreshed { white-space: normal; }
+
+.dashFactNote {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}

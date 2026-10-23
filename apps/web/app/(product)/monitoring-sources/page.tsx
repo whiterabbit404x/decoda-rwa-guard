@@ -15,7 +15,8 @@ import { usePilotAuth } from '../../pilot-auth-context';
 import { useRuntimeSummary } from '../../runtime-summary-context';
 import { SourceOptimizationAgentPanel } from './agent-panel';
 import { DecisionEvidenceDrawer, SourceDetailDrawer } from './detail-drawer';
-import { SummaryCards } from './summary-cards';
+import { SummaryFigures } from './summary-cards';
+import { PageHeader } from '../../components/page-header';
 import {
   fmtExact,
   fmtLatency,
@@ -108,36 +109,6 @@ function healthScoreCell(source: SourceRow) {
   );
 }
 
-// P95 latency cell: truthful about sample sufficiency and recency. Only SUCCESSFUL
-// samples count. 0 successful => "No successful samples"; 1–19 => "Insufficient
-// samples"; 20+ => the calculated P95, labelled "historical" when its freshest sample
-// is old or the provider is failing now — never a failed call's elapsed time.
-function p95LatencyCell(source: SourceRow) {
-  const status = (source.p95_status ?? '').trim().toLowerCase();
-  const count = source.p95_sample_count ?? 0;
-  if (status === 'no_successful_samples' || (status === '' && source.p95_latency_ms == null && count === 0 && !source.p95_insufficient && source.median_latency_ms == null)) {
-    return <span className="muted" title="No successful provider samples in the window">No successful samples</span>;
-  }
-  if (status === 'insufficient_samples' || source.p95_insufficient) {
-    return (
-      <span className="muted" title={`P95 needs 20+ successful samples (${count} so far)`}>
-        Insufficient samples
-      </span>
-    );
-  }
-  if (source.p95_latency_ms == null) {
-    return <span className="muted">—</span>;
-  }
-  if (source.p95_is_historical) {
-    return (
-      <span title={`Historical P95 from ${count} successful samples${source.p95_last_sample_at ? ` (last ${fmtRelative(source.p95_last_sample_at)})` : ''}; provider not verified live now`}>
-        {fmtLatency(source.p95_latency_ms)} <span className="msrcTag">historical</span>
-      </span>
-    );
-  }
-  return <span>{fmtLatency(source.p95_latency_ms)}</span>;
-}
-
 // ── Monitored Systems tab helpers (runtime-focused, fail-closed) ─────────────
 function runtimeStatusPill(system: MonitoredSystemRow): { label: string; variant: PillVariant } {
   if (!system.is_enabled) return { label: 'Disabled', variant: 'neutral' };
@@ -182,9 +153,12 @@ function systemType(system: MonitoredSystemRow): string {
   return 'RPC endpoint';
 }
 
+// Seven columns a person scans: what is watched, where, its state, its health,
+// when data last arrived, and how it is routed. Provider, role, P95 latency,
+// block lag, error rate and heartbeat/poll ages are per-source evidence and
+// live in the source's detail drawer (Details), which reads the same row.
 const TARGET_HEADERS = [
-  'Target / System', 'Network', 'Source Provider', 'Role', 'Status', 'Health Score',
-  'P95 Latency', 'Block Lag', 'Error Rate', 'Last Event', 'Last Heartbeat', 'Routing', 'Actions',
+  'Target / System', 'Network', 'Status', 'Health Score', 'Last Event', 'Routing', 'Actions',
 ];
 
 const SYSTEM_HEADERS = [
@@ -245,7 +219,6 @@ export default function MonitoringSourcesPage() {
   const [diagnosticResult, setDiagnosticResult] = useState('');
   const [selectedSource, setSelectedSource] = useState<SourceRow | null>(null);
   const [selectedDecision, setSelectedDecision] = useState<AgentDecision | null>(null);
-  const [mobileAgentOpen, setMobileAgentOpen] = useState(false);
 
   const { authHeaders, refreshCsrfToken } = usePilotAuth();
   const { refresh: refreshRuntimeSummary } = useRuntimeSummary();
@@ -519,15 +492,6 @@ export default function MonitoringSourcesPage() {
   // Reset to first page whenever the filter set changes.
   useEffect(() => setPage(1), [search, statusFilter, networkFilter, providerFilter, routingFilter, sortKey, sortDir]);
 
-  // Escape closes the mobile agent sheet (the detail drawers handle their own).
-  useEffect(() => {
-    if (!mobileAgentOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileAgentOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [mobileAgentOpen]);
 
   const routingHistoryForSelected = useMemo(
     () => (selectedSource ? decisions.filter((d) => d.target_id === selectedSource.target_id) : []),
@@ -563,32 +527,33 @@ export default function MonitoringSourcesPage() {
           Source Optimization agent panel. The full global System Health dashboard is
           NOT repeated here — it lives on /system-health. */}
 
-      {/* ── Header ─────────────────────────────────────────── */}
-      <header className="msrcHeader">
-        <div className="msrcHeaderText">
-          <h1 className="productPageTitle msrcTitle">Monitoring Sources</h1>
-          <p className="msrcLede">
-            Continuously monitor provider health, ingestion coverage, routing status, and telemetry reliability.
-          </p>
-        </div>
-        <div className="msrcHeaderActions">
-          {/* Page live-update channel (SSE) — a fact about THIS page's connection,
-              kept apart from provider / ingestion health. */}
-          <div className="msrcConn">
-            <span className="msrcConnLabel">Page updates</span>
-            <StatusPill label={streamPill.label} variant={streamPill.variant} />
+      <PageHeader
+        title="Monitoring Sources"
+        description="The systems Guard watches for each protected asset, and whether their data is arriving."
+        meta={(
+          <>
+            {/* Page live-update channel (SSE) — a fact about THIS page's connection,
+                kept apart from provider / ingestion health. */}
+            <span className="msrcConn">
+              Live updates <StatusPill label={streamPill.label} variant={streamPill.variant} />
+            </span>
             <span className="msrcRefreshed" title={fmtExact(lastRefreshed)}>
               Last refreshed {fmtRelative(lastRefreshed)}
+              {streamStatus === 'reconnecting' ? ' · refreshed by polling while live updates reconnect' : ''}
             </span>
-          </div>
-          <button type="button" className="btn btn-secondary msrcHeaderBtn msrcIcoPulse" disabled={healthCheckBusy} onClick={() => void handleRunHealthCheck()}>
-            {healthCheckBusy ? 'Running…' : 'Run Health Check'}
-          </button>
-          <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary msrcHeaderBtn msrcIcoPlus">
-            Add Source
-          </Link>
-        </div>
-      </header>
+          </>
+        )}
+        actions={(
+          <>
+            <button type="button" className="btn btn-secondary msrcHeaderBtn msrcIcoPulse" disabled={healthCheckBusy} onClick={() => void handleRunHealthCheck()}>
+              {healthCheckBusy ? 'Running…' : 'Run Health Check'}
+            </button>
+            <Link href="/monitoring-sources/targets" prefetch={false} className="btn btn-primary msrcHeaderBtn msrcIcoPlus">
+              Add Source
+            </Link>
+          </>
+        )}
+      />
 
       {loadError ? <p className="statusLine msrcNotice msrcNotice--danger">{loadError}</p> : null}
       {actionError ? <p className="statusLine msrcNotice msrcNotice--danger">{actionError}</p> : null}
@@ -596,14 +561,9 @@ export default function MonitoringSourcesPage() {
           degraded, unreachable) must never be tinted as a success. */}
       {healthCheckResult ? <p className="statusLine msrcNotice msrcNotice--result">{healthCheckResult}</p> : null}
       {diagnosticResult ? <p className="statusLine msrcNotice msrcNotice--result">{diagnosticResult}</p> : null}
-      {streamStatus === 'reconnecting' ? (
-        <p className="statusLine msrcNotice msrcNotice--warning">
-          Live updates are reconnecting. Data is temporarily refreshed by polling.
-        </p>
-      ) : null}
 
-      {/* ── Summary cards ──────────────────────────────────── */}
-      <SummaryCards summary={summary} loading={loading} />
+      {/* ── Key figures ────────────────────────────────────── */}
+      <SummaryFigures summary={summary} loading={loading} />
 
       <div className="msrcLayout">
         <div className="msrcLayoutGrid">
@@ -674,8 +634,6 @@ export default function MonitoringSourcesPage() {
                               {source.address ? <span className="msrcSubMono" title={source.address}>{shortAddress(source.address)}</span> : null}
                             </td>
                             <td>{source.network || '—'}</td>
-                            <td>{source.provider || source.primary_provider || <span className="muted">—</span>}</td>
-                            <td>{source.source_type || '—'}</td>
                             <td className="msrcCellStatus">
                               {/* Provider/runtime health. */}
                               <StatusPill label={status.label} variant={status.variant} />
@@ -698,15 +656,7 @@ export default function MonitoringSourcesPage() {
                               })()}
                             </td>
                             <td>{healthScoreCell(source)}</td>
-                            <td className="msrcNum">{p95LatencyCell(source)}</td>
-                            <td className="msrcNum" title={source.block_lag == null ? 'Requires a live chain-head read' : undefined}>
-                              {source.block_lag == null ? '—' : source.block_lag.toLocaleString()}
-                            </td>
-                            <td className="msrcNum" title={source.error_rate == null ? 'Not measured by current probe path' : undefined}>
-                              {source.error_rate == null ? '—' : `${(source.error_rate * 100).toFixed(2)}%`}
-                            </td>
                             <td className="msrcNum" title={fmtExact(source.last_telemetry_at)}>{fmtRelative(source.last_telemetry_at)}</td>
-                            <td className="msrcNum" title={fmtExact(source.last_heartbeat)}>{fmtRelative(source.last_heartbeat)}</td>
                             <td><StatusPill label={routing.label} variant={routing.variant} /></td>
                             <td className="msrcCellActions" onClick={(e) => e.stopPropagation()}>
                               <div className="msrcRowActions">
@@ -785,33 +735,20 @@ export default function MonitoringSourcesPage() {
           ) : null}
         </div>
 
-        {/* ── Right rail (desktop) ──────────────────────────── */}
-        <aside className="sourceAgentRail msrcRail">
-          {agentPanel}
-        </aside>
         </div>
       </div>
 
-      {/* ── Mobile agent drawer toggle ────────────────────── */}
-      <button
-        type="button"
-        className="btn btn-primary sourceAgentMobileToggle msrcAgentFab"
-        onClick={() => setMobileAgentOpen(true)}
-      >
-        Agent
-      </button>
-      {mobileAgentOpen ? (
-        <div role="dialog" aria-modal="true" aria-label="Source Optimization Agent" className="msrcSheet">
-          <button type="button" aria-label="Close" className="msrcSheetScrim" onClick={() => setMobileAgentOpen(false)} />
-          <div className="msrcSheetPanel">
-            <div className="msrcSheetHead">
-              <span className="msrcSheetTitle">Source Optimization Agent</span>
-              <button type="button" className="btn btn-secondary msrcRowBtn" onClick={() => setMobileAgentOpen(false)}>Close</button>
-            </div>
-            {agentPanel}
-          </div>
-        </div>
-      ) : null}
+      {/* ── Source optimization agent ─────────────────────── */}
+      {/* Routing decisions, health checks and diagnostics the agent ran -- the
+          same panel as before, on demand rather than beside the table. A
+          decision that needs approval says so in the figures row above. */}
+      <details className="pageDisclosure msrcAgentDisclosure">
+        <summary className="pageDisclosureSummary">
+          Source optimization agent
+          <span className="pageDisclosureHint">Routing decisions, health checks and diagnostics</span>
+        </summary>
+        <div className="pageDisclosureBody">{agentPanel}</div>
+      </details>
 
       {/* ── Detail drawers ────────────────────────────────── */}
       {selectedSource ? (
@@ -864,6 +801,15 @@ function SourceFilters(props: {
           <option value="all">All networks</option>
           {props.networkOptions.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
+        <button type="button" className="btn btn-secondary msrcToolBtn msrcIcoRefresh" onClick={props.onRefresh}>
+          Refresh
+        </button>
+      </div>
+      {/* Provider, routing and sort are for an operator tuning sources; they stay
+          one click away and keep their state while closed. */}
+      <details className="msrcMoreFilters">
+        <summary className="msrcMoreFiltersSummary">More filters</summary>
+        <div className="msrcFilterGroup">
         <select aria-label="Filter by provider" value={props.providerFilter} onChange={(e) => props.onProvider(e.target.value)} className="msrcSelect">
           <option value="all">All providers</option>
           {props.providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -890,10 +836,8 @@ function SourceFilters(props: {
         >
           {props.sortDir === 'asc' ? '↑' : '↓'}
         </button>
-        <button type="button" className="btn btn-secondary msrcToolBtn msrcIcoRefresh" onClick={props.onRefresh}>
-          Refresh
-        </button>
-      </div>
+        </div>
+      </details>
     </div>
   );
 }

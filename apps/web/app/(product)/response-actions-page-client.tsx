@@ -7,12 +7,12 @@ import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import {
   EmptyStateBlocker,
-  MetricTile,
   StatusPill,
   TableShell,
   TabStrip,
   type PillVariant,
 } from '../components/ui-primitives';
+import { PageHeader, StatRow } from '../components/page-header';
 import { resolveApiUrl } from '../dashboard-data';
 import { usePilotAuth } from '../pilot-auth-context';
 import {
@@ -1034,25 +1034,28 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
           /system-health; the compact global health warning in the app shell surfaces a
           degraded runtime. */}
       <section className="featureSection">
-        <div className="sectionHeader">
-          <div>
-            <h1>Response Actions</h1>
-            <p className="muted">
-              Review, approve, simulate, and track response actions linked to incidents.
-            </p>
-          </div>
+        <PageHeader
+          title="Response Actions"
+          description="Review, approve, simulate, and track response actions linked to incidents."
+          actions={(
+            /* A response action is recommended from an incident (its case file's
+               Recommend Response), so the primary action is the way there — never a
+               disabled button that looks like one. */
+            <Link href="/incidents" prefetch={false} className="btn btn-primary" title="Response actions are recommended from an incident's case file">
+              Recommend from an incident
+            </Link>
+          )}
+        />
 
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled
-            style={{ opacity: 0.45 }}
-            title="Response action recommendation requires incident-linked workflow - use Incidents to open a response action"
-            aria-label="Recommend Action"
-          >
-            Recommend Action
-          </button>
-        </div>
+        <StatRow
+          label="Response action summary"
+          items={[
+            { label: 'Recommended Actions', value: recommendedCount },
+            { label: 'Pending Approval', value: pendingApprovalCount, tone: pendingApprovalCount > 0 ? 'warning' : undefined },
+            { label: 'Simulated Actions', value: simulatedCount },
+            { label: 'Executed Actions', value: executedCount },
+          ]}
+        />
 
         <div
           className="buttonRow"
@@ -1140,20 +1143,6 @@ export default function ResponseActionsPageClient({ apiUrl: providedApiUrl }: { 
               </select>
             </>
           )}
-        </div>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: '1rem',
-            marginBottom: '1.5rem',
-          }}
-        >
-          <MetricTile label="Recommended Actions" value={recommendedCount} />
-          <MetricTile label="Pending Approval" value={pendingApprovalCount} />
-          <MetricTile label="Simulated Actions" value={simulatedCount} />
-          <MetricTile label="Executed Actions" value={executedCount} />
         </div>
 
         {/* Orange approval banner — shown only when persisted state has actions
