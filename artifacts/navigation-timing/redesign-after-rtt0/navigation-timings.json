@@ -1,0 +1,3764 @@
+{
+  "label": "capture",
+  "capturedAt": "2026-10-23T03:12:32.625Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "latencyMs": 0,
+  "hoverMs": 100,
+  "loads": 3,
+  "routes": [
+    "/dashboard",
+    "/assets",
+    "/monitoring-sources",
+    "/threat",
+    "/alerts",
+    "/incidents",
+    "/response-actions",
+    "/evidence",
+    "/integrations",
+    "/settings",
+    "/system-health"
+  ],
+  "documentSummary": [
+    {
+      "route": "/dashboard",
+      "ttfb": 14.4,
+      "fcp": 120,
+      "gate": 255.6,
+      "ready": 332.3,
+      "settled": 403.1,
+      "api": 6,
+      "dup": 0
+    },
+    {
+      "route": "/assets",
+      "ttfb": 15.7,
+      "fcp": 132,
+      "gate": 277.5,
+      "ready": 409.3,
+      "settled": 421,
+      "api": 6,
+      "dup": 0
+    },
+    {
+      "route": "/monitoring-sources",
+      "ttfb": 12.6,
+      "fcp": 132,
+      "gate": 334,
+      "ready": 476.8,
+      "settled": 507.9,
+      "api": 6,
+      "dup": 0
+    },
+    {
+      "route": "/threat",
+      "ttfb": 15.3,
+      "fcp": 116,
+      "gate": 273.8,
+      "ready": 359.4,
+      "settled": 406.2,
+      "api": 5,
+      "dup": 0
+    },
+    {
+      "route": "/alerts",
+      "ttfb": 12.6,
+      "fcp": 116,
+      "gate": 264.1,
+      "ready": 312.3,
+      "settled": 347.4,
+      "api": 5,
+      "dup": 0
+    },
+    {
+      "route": "/incidents",
+      "ttfb": 14.7,
+      "fcp": 120,
+      "gate": 281.1,
+      "ready": 405.3,
+      "settled": 442,
+      "api": 7,
+      "dup": 0
+    },
+    {
+      "route": "/response-actions",
+      "ttfb": 12.6,
+      "fcp": 124,
+      "gate": 284.6,
+      "ready": 476.6,
+      "settled": 537,
+      "api": 8,
+      "dup": 0
+    },
+    {
+      "route": "/evidence",
+      "ttfb": 15,
+      "fcp": 108,
+      "gate": 303,
+      "ready": 479.4,
+      "settled": 500.7,
+      "api": 7,
+      "dup": 0
+    },
+    {
+      "route": "/integrations",
+      "ttfb": 11.4,
+      "fcp": 112,
+      "gate": 240.8,
+      "ready": 403.6,
+      "settled": 414.3,
+      "api": 6,
+      "dup": 0
+    },
+    {
+      "route": "/settings",
+      "ttfb": 11.6,
+      "fcp": 112,
+      "gate": 291.2,
+      "ready": 665.6,
+      "settled": 660.9,
+      "api": 15,
+      "dup": 0
+    },
+    {
+      "route": "/system-health",
+      "ttfb": 15.2,
+      "fcp": 132,
+      "gate": 341,
+      "ready": 282.5,
+      "settled": 410.2,
+      "api": 4,
+      "dup": 0
+    }
+  ],
+  "sidebarSummary": [
+    {
+      "route": "/assets",
+      "feedback": 18,
+      "urlCommit": 48.7,
+      "ready": 111.2,
+      "settled": 124.1,
+      "api": 2,
+      "dup": 0
+    },
+    {
+      "route": "/monitoring-sources",
+      "feedback": 29.7,
+      "urlCommit": 34.1,
+      "ready": 137.1,
+      "settled": 140.3,
+      "api": 2,
+      "dup": 0
+    },
+    {
+      "route": "/threat",
+      "feedback": 12.9,
+      "urlCommit": 35.9,
+      "ready": 95.4,
+      "settled": 93.3,
+      "api": 1,
+      "dup": 0
+    },
+    {
+      "route": "/alerts",
+      "feedback": 9,
+      "urlCommit": 27.6,
+      "ready": 82.2,
+      "settled": 87.7,
+      "api": 1,
+      "dup": 0
+    },
+    {
+      "route": "/incidents",
+      "feedback": 15.1,
+      "urlCommit": 19.5,
+      "ready": 114.2,
+      "settled": 126.9,
+      "api": 3,
+      "dup": 0
+    },
+    {
+      "route": "/response-actions",
+      "feedback": 14.1,
+      "urlCommit": 36,
+      "ready": 168.5,
+      "settled": 184.4,
+      "api": 4,
+      "dup": 0
+    },
+    {
+      "route": "/evidence",
+      "feedback": 24.9,
+      "urlCommit": 32.3,
+      "ready": 135.9,
+      "settled": 153.3,
+      "api": 3,
+      "dup": 0
+    },
+    {
+      "route": "/integrations",
+      "feedback": 13.9,
+      "urlCommit": 18.9,
+      "ready": 146.5,
+      "settled": 155.5,
+      "api": 2,
+      "dup": 0
+    },
+    {
+      "route": "/settings",
+      "feedback": 9.8,
+      "urlCommit": 35.6,
+      "ready": 370.5,
+      "settled": 373.4,
+      "api": 11,
+      "dup": 0
+    },
+    {
+      "route": "/system-health",
+      "feedback": 9.9,
+      "urlCommit": 31.6,
+      "ready": 320.9,
+      "settled": 0,
+      "api": 0,
+      "dup": 0
+    }
+  ],
+  "steady": [],
+  "documentLoads": [
+    {
+      "load": 1,
+      "route": "/dashboard",
+      "finalPath": "/dashboard",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 255.6,
+      "settledMs": 403.1,
+      "readyMs": 407.9,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/dashboard/executive-summary": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/stream/alerts": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 160.8,
+        "auth.csrf.response": 217.3,
+        "auth.me.response": 226.5,
+        "summary.request.start": 247.7,
+        "dashboard.mount": 255.4,
+        "workspace.ready": 255.6,
+        "session.ready": 256.8,
+        "runtime-status.response": 383.7,
+        "summary.response": 392.2,
+        "dashboard.skeleton.dismissed": 437.9
+      },
+      "paint": {
+        "first-paint": 120,
+        "first-contentful-paint": 120,
+        "ttfb": 14.4,
+        "domContentLoaded": 48.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 164.4,
+          "end": 196.3
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 164.7,
+          "end": 224.2
+        },
+        {
+          "path": "/api/dashboard/executive-summary",
+          "start": 249.6,
+          "end": 379.1
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 253.6,
+          "end": 378.7
+        },
+        {
+          "path": "/api/stream/alerts",
+          "start": 255.1,
+          "end": 334.8
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 256.6,
+          "end": 403.1
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/assets",
+      "finalPath": "/assets",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 277.5,
+      "settledMs": 421,
+      "readyMs": 409.3,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 175.2,
+        "auth.csrf.response": 213.4,
+        "auth.me.response": 240.4,
+        "workspace.ready": 277.5,
+        "session.ready": 279,
+        "runtime-status.response": 326
+      },
+      "paint": {
+        "first-paint": 136,
+        "first-contentful-paint": 136,
+        "ttfb": 16.9,
+        "domContentLoaded": 54.2
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 177.6,
+          "end": 198.8
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 177.9,
+          "end": 237.3
+        },
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 273.1,
+          "end": 388.6
+        },
+        {
+          "path": "/api/assets",
+          "start": 277.4,
+          "end": 421
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 278.1,
+          "end": 362.7
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 278.8,
+          "end": 317.7
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/monitoring-sources",
+      "finalPath": "/monitoring-sources",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 281.4,
+      "settledMs": 431.6,
+      "readyMs": 407.3,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 180,
+        "auth.csrf.response": 217.8,
+        "auth.me.response": 242.4,
+        "workspace.ready": 281.4,
+        "session.ready": 283.6,
+        "runtime-status.response": 403.7
+      },
+      "paint": {
+        "first-paint": 124,
+        "first-contentful-paint": 124,
+        "ttfb": 15,
+        "domContentLoaded": 49
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 182.6,
+          "end": 212.2
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 183,
+          "end": 241.9
+        },
+        {
+          "path": "/api/monitoring/sources",
+          "start": 279.8,
+          "end": 398.8
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 281.2,
+          "end": 387.7
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 282.8,
+          "end": 431.6
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 283.5,
+          "end": 399.5
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/threat",
+      "finalPath": "/threat",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 304.3,
+      "settledMs": 417.7,
+      "readyMs": 359.4,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/threat-monitoring/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 216.7,
+        "auth.csrf.response": 256.9,
+        "auth.me.response": 276.1,
+        "workspace.ready": 304.3,
+        "session.ready": 305.9,
+        "runtime-status.response": 348.2
+      },
+      "paint": {
+        "first-paint": 120,
+        "first-contentful-paint": 120,
+        "ttfb": 16.1,
+        "domContentLoaded": 55.9
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 219.1,
+          "end": 239.4
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 220.7,
+          "end": 274.2
+        },
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 304.2,
+          "end": 379.7
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 305,
+          "end": 417.7
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 305.8,
+          "end": 343.3
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/alerts",
+      "finalPath": "/alerts",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 243.7,
+      "settledMs": 335.4,
+      "readyMs": 288.1,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/alerts/triage/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 164.2,
+        "auth.csrf.response": 198.5,
+        "auth.me.response": 213.9,
+        "workspace.ready": 243.7,
+        "session.ready": 245,
+        "runtime-status.response": 278.8
+      },
+      "paint": {
+        "first-paint": 128,
+        "first-contentful-paint": 128,
+        "ttfb": 14.6,
+        "domContentLoaded": 59
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 166.2,
+          "end": 188.4
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 167.2,
+          "end": 214
+        },
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 243.4,
+          "end": 303.4
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 244.4,
+          "end": 335.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 245,
+          "end": 277.9
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/incidents",
+      "finalPath": "/incidents",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 281.1,
+      "settledMs": 442,
+      "readyMs": 368.6,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 202,
+        "auth.csrf.response": 227.2,
+        "auth.me.response": 256.3,
+        "workspace.ready": 281.1,
+        "session.ready": 282.4,
+        "runtime-status.response": 320
+      },
+      "paint": {
+        "first-paint": 140,
+        "first-contentful-paint": 140,
+        "ttfb": 17.2,
+        "domContentLoaded": 55.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 205.3,
+          "end": 226.6
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 206.1,
+          "end": 255.7
+        },
+        {
+          "path": "/api/incidents",
+          "start": 279.3,
+          "end": 346
+        },
+        {
+          "path": "/api/alerts",
+          "start": 280.1,
+          "end": 406.2
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 280.9,
+          "end": 370.4
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 281.7,
+          "end": 442
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 282.3,
+          "end": 318.5
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/response-actions",
+      "finalPath": "/response-actions",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 267.6,
+      "settledMs": 454.3,
+      "readyMs": 457,
+      "apiCount": 8,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 161,
+        "auth.csrf.response": 188.1,
+        "auth.me.response": 220.6,
+        "workspace.ready": 267.6,
+        "session.ready": 269,
+        "runtime-status.response": 324.6
+      },
+      "paint": {
+        "first-paint": 112,
+        "first-contentful-paint": 112,
+        "ttfb": 16.6,
+        "domContentLoaded": 46.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 163.2,
+          "end": 184.4
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 163.5,
+          "end": 217.4
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 263.4,
+          "end": 344.3
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 264.1,
+          "end": 368.3
+        },
+        {
+          "path": "/api/alerts",
+          "start": 265.4,
+          "end": 454.3
+        },
+        {
+          "path": "/api/incidents",
+          "start": 266,
+          "end": 388.6
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 266.7,
+          "end": 317.2
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 268.8,
+          "end": 423.2
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/evidence",
+      "finalPath": "/evidence",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 326.1,
+      "settledMs": 565.5,
+      "readyMs": 552.9,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 163.5,
+        "auth.csrf.response": 194.1,
+        "auth.me.response": 236.8,
+        "workspace.ready": 326.1,
+        "session.ready": 327.4,
+        "runtime-status.response": 566.7
+      },
+      "paint": {
+        "first-paint": 108,
+        "first-contentful-paint": 108,
+        "ttfb": 15,
+        "domContentLoaded": 45.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 165.6,
+          "end": 187.4
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 166.7,
+          "end": 235.8
+        },
+        {
+          "path": "/api/exports",
+          "start": 324.8,
+          "end": 390.3
+        },
+        {
+          "path": "/api/events",
+          "start": 325.3,
+          "end": 479.7
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 325.8,
+          "end": 412.3
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 326.7,
+          "end": 452
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 327.3,
+          "end": 565.5
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/integrations",
+      "finalPath": "/integrations",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 240.8,
+      "settledMs": 404.1,
+      "readyMs": 397.9,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 162.5,
+        "auth.csrf.response": 183.5,
+        "auth.me.response": 215.6,
+        "workspace.ready": 240.8,
+        "session.ready": 242.4,
+        "runtime-status.response": 282.5
+      },
+      "paint": {
+        "first-paint": 112,
+        "first-contentful-paint": 112,
+        "ttfb": 11.4,
+        "domContentLoaded": 68.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 164.6,
+          "end": 183.1
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 164.9,
+          "end": 214.7
+        },
+        {
+          "path": "/api/integrations/decoda",
+          "start": 239.3,
+          "end": 299.8
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 240.7,
+          "end": 404.1
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 241.5,
+          "end": 390.3
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 242.3,
+          "end": 285.2
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/settings",
+      "finalPath": "/settings",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 291.2,
+      "settledMs": 784,
+      "readyMs": 676.2,
+      "apiCount": 15,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 159.6,
+        "auth.csrf.response": 195,
+        "auth.me.response": 229.4,
+        "workspace.ready": 291.2,
+        "session.ready": 292.8,
+        "runtime-status.response": 784.4
+      },
+      "paint": {
+        "first-paint": 112,
+        "first-contentful-paint": 112,
+        "ttfb": 11.6,
+        "domContentLoaded": 46.3
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 161.6,
+          "end": 192
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 161.8,
+          "end": 219.1
+        },
+        {
+          "path": "/api/workspace/members",
+          "start": 277.7,
+          "end": 386.9
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 278.5,
+          "end": 519.7
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 279.2,
+          "end": 362.2
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 279.9,
+          "end": 509
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 280.6,
+          "end": 358.4
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 281.1,
+          "end": 509.5
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 286.8,
+          "end": 504.3
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 288.2,
+          "end": 574.3
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 289.4,
+          "end": 595.2
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 290.2,
+          "end": 669.4
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 290.9,
+          "end": 695
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 291.7,
+          "end": 635.1
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 292.7,
+          "end": 784
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/system-health",
+      "finalPath": "/system-health",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 298.5,
+      "settledMs": 353.4,
+      "readyMs": 240.3,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 192.6,
+        "auth.csrf.response": 228.4,
+        "auth.me.response": 242.1,
+        "workspace.ready": 298.5,
+        "session.ready": 300.4,
+        "runtime-status.response": 354.3
+      },
+      "paint": {
+        "first-paint": 132,
+        "first-contentful-paint": 132,
+        "ttfb": 20.7,
+        "domContentLoaded": 156.2
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 195,
+          "end": 218.2
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 195.3,
+          "end": 242.5
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 299.5,
+          "end": 353.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 300.3,
+          "end": 319.5
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/dashboard",
+      "finalPath": "/dashboard",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 230.9,
+      "settledMs": 359.3,
+      "readyMs": 309,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/dashboard/executive-summary": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/stream/alerts": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 156.9,
+        "auth.csrf.response": 187.2,
+        "auth.me.response": 215.7,
+        "summary.request.start": 225.6,
+        "dashboard.mount": 230.7,
+        "workspace.ready": 230.9,
+        "session.ready": 231.7,
+        "runtime-status.response": 260.4,
+        "summary.response": 325.6,
+        "dashboard.skeleton.dismissed": 356.2
+      },
+      "paint": {
+        "first-paint": 108,
+        "first-contentful-paint": 108,
+        "ttfb": 18.4,
+        "domContentLoaded": 47.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 158.9,
+          "end": 185.1
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 159.2,
+          "end": 210.8
+        },
+        {
+          "path": "/api/dashboard/executive-summary",
+          "start": 227.1,
+          "end": 325.3
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 229.3,
+          "end": 254.1
+        },
+        {
+          "path": "/api/stream/alerts",
+          "start": 230.5,
+          "end": 318.1
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 231.5,
+          "end": 359.3
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/assets",
+      "finalPath": "/assets",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 247.4,
+      "settledMs": 378.5,
+      "readyMs": 371.8,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 160.1,
+        "auth.csrf.response": 197.8,
+        "auth.me.response": 215.8,
+        "workspace.ready": 247.4,
+        "session.ready": 254.2,
+        "runtime-status.response": 288.9
+      },
+      "paint": {
+        "first-paint": 116,
+        "first-contentful-paint": 116,
+        "ttfb": 11.8,
+        "domContentLoaded": 34.9
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 163.4,
+          "end": 191.7
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 163.7,
+          "end": 215.5
+        },
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 244.3,
+          "end": 358.3
+        },
+        {
+          "path": "/api/assets",
+          "start": 247.3,
+          "end": 327.2
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 248,
+          "end": 378.5
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 254.1,
+          "end": 285.8
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/monitoring-sources",
+      "finalPath": "/monitoring-sources",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 334,
+      "settledMs": 507.9,
+      "readyMs": 476.8,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 178.4,
+        "auth.csrf.response": 198,
+        "auth.me.response": 257.9,
+        "workspace.ready": 334,
+        "session.ready": 335.9,
+        "runtime-status.response": 506.4
+      },
+      "paint": {
+        "first-paint": 132,
+        "first-contentful-paint": 132,
+        "ttfb": 11.4,
+        "domContentLoaded": 74.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 182.6,
+          "end": 197.3
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 183.4,
+          "end": 254.6
+        },
+        {
+          "path": "/api/monitoring/sources",
+          "start": 332,
+          "end": 473.2
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 333.8,
+          "end": 457
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 335,
+          "end": 507.9
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 335.7,
+          "end": 480.6
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/threat",
+      "finalPath": "/threat",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 264.6,
+      "settledMs": 347,
+      "readyMs": 307.9,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/threat-monitoring/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 176.8,
+        "auth.csrf.response": 210.5,
+        "auth.me.response": 236.2,
+        "workspace.ready": 264.6,
+        "session.ready": 266.4,
+        "runtime-status.response": 307.5
+      },
+      "paint": {
+        "first-paint": 116,
+        "first-contentful-paint": 116,
+        "ttfb": 15.3,
+        "domContentLoaded": 42.8
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 179.3,
+          "end": 197.7
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 179.5,
+          "end": 229.7
+        },
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 264.6,
+          "end": 322.9
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 265.4,
+          "end": 347
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 266.3,
+          "end": 299
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/alerts",
+      "finalPath": "/alerts",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 264.1,
+      "settledMs": 347.4,
+      "readyMs": 312.3,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/alerts/triage/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 189,
+        "auth.csrf.response": 220.8,
+        "auth.me.response": 248.3,
+        "workspace.ready": 264.1,
+        "session.ready": 266.2,
+        "runtime-status.response": 292.8
+      },
+      "paint": {
+        "first-paint": 116,
+        "first-contentful-paint": 116,
+        "ttfb": 12.6,
+        "domContentLoaded": 44.4
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 192.7,
+          "end": 219
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 193.4,
+          "end": 247.6
+        },
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 264,
+          "end": 322.8
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 265.1,
+          "end": 347.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 266,
+          "end": 290
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/incidents",
+      "finalPath": "/incidents",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 316.7,
+      "settledMs": 474.5,
+      "readyMs": 436.8,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 199.6,
+        "auth.csrf.response": 236.1,
+        "auth.me.response": 272.1,
+        "workspace.ready": 316.7,
+        "session.ready": 318.4,
+        "runtime-status.response": 362.4
+      },
+      "paint": {
+        "first-paint": 120,
+        "first-contentful-paint": 120,
+        "ttfb": 13.1,
+        "domContentLoaded": 50.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 202.4,
+          "end": 235.8
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 202.7,
+          "end": 266.7
+        },
+        {
+          "path": "/api/incidents",
+          "start": 312.9,
+          "end": 383.1
+        },
+        {
+          "path": "/api/alerts",
+          "start": 314.1,
+          "end": 412.3
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 315.9,
+          "end": 435.9
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 317.5,
+          "end": 474.5
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 318.3,
+          "end": 361.6
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/response-actions",
+      "finalPath": "/response-actions",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 284.6,
+      "settledMs": 562.6,
+      "readyMs": 552.8,
+      "apiCount": 8,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 176.2,
+        "auth.csrf.response": 204.9,
+        "auth.me.response": 237.4,
+        "workspace.ready": 284.6,
+        "session.ready": 285.5,
+        "runtime-status.response": 487.4
+      },
+      "paint": {
+        "first-paint": 128,
+        "first-contentful-paint": 128,
+        "ttfb": 12.2,
+        "domContentLoaded": 51.4
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 178.6,
+          "end": 203.2
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 178.8,
+          "end": 237.6
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 281.2,
+          "end": 367.9
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 281.7,
+          "end": 472
+        },
+        {
+          "path": "/api/alerts",
+          "start": 282.6,
+          "end": 562.6
+        },
+        {
+          "path": "/api/incidents",
+          "start": 283.1,
+          "end": 388.5
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 284.4,
+          "end": 487
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 285.5,
+          "end": 510.7
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/evidence",
+      "finalPath": "/evidence",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 270.4,
+      "settledMs": 455.8,
+      "readyMs": 459.8,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 177.7,
+        "auth.csrf.response": 210.9,
+        "auth.me.response": 233.4,
+        "workspace.ready": 270.4,
+        "session.ready": 272.3,
+        "runtime-status.response": 322.8
+      },
+      "paint": {
+        "first-paint": 124,
+        "first-contentful-paint": 124,
+        "ttfb": 13.3,
+        "domContentLoaded": 52.1
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 180.2,
+          "end": 207.5
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 180.6,
+          "end": 232.1
+        },
+        {
+          "path": "/api/exports",
+          "start": 269,
+          "end": 424.6
+        },
+        {
+          "path": "/api/events",
+          "start": 269.5,
+          "end": 455.8
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 270.1,
+          "end": 355
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 271.4,
+          "end": 389.6
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 272.2,
+          "end": 315.4
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/integrations",
+      "finalPath": "/integrations",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 221.4,
+      "settledMs": 414.3,
+      "readyMs": 403.6,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 151.3,
+        "auth.csrf.response": 178,
+        "auth.me.response": 205.6,
+        "workspace.ready": 221.4,
+        "session.ready": 223.3,
+        "runtime-status.response": 271.7
+      },
+      "paint": {
+        "first-paint": 108,
+        "first-contentful-paint": 108,
+        "ttfb": 15.7,
+        "domContentLoaded": 43.9
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 153.4,
+          "end": 173.6
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 153.8,
+          "end": 201.7
+        },
+        {
+          "path": "/api/integrations/decoda",
+          "start": 220.2,
+          "end": 292.4
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 221.4,
+          "end": 414.3
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 222.4,
+          "end": 388.7
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 223.2,
+          "end": 261.8
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/settings",
+      "finalPath": "/settings",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 286.2,
+      "settledMs": 641.2,
+      "readyMs": 659.1,
+      "apiCount": 15,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 152.6,
+        "auth.csrf.response": 169.6,
+        "auth.me.response": 198.3,
+        "workspace.ready": 286.2,
+        "session.ready": 293.6,
+        "runtime-status.response": 518.7
+      },
+      "paint": {
+        "first-paint": 100,
+        "first-contentful-paint": 100,
+        "ttfb": 11.5,
+        "domContentLoaded": 61.9
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 155.2,
+          "end": 168.8
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 155.5,
+          "end": 197.9
+        },
+        {
+          "path": "/api/workspace/members",
+          "start": 260.5,
+          "end": 320.5
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 261.7,
+          "end": 346.1
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 262.8,
+          "end": 380.5
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 264.8,
+          "end": 599.6
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 265.7,
+          "end": 317.9
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 266.6,
+          "end": 494.6
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 267.4,
+          "end": 409.3
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 278.7,
+          "end": 432.8
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 280,
+          "end": 574.2
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 285.1,
+          "end": 545.8
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 286.1,
+          "end": 511.2
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 290,
+          "end": 641.2
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 291.9,
+          "end": 517.9
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/system-health",
+      "finalPath": "/system-health",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 341,
+      "settledMs": 410.2,
+      "readyMs": 285.6,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 196.5,
+        "auth.csrf.response": 240.3,
+        "auth.me.response": 284.9,
+        "workspace.ready": 341,
+        "session.ready": 342.8,
+        "runtime-status.response": 393.2
+      },
+      "paint": {
+        "first-paint": 136,
+        "first-contentful-paint": 136,
+        "ttfb": 15.2,
+        "domContentLoaded": 154.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 198.8,
+          "end": 228
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 199,
+          "end": 269.6
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 342,
+          "end": 410.2
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 342.8,
+          "end": 363.5
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/dashboard",
+      "finalPath": "/dashboard",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 265.4,
+      "settledMs": 403.7,
+      "readyMs": 332.3,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/dashboard/executive-summary": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/stream/alerts": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 177.3,
+        "auth.csrf.response": 207.8,
+        "auth.me.response": 240.7,
+        "summary.request.start": 259.7,
+        "dashboard.mount": 265.2,
+        "workspace.ready": 265.4,
+        "session.ready": 266.2,
+        "summary.response": 354.6,
+        "runtime-status.response": 371.5,
+        "dashboard.skeleton.dismissed": 382.1
+      },
+      "paint": {
+        "first-paint": 124,
+        "first-contentful-paint": 124,
+        "ttfb": 12.7,
+        "domContentLoaded": 56.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 179.8,
+          "end": 207.8
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 180.2,
+          "end": 237.6
+        },
+        {
+          "path": "/api/dashboard/executive-summary",
+          "start": 261.2,
+          "end": 354.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 262.7,
+          "end": 358.1
+        },
+        {
+          "path": "/api/stream/alerts",
+          "start": 265.1,
+          "end": 348.4
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 266,
+          "end": 403.7
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/assets",
+      "finalPath": "/assets",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 343.5,
+      "settledMs": 473.9,
+      "readyMs": 433.4,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 229.9,
+        "auth.csrf.response": 286.6,
+        "auth.me.response": 311.1,
+        "workspace.ready": 343.5,
+        "session.ready": 345.2,
+        "runtime-status.response": 403.8
+      },
+      "paint": {
+        "first-paint": 132,
+        "first-contentful-paint": 132,
+        "ttfb": 15.7,
+        "domContentLoaded": 87.1
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 234.8,
+          "end": 271.7
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 235.1,
+          "end": 308.2
+        },
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 339.4,
+          "end": 416.7
+        },
+        {
+          "path": "/api/assets",
+          "start": 343.4,
+          "end": 441.6
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 344.1,
+          "end": 473.9
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 345.1,
+          "end": 401.2
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/monitoring-sources",
+      "finalPath": "/monitoring-sources",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 373.2,
+      "settledMs": 611.2,
+      "readyMs": 480.1,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 196.8,
+        "auth.csrf.response": 302.6,
+        "auth.me.response": 330.4,
+        "workspace.ready": 373.2,
+        "session.ready": 374.5,
+        "runtime-status.response": 611.9
+      },
+      "paint": {
+        "first-paint": 132,
+        "first-contentful-paint": 132,
+        "ttfb": 12.6,
+        "domContentLoaded": 52.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 199.9,
+          "end": 301.5
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 200.4,
+          "end": 329.9
+        },
+        {
+          "path": "/api/monitoring/sources",
+          "start": 371.8,
+          "end": 492.4
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 373.1,
+          "end": 427.3
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 373.9,
+          "end": 524.2
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 374.5,
+          "end": 611.2
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/threat",
+      "finalPath": "/threat",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 273.8,
+      "settledMs": 406.2,
+      "readyMs": 399.1,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/threat-monitoring/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 172.6,
+        "auth.csrf.response": 207.1,
+        "auth.me.response": 245.2,
+        "workspace.ready": 273.8,
+        "session.ready": 275.7,
+        "runtime-status.response": 312.8
+      },
+      "paint": {
+        "first-paint": 100,
+        "first-contentful-paint": 100,
+        "ttfb": 11.4,
+        "domContentLoaded": 37.9
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 175.3,
+          "end": 204.2
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 178.3,
+          "end": 235.7
+        },
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 273.7,
+          "end": 406.2
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 274.8,
+          "end": 335.5
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 275.6,
+          "end": 298.1
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/alerts",
+      "finalPath": "/alerts",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 272.2,
+      "settledMs": 374.4,
+      "readyMs": 322.9,
+      "apiCount": 5,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/alerts/triage/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 149.7,
+        "auth.csrf.response": 182.9,
+        "auth.me.response": 210.2,
+        "workspace.ready": 272.2,
+        "session.ready": 274.5,
+        "runtime-status.response": 312.1
+      },
+      "paint": {
+        "first-paint": 96,
+        "first-contentful-paint": 96,
+        "ttfb": 11.2,
+        "domContentLoaded": 35.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 153.4,
+          "end": 171.3
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 153.9,
+          "end": 204.6
+        },
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 272,
+          "end": 336.1
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 273.2,
+          "end": 374.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 274.3,
+          "end": 305.6
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/incidents",
+      "finalPath": "/incidents",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 273.9,
+      "settledMs": 421.4,
+      "readyMs": 405.3,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 190.7,
+        "auth.csrf.response": 213.1,
+        "auth.me.response": 251.9,
+        "workspace.ready": 273.9,
+        "session.ready": 275.4,
+        "runtime-status.response": 316.6
+      },
+      "paint": {
+        "first-paint": 120,
+        "first-contentful-paint": 120,
+        "ttfb": 14.7,
+        "domContentLoaded": 49.7
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 192.7,
+          "end": 210.3
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 193.1,
+          "end": 251.6
+        },
+        {
+          "path": "/api/incidents",
+          "start": 272,
+          "end": 366.1
+        },
+        {
+          "path": "/api/alerts",
+          "start": 273,
+          "end": 350.1
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 273.7,
+          "end": 421.4
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 274.4,
+          "end": 399
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 275.4,
+          "end": 313
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/response-actions",
+      "finalPath": "/response-actions",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 342,
+      "settledMs": 537,
+      "readyMs": 476.6,
+      "apiCount": 8,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1,
+        "/api/ops/monitoring/runtime-status": 1,
+        "/api/account/plan": 1
+      },
+      "marks": {
+        "runtime-config.response": 213.7,
+        "auth.csrf.response": 271,
+        "auth.me.response": 309.3,
+        "workspace.ready": 342,
+        "session.ready": 342.8,
+        "runtime-status.response": 418.6
+      },
+      "paint": {
+        "first-paint": 124,
+        "first-contentful-paint": 124,
+        "ttfb": 12.6,
+        "domContentLoaded": 49.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 221.4,
+          "end": 250.9
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 221.7,
+          "end": 288.9
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 339.4,
+          "end": 422.9
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 340,
+          "end": 448.1
+        },
+        {
+          "path": "/api/alerts",
+          "start": 340.5,
+          "end": 473.3
+        },
+        {
+          "path": "/api/incidents",
+          "start": 340.9,
+          "end": 495.3
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 341.9,
+          "end": 395.3
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 342.7,
+          "end": 537
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/evidence",
+      "finalPath": "/evidence",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 303,
+      "settledMs": 500.7,
+      "readyMs": 479.4,
+      "apiCount": 7,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 182.5,
+        "auth.csrf.response": 225.6,
+        "auth.me.response": 253.7,
+        "workspace.ready": 303,
+        "session.ready": 304.9,
+        "runtime-status.response": 353.1
+      },
+      "paint": {
+        "first-paint": 108,
+        "first-contentful-paint": 108,
+        "ttfb": 17.1,
+        "domContentLoaded": 70.6
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 186.4,
+          "end": 213.9
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 186.8,
+          "end": 253
+        },
+        {
+          "path": "/api/exports",
+          "start": 301.5,
+          "end": 387.2
+        },
+        {
+          "path": "/api/events",
+          "start": 302.2,
+          "end": 416.7
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 302.6,
+          "end": 500.7
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 304.2,
+          "end": 468.4
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 304.9,
+          "end": 352.2
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/integrations",
+      "finalPath": "/integrations",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 253.1,
+      "settledMs": 459.9,
+      "readyMs": 456.4,
+      "apiCount": 6,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 167.3,
+        "auth.csrf.response": 187.8,
+        "auth.me.response": 233.2,
+        "workspace.ready": 253.1,
+        "session.ready": 258.2,
+        "runtime-status.response": 310.9
+      },
+      "paint": {
+        "first-paint": 116,
+        "first-contentful-paint": 116,
+        "ttfb": 10.7,
+        "domContentLoaded": 40.5
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 170,
+          "end": 186.6
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 170.2,
+          "end": 232.5
+        },
+        {
+          "path": "/api/integrations/decoda",
+          "start": 251.7,
+          "end": 437.3
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 253,
+          "end": 459.9
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 253.9,
+          "end": 398.3
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 258,
+          "end": 298
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/settings",
+      "finalPath": "/settings",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 296.4,
+      "settledMs": 660.9,
+      "readyMs": 665.6,
+      "apiCount": 15,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 180.5,
+        "auth.csrf.response": 208.4,
+        "auth.me.response": 235.9,
+        "workspace.ready": 296.4,
+        "session.ready": 309.8,
+        "runtime-status.response": 526.7
+      },
+      "paint": {
+        "first-paint": 128,
+        "first-contentful-paint": 128,
+        "ttfb": 11.7,
+        "domContentLoaded": 57
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 182.5,
+          "end": 207.8
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 182.9,
+          "end": 235.4
+        },
+        {
+          "path": "/api/workspace/members",
+          "start": 286.1,
+          "end": 367.4
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 286.8,
+          "end": 660.9
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 287.4,
+          "end": 460.8
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 287.9,
+          "end": 401.4
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 288.4,
+          "end": 352.4
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 288.9,
+          "end": 435.9
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 291.5,
+          "end": 490.8
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 292.4,
+          "end": 513.5
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 293,
+          "end": 563.6
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 295.5,
+          "end": 587.2
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 296.3,
+          "end": 540
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 301.9,
+          "end": 632.2
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 309.6,
+          "end": 525.7
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/system-health",
+      "finalPath": "/system-health",
+      "status": 200,
+      "quiet": true,
+      "failed": [],
+      "gateMs": 356,
+      "settledMs": 548.7,
+      "readyMs": 282.5,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/auth/csrf": 1,
+        "/api/auth/me": 1,
+        "/api/account/plan": 1,
+        "/api/ops/monitoring/runtime-status": 1
+      },
+      "marks": {
+        "runtime-config.response": 221.3,
+        "auth.csrf.response": 245.3,
+        "auth.me.response": 290.1,
+        "workspace.ready": 356,
+        "session.ready": 359.4,
+        "runtime-status.response": 549.4
+      },
+      "paint": {
+        "first-paint": 128,
+        "first-contentful-paint": 128,
+        "ttfb": 14.7,
+        "domContentLoaded": 154.7
+      },
+      "waterfall": [
+        {
+          "path": "/api/auth/csrf",
+          "start": 225,
+          "end": 244.3
+        },
+        {
+          "path": "/api/auth/me",
+          "start": 225.5,
+          "end": 289.2
+        },
+        {
+          "path": "/api/account/plan",
+          "start": 357.8,
+          "end": 438.1
+        },
+        {
+          "path": "/api/ops/monitoring/runtime-status",
+          "start": 359.3,
+          "end": 548.7
+        }
+      ]
+    }
+  ],
+  "sidebar": [
+    {
+      "load": 1,
+      "route": "/assets",
+      "from": "/dashboard",
+      "quiet": true,
+      "feedbackMs": 5.7,
+      "urlCommitMs": 38.8,
+      "gateMs": null,
+      "settledMs": 124.1,
+      "readyMs": 111.2,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 35.3,
+          "end": 101.4
+        },
+        {
+          "path": "/api/assets",
+          "start": 37.7,
+          "end": 124.1
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/monitoring-sources",
+      "from": "/assets",
+      "quiet": true,
+      "feedbackMs": 24.6,
+      "urlCommitMs": 28.4,
+      "gateMs": null,
+      "settledMs": 147.2,
+      "readyMs": 142.6,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/monitoring/sources",
+          "start": 30.1,
+          "end": 147.2
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 30.8,
+          "end": 140.4
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/threat",
+      "from": "/monitoring-sources",
+      "quiet": true,
+      "feedbackMs": 21.7,
+      "urlCommitMs": 35.9,
+      "gateMs": null,
+      "settledMs": 88.7,
+      "readyMs": 77.8,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/threat-monitoring/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 33.6,
+          "end": 88.7
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/alerts",
+      "from": "/threat",
+      "quiet": true,
+      "feedbackMs": 9,
+      "urlCommitMs": 36.1,
+      "gateMs": null,
+      "settledMs": 92.3,
+      "readyMs": 82.2,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/alerts/triage/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 43,
+          "end": 92.3
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/incidents",
+      "from": "/alerts",
+      "quiet": true,
+      "feedbackMs": 15.1,
+      "urlCommitMs": 19,
+      "gateMs": null,
+      "settledMs": 123,
+      "readyMs": 117,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/incidents",
+          "start": 20.8,
+          "end": 75.6
+        },
+        {
+          "path": "/api/alerts",
+          "start": 21.6,
+          "end": 107.4
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 22.6,
+          "end": 123
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/response-actions",
+      "from": "/incidents",
+      "quiet": true,
+      "feedbackMs": 9.6,
+      "urlCommitMs": 36,
+      "gateMs": null,
+      "settledMs": 184.4,
+      "readyMs": 167.9,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/response/actions",
+          "start": 42.6,
+          "end": 130.1
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 44.1,
+          "end": 105.7
+        },
+        {
+          "path": "/api/alerts",
+          "start": 45,
+          "end": 184.4
+        },
+        {
+          "path": "/api/incidents",
+          "start": 45.7,
+          "end": 157.1
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/evidence",
+      "from": "/response-actions",
+      "quiet": true,
+      "feedbackMs": 26,
+      "urlCommitMs": 32.3,
+      "gateMs": null,
+      "settledMs": 154.1,
+      "readyMs": 135.9,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/exports",
+          "start": 35.9,
+          "end": 96
+        },
+        {
+          "path": "/api/events",
+          "start": 37,
+          "end": 126.9
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 37.7,
+          "end": 154.1
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/integrations",
+      "from": "/evidence",
+      "quiet": true,
+      "feedbackMs": 13.9,
+      "urlCommitMs": 21.3,
+      "gateMs": null,
+      "settledMs": 168.6,
+      "readyMs": 167.6,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/integrations/decoda",
+          "start": 17.6,
+          "end": 150.2
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 18.9,
+          "end": 168.6
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/settings",
+      "from": "/integrations",
+      "quiet": true,
+      "feedbackMs": 13.5,
+      "urlCommitMs": 44.6,
+      "gateMs": null,
+      "settledMs": 390.5,
+      "readyMs": 376.2,
+      "apiCount": 11,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/workspace/members",
+          "start": 52.1,
+          "end": 128.8
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 57.3,
+          "end": 154.6
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 59.1,
+          "end": 191
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 60.6,
+          "end": 215.5
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 61.3,
+          "end": 134.7
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 62,
+          "end": 296.5
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 62.6,
+          "end": 252.9
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 63.5,
+          "end": 365.2
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 64.2,
+          "end": 390.5
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 64.8,
+          "end": 315.6
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 65.4,
+          "end": 340.5
+        }
+      ]
+    },
+    {
+      "load": 1,
+      "route": "/system-health",
+      "from": "/settings",
+      "quiet": true,
+      "feedbackMs": 9.9,
+      "urlCommitMs": 63.5,
+      "gateMs": null,
+      "settledMs": 0,
+      "readyMs": 335.6,
+      "apiCount": 0,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {},
+      "marks": {},
+      "paint": {},
+      "waterfall": []
+    },
+    {
+      "load": 2,
+      "route": "/assets",
+      "from": "/dashboard",
+      "quiet": true,
+      "feedbackMs": 18,
+      "urlCommitMs": 53.7,
+      "gateMs": null,
+      "settledMs": 150.1,
+      "readyMs": 144.5,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 48.8,
+          "end": 125
+        },
+        {
+          "path": "/api/assets",
+          "start": 52.5,
+          "end": 150.1
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/monitoring-sources",
+      "from": "/assets",
+      "quiet": true,
+      "feedbackMs": 29.9,
+      "urlCommitMs": 35.4,
+      "gateMs": null,
+      "settledMs": 136.8,
+      "readyMs": 135.9,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/monitoring/sources",
+          "start": 38.3,
+          "end": 136.8
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 39.6,
+          "end": 129.7
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/threat",
+      "from": "/monitoring-sources",
+      "quiet": true,
+      "feedbackMs": 12.9,
+      "urlCommitMs": 45.4,
+      "gateMs": null,
+      "settledMs": 97.6,
+      "readyMs": 95.4,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/threat-monitoring/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 36.9,
+          "end": 97.6
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/alerts",
+      "from": "/threat",
+      "quiet": true,
+      "feedbackMs": 8.9,
+      "urlCommitMs": 27.6,
+      "gateMs": null,
+      "settledMs": 87.7,
+      "readyMs": 84.8,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/alerts/triage/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 29.8,
+          "end": 87.7
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/incidents",
+      "from": "/alerts",
+      "quiet": true,
+      "feedbackMs": 17.5,
+      "urlCommitMs": 19.5,
+      "gateMs": null,
+      "settledMs": 126.9,
+      "readyMs": 102.2,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/incidents",
+          "start": 21.2,
+          "end": 80.9
+        },
+        {
+          "path": "/api/alerts",
+          "start": 22.5,
+          "end": 126.9
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 23.7,
+          "end": 103
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/response-actions",
+      "from": "/incidents",
+      "quiet": true,
+      "feedbackMs": 25.9,
+      "urlCommitMs": 30,
+      "gateMs": null,
+      "settledMs": 179.3,
+      "readyMs": 168.5,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/response/actions",
+          "start": 33.5,
+          "end": 97.2
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 34.7,
+          "end": 118.4
+        },
+        {
+          "path": "/api/alerts",
+          "start": 35.5,
+          "end": 179.3
+        },
+        {
+          "path": "/api/incidents",
+          "start": 36.1,
+          "end": 143.8
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/evidence",
+      "from": "/response-actions",
+      "quiet": true,
+      "feedbackMs": 24.9,
+      "urlCommitMs": 29.5,
+      "gateMs": null,
+      "settledMs": 127,
+      "readyMs": 129.8,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/exports",
+          "start": 32.7,
+          "end": 106.8
+        },
+        {
+          "path": "/api/events",
+          "start": 34.9,
+          "end": 127
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 35.8,
+          "end": 92.9
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/integrations",
+      "from": "/evidence",
+      "quiet": true,
+      "feedbackMs": 13,
+      "urlCommitMs": 18.7,
+      "gateMs": null,
+      "settledMs": 155.5,
+      "readyMs": 144.6,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/integrations/decoda",
+          "start": 16.1,
+          "end": 70.1
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 17,
+          "end": 155.5
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/settings",
+      "from": "/integrations",
+      "quiet": true,
+      "feedbackMs": 9.7,
+      "urlCommitMs": 35.6,
+      "gateMs": null,
+      "settledMs": 351.9,
+      "readyMs": 342.7,
+      "apiCount": 11,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/workspace/members",
+          "start": 40.5,
+          "end": 144.2
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 41.2,
+          "end": 108.8
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 41.8,
+          "end": 178.9
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 42.5,
+          "end": 209.2
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 43,
+          "end": 87.3
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 43.7,
+          "end": 249.9
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 44.3,
+          "end": 264.5
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 45.3,
+          "end": 351.9
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 46,
+          "end": 286.6
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 46.6,
+          "end": 307.5
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 47.2,
+          "end": 331.7
+        }
+      ]
+    },
+    {
+      "load": 2,
+      "route": "/system-health",
+      "from": "/settings",
+      "quiet": true,
+      "feedbackMs": 10.5,
+      "urlCommitMs": 30.1,
+      "gateMs": null,
+      "settledMs": 0,
+      "readyMs": 320.9,
+      "apiCount": 0,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {},
+      "marks": {},
+      "paint": {},
+      "waterfall": []
+    },
+    {
+      "load": 3,
+      "route": "/assets",
+      "from": "/dashboard",
+      "quiet": true,
+      "feedbackMs": 18,
+      "urlCommitMs": 48.7,
+      "gateMs": null,
+      "settledMs": 117,
+      "readyMs": 105.1,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/assets/risk-summary": 1,
+        "/api/assets": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/assets/risk-summary",
+          "start": 37.9,
+          "end": 98.3
+        },
+        {
+          "path": "/api/assets",
+          "start": 40,
+          "end": 117
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/monitoring-sources",
+      "from": "/assets",
+      "quiet": true,
+      "feedbackMs": 29.7,
+      "urlCommitMs": 34.1,
+      "gateMs": null,
+      "settledMs": 140.3,
+      "readyMs": 137.1,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/monitoring/sources": 1,
+        "/api/stream/sources": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/monitoring/sources",
+          "start": 35.9,
+          "end": 140.3
+        },
+        {
+          "path": "/api/stream/sources",
+          "start": 36.7,
+          "end": 137.9
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/threat",
+      "from": "/monitoring-sources",
+      "quiet": true,
+      "feedbackMs": 7.7,
+      "urlCommitMs": 30.3,
+      "gateMs": null,
+      "settledMs": 93.3,
+      "readyMs": 96.6,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/threat-monitoring/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/threat-monitoring/summary",
+          "start": 32.9,
+          "end": 93.3
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/alerts",
+      "from": "/threat",
+      "quiet": true,
+      "feedbackMs": 20.3,
+      "urlCommitMs": 24.8,
+      "gateMs": null,
+      "settledMs": 78.9,
+      "readyMs": 80.2,
+      "apiCount": 1,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/alerts/triage/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/alerts/triage/summary",
+          "start": 30.1,
+          "end": 78.9
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/incidents",
+      "from": "/alerts",
+      "quiet": true,
+      "feedbackMs": 12.4,
+      "urlCommitMs": 31.3,
+      "gateMs": null,
+      "settledMs": 152,
+      "readyMs": 114.2,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/incidents": 1,
+        "/api/alerts": 1,
+        "/api/incidents/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/incidents",
+          "start": 35.6,
+          "end": 97.6
+        },
+        {
+          "path": "/api/alerts",
+          "start": 36.5,
+          "end": 152
+        },
+        {
+          "path": "/api/incidents/summary",
+          "start": 38.2,
+          "end": 119.1
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/response-actions",
+      "from": "/incidents",
+      "quiet": true,
+      "feedbackMs": 14.1,
+      "urlCommitMs": 39.5,
+      "gateMs": null,
+      "settledMs": 212,
+      "readyMs": 195.7,
+      "apiCount": 4,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/response/actions": 1,
+        "/api/history/actions": 1,
+        "/api/alerts": 1,
+        "/api/incidents": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/response/actions",
+          "start": 50.7,
+          "end": 134.5
+        },
+        {
+          "path": "/api/history/actions",
+          "start": 58.1,
+          "end": 151.7
+        },
+        {
+          "path": "/api/alerts",
+          "start": 60.1,
+          "end": 197.1
+        },
+        {
+          "path": "/api/incidents",
+          "start": 61.7,
+          "end": 212
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/evidence",
+      "from": "/response-actions",
+      "quiet": true,
+      "feedbackMs": 13.8,
+      "urlCommitMs": 44.9,
+      "gateMs": null,
+      "settledMs": 153.3,
+      "readyMs": 146.9,
+      "apiCount": 3,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/exports": 1,
+        "/api/events": 1,
+        "/api/response/actions": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/exports",
+          "start": 52.5,
+          "end": 129
+        },
+        {
+          "path": "/api/events",
+          "start": 53.8,
+          "end": 105.5
+        },
+        {
+          "path": "/api/response/actions",
+          "start": 55,
+          "end": 153.3
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/integrations",
+      "from": "/evidence",
+      "quiet": true,
+      "feedbackMs": 16.3,
+      "urlCommitMs": 18.9,
+      "gateMs": null,
+      "settledMs": 149.6,
+      "readyMs": 146.5,
+      "apiCount": 2,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/integrations/decoda": 1,
+        "/api/integrations/control-plane": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/integrations/decoda",
+          "start": 21.1,
+          "end": 69.9
+        },
+        {
+          "path": "/api/integrations/control-plane",
+          "start": 22.5,
+          "end": 149.6
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/settings",
+      "from": "/integrations",
+      "quiet": true,
+      "feedbackMs": 9.8,
+      "urlCommitMs": 33.9,
+      "gateMs": null,
+      "settledMs": 373.4,
+      "readyMs": 370.5,
+      "apiCount": 11,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {
+        "/api/workspace/members": 1,
+        "/api/workspace/invitations": 1,
+        "/api/team/seats": 1,
+        "/api/billing/subscription": 1,
+        "/api/billing/plans": 1,
+        "/api/system/readiness": 1,
+        "/api/workspace/retention-policies": 1,
+        "/api/workspace/settings": 1,
+        "/api/workspace/security-settings": 1,
+        "/api/workspace/governance/posture": 1,
+        "/api/workspace/governance/summary": 1
+      },
+      "marks": {},
+      "paint": {},
+      "waterfall": [
+        {
+          "path": "/api/workspace/members",
+          "start": 38.3,
+          "end": 102.9
+        },
+        {
+          "path": "/api/workspace/invitations",
+          "start": 39.5,
+          "end": 158
+        },
+        {
+          "path": "/api/team/seats",
+          "start": 40.2,
+          "end": 208.5
+        },
+        {
+          "path": "/api/billing/subscription",
+          "start": 41.1,
+          "end": 237
+        },
+        {
+          "path": "/api/billing/plans",
+          "start": 41.8,
+          "end": 122.1
+        },
+        {
+          "path": "/api/system/readiness",
+          "start": 42.8,
+          "end": 313.9
+        },
+        {
+          "path": "/api/workspace/retention-policies",
+          "start": 43.9,
+          "end": 274.2
+        },
+        {
+          "path": "/api/workspace/settings",
+          "start": 45.1,
+          "end": 249.3
+        },
+        {
+          "path": "/api/workspace/security-settings",
+          "start": 46.1,
+          "end": 350.8
+        },
+        {
+          "path": "/api/workspace/governance/posture",
+          "start": 47.4,
+          "end": 373.4
+        },
+        {
+          "path": "/api/workspace/governance/summary",
+          "start": 48.6,
+          "end": 326
+        }
+      ]
+    },
+    {
+      "load": 3,
+      "route": "/system-health",
+      "from": "/settings",
+      "quiet": true,
+      "feedbackMs": 7.8,
+      "urlCommitMs": 31.6,
+      "gateMs": null,
+      "settledMs": 0,
+      "readyMs": 319.8,
+      "apiCount": 0,
+      "duplicateCount": 0,
+      "duplicates": [],
+      "byPath": {},
+      "marks": {},
+      "paint": {},
+      "waterfall": []
+    }
+  ]
+}
