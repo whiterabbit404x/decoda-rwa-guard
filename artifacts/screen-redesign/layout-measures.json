@@ -1,0 +1,170 @@
+{
+  "viewport": "1440x900",
+  "measures": [
+    {
+      "route": "/dashboard",
+      "before": {
+        "height": 1702,
+        "h1Top": 187,
+        "mainText": 2812,
+        "firstScreenChars": 1352
+      },
+      "after": {
+        "height": 1488,
+        "h1Top": 83,
+        "mainText": 2055,
+        "firstScreenChars": 1857
+      }
+    },
+    {
+      "route": "/assets",
+      "before": {
+        "height": 1229,
+        "h1Top": 187,
+        "mainText": 1692,
+        "firstScreenChars": 1062
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 83,
+        "mainText": 1022,
+        "firstScreenChars": 1196
+      }
+    },
+    {
+      "route": "/monitoring-sources",
+      "before": {
+        "height": 1406,
+        "h1Top": 187,
+        "mainText": 2531,
+        "firstScreenChars": 1313
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 83,
+        "mainText": 1144,
+        "firstScreenChars": 1286
+      }
+    },
+    {
+      "route": "/threat",
+      "before": {
+        "height": 1442,
+        "h1Top": 187,
+        "mainText": 1694,
+        "firstScreenChars": 779
+      },
+      "after": {
+        "height": 1321,
+        "h1Top": 83,
+        "mainText": 1694,
+        "firstScreenChars": 968
+      }
+    },
+    {
+      "route": "/alerts",
+      "before": {
+        "height": 1911,
+        "h1Top": 213,
+        "mainText": 1923,
+        "firstScreenChars": 869
+      },
+      "after": {
+        "height": 1265,
+        "h1Top": 83,
+        "mainText": 1901,
+        "firstScreenChars": 1245
+      }
+    },
+    {
+      "route": "/incidents",
+      "before": {
+        "height": 1492,
+        "h1Top": 213,
+        "mainText": 1516,
+        "firstScreenChars": 916
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 83,
+        "mainText": 639,
+        "firstScreenChars": 485
+      }
+    },
+    {
+      "route": "/response-actions",
+      "before": {
+        "height": 900,
+        "h1Top": 203,
+        "mainText": 650,
+        "firstScreenChars": 300
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 83,
+        "mainText": 651,
+        "firstScreenChars": 310
+      }
+    },
+    {
+      "route": "/evidence",
+      "before": {
+        "height": 900,
+        "h1Top": 203,
+        "mainText": 429,
+        "firstScreenChars": 396
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 99,
+        "mainText": 418,
+        "firstScreenChars": 396
+      }
+    },
+    {
+      "route": "/integrations",
+      "before": {
+        "height": 1266,
+        "h1Top": 187,
+        "mainText": 1572,
+        "firstScreenChars": 1208
+      },
+      "after": {
+        "height": 900,
+        "h1Top": 83,
+        "mainText": 1133,
+        "firstScreenChars": 1236
+      }
+    },
+    {
+      "route": "/settings",
+      "before": {
+        "height": 1385,
+        "h1Top": 229,
+        "mainText": 1626,
+        "firstScreenChars": 1058
+      },
+      "after": {
+        "height": 1281,
+        "h1Top": 125,
+        "mainText": 1626,
+        "firstScreenChars": 1130
+      }
+    },
+    {
+      "route": "/system-health",
+      "before": {
+        "height": 6458,
+        "h1Top": 1123,
+        "mainText": 9885,
+        "firstScreenChars": 1114
+      },
+      "after": {
+        "height": 2583,
+        "h1Top": 83,
+        "mainText": 4282,
+        "firstScreenChars": 1249
+      }
+    }
+  ]
+}
