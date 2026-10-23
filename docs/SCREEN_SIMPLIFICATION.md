@@ -75,8 +75,10 @@ technical depth behind native `<details>` (`.pageDisclosure`). See
   its data after it mounts, through the session-scoped BFF, so a prefetched
   screen can never show data older than its own fresh read.
 - **CSP**: no inline `style` in server-rendered markup (System Health uses classes
-  and native `<details>`); a sweep of all eleven screens with every disclosure
-  and the status panel opened logs the CSP violations below.
+  and native `<details>`). A sweep of all eleven screens under the production
+  `next start` CSP, with every disclosure and the header status panel opened,
+  logged **0 CSP violations and 0 page errors** on the base build and on this
+  branch alike.
 - **Fail-closed status**: the header chip's word comes from the same derivation
   as the strip's "Monitoring" field, its colour from `runtimeFieldTone` (an
   unmapped or absent reading is grey; only a proven-live verdict is green); an
